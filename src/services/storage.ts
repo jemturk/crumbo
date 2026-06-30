@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { supabase } from './supabase';
 
 // Interfaces
 export interface Message {
@@ -114,15 +115,51 @@ export const StorageService = {
 
   // Message Management
   async getMessages(friendId: string): Promise<Message[]> {
-    const data = await AsyncStorage.getItem(`${KEYS.MESSAGES_PREFIX}${friendId}`);
-    return data ? JSON.parse(data) : [];
+    // 1. Load cached messages for instant display
+    const cachedData = await AsyncStorage.getItem(`${KEYS.MESSAGES_PREFIX}${friendId}`);
+    let messages: Message[] = cachedData ? JSON.parse(cachedData) : [];
+
+    // 2. Fetch fresh history from Supabase to sync
+    try {
+      const profile = await this.getKidProfile();
+      const friends = await this.getFriends();
+      const friend = friends.find(f => f.id === friendId);
+
+      if (profile && friend) {
+        const { data: dbMsgs, error } = await supabase
+          .from('messages')
+          .select('*')
+          .or(`and(sender_code.eq.${profile.cookieCode},receiver_code.eq.${friend.cookieCode}),and(sender_code.eq.${friend.cookieCode},receiver_code.eq.${profile.cookieCode})`)
+          .order('created_at', { ascending: true });
+
+        if (!error && dbMsgs) {
+          const fetchedMessages: Message[] = dbMsgs.map(msg => ({
+            id: msg.id,
+            text: msg.text,
+            timestamp: msg.created_at,
+            sender: msg.sender_code === profile.cookieCode ? 'me' : 'them',
+          }));
+
+          // Overwrite local storage cache with latest data
+          await AsyncStorage.setItem(`${KEYS.MESSAGES_PREFIX}${friendId}`, JSON.stringify(fetchedMessages));
+          return fetchedMessages;
+        } else if (error) {
+          console.error("Error fetching messages from Supabase:", error);
+        }
+      }
+    } catch (e) {
+      console.error("Failed to sync messages with Supabase:", e);
+    }
+
+    return messages;
   },
 
   async sendMessage(friendId: string, text: string): Promise<Message> {
     const messages = await this.getMessages(friendId);
+    const newMsgId = Math.random().toString(36).substring(2, 9);
     
     const newMsg: Message = {
-      id: Math.random().toString(36).substring(2, 9),
+      id: newMsgId,
       text,
       timestamp: new Date().toISOString(),
       sender: 'me',
@@ -130,6 +167,27 @@ export const StorageService = {
 
     const updated = [...messages, newMsg];
     await AsyncStorage.setItem(`${KEYS.MESSAGES_PREFIX}${friendId}`, JSON.stringify(updated));
+
+    // Async write to Supabase
+    try {
+      const profile = await this.getKidProfile();
+      const friends = await this.getFriends();
+      const friend = friends.find(f => f.id === friendId);
+      if (profile && friend) {
+        await supabase
+          .from('messages')
+          .insert({
+            id: newMsgId,
+            sender_code: profile.cookieCode,
+            receiver_code: friend.cookieCode,
+            text: text,
+            created_at: newMsg.timestamp
+          });
+      }
+    } catch (e) {
+      console.error("Error writing message to Supabase", e);
+    }
+
     return newMsg;
   },
 
@@ -146,6 +204,73 @@ export const StorageService = {
     const updated = [...messages, newMsg];
     await AsyncStorage.setItem(`${KEYS.MESSAGES_PREFIX}${friendId}`, JSON.stringify(updated));
     return newMsg;
+  },
+
+  async registerPushToken(token: string | null): Promise<void> {
+    try {
+      const profile = await this.getKidProfile();
+      if (profile) {
+        await supabase
+          .from('profiles')
+          .upsert({
+            cookie_code: profile.cookieCode,
+            push_token: token || null,
+            name: profile.name
+          });
+      }
+    } catch (e) {
+      console.error("Error registering push token on Supabase", e);
+    }
+  },
+
+  // Realtime subscription helper
+  subscribeToMessages(onNewMessage: (msg: Message, friendId: string) => void): () => void {
+    const channelId = Math.random().toString(36).substring(2, 9);
+    const channel = supabase
+      .channel(`public:messages:${channelId}`)
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'messages' },
+        async (payload) => {
+          const newRow = payload.new;
+          const profile = await this.getKidProfile();
+          if (!profile) return;
+
+          const isSentByMe = newRow.sender_code === profile.cookieCode;
+          const isReceivedByMe = newRow.receiver_code === profile.cookieCode;
+
+          if (isSentByMe || isReceivedByMe) {
+            const friends = await this.getFriends();
+            const correspondingFriend = friends.find(f => 
+              f.cookieCode === (isSentByMe ? newRow.receiver_code : newRow.sender_code)
+            );
+
+            if (correspondingFriend) {
+              const localMsg: Message = {
+                id: newRow.id,
+                text: newRow.text,
+                timestamp: newRow.created_at,
+                sender: isSentByMe ? 'me' : 'them',
+              };
+
+              // Read AsyncStorage directly to check duplicates and avoid redundant API requests
+              const data = await AsyncStorage.getItem(`${KEYS.MESSAGES_PREFIX}${correspondingFriend.id}`);
+              const cachedMessages: Message[] = data ? JSON.parse(data) : [];
+
+              if (!cachedMessages.find(m => m.id === localMsg.id)) {
+                const updated = [...cachedMessages, localMsg];
+                await AsyncStorage.setItem(`${KEYS.MESSAGES_PREFIX}${correspondingFriend.id}`, JSON.stringify(updated));
+                onNewMessage(localMsg, correspondingFriend.id);
+              }
+            }
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   },
 
   // Reset helper

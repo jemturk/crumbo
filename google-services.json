@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "917573330649",
+    "project_id": "crumbo-d8889",
+    "storage_bucket": "crumbo-d8889.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:917573330649:android:661cd834f78c151cca40c8",
+        "android_client_info": {
+          "package_name": "com.jemturk.crumbo"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD7A5OTSKsTzW5dK_BGVGK4JW20---jKZM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

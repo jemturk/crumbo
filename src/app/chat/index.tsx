@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, FlatList, TouchableOpacity, Modal, TextInput, S
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { StorageService, Friend, KidProfile, Message } from '@/services/storage';
+import { registerForPushNotificationsAsync } from '@/services/notifications';
 
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -36,6 +37,17 @@ export default function ChatDashboard() {
       }
 
       setProfile(kidProf);
+      
+      // Async request and register push notification token, always syncing the profile to Supabase
+      registerForPushNotificationsAsync().then(async (token) => {
+        await StorageService.registerPushToken(token);
+        if (!token) {
+          console.log("No push token returned. Profile synced without push notifications.");
+        }
+      }).catch(async (err) => {
+        console.error("Push registration failed, syncing profile without push notifications", err);
+        await StorageService.registerPushToken(null);
+      });
 
       // 2. Load friends
       const friendsList = await StorageService.getFriends();

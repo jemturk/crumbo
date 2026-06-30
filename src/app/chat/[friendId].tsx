@@ -57,6 +57,21 @@ export default function ChatScreen() {
 
   useEffect(() => {
     loadChat();
+
+    // Subscribe to realtime database updates
+    const unsubscribe = StorageService.subscribeToMessages((newMsg, msgFriendId) => {
+      if (msgFriendId === friendId) {
+        setMessages(prev => {
+          if (prev.find(m => m.id === newMsg.id)) return prev;
+          return [...prev, newMsg];
+        });
+        setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
+      }
+    });
+
+    return () => {
+      unsubscribe();
+    };
   }, [friendId]);
 
   const loadChat = async () => {
@@ -82,26 +97,29 @@ export default function ChatScreen() {
 
   const handleSend = async () => {
     if (!inputText.trim() || !friend) return;
+
     const textToSend = inputText.trim();
     setInputText('');
 
     try {
-      // 1. Save and update UI for user message
-      const userMsg = await StorageService.sendMessage(friend.id, textToSend);
-      setMessages(prev => [...prev, userMsg]);
-      
-      // Scroll to bottom
+      // 1. Save and show local message (optimistic UI update)
+      const savedMsg = await StorageService.sendMessage(friendId, textToSend);
+      setMessages(prev => {
+        if (prev.find(m => m.id === savedMsg.id)) return prev;
+        return [...prev, savedMsg];
+      });
       setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
 
-      // 2. Trigger mock reply with a typing indicator delay
+      // 2. Mock replies disabled for live multi-device chat testing.
+      // Uncomment this block if you want to chat with simulated friends local-only.
+      /*
       setIsTyping(true);
-      
       triggerMockReply(friend, textToSend, (replyMsg) => {
         setIsTyping(false);
         setMessages(prev => [...prev, replyMsg]);
         setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
       });
-
+      */
     } catch (e) {
       console.error("Error sending message", e);
     }
