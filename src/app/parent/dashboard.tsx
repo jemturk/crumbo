@@ -3,9 +3,11 @@ import { View, Text, StyleSheet, TextInput, TouchableOpacity, SafeAreaView, Scro
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { StorageService, KidProfile } from '@/services/storage';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export default function ParentDashboard() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   
   // State
   const [subscribed, setSubscribed] = useState(false);
@@ -119,7 +121,7 @@ export default function ParentDashboard() {
   return (
     <SafeAreaView style={styles.container}>
       {/* Header */}
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: Platform.OS === 'android' ? (insets.top > 0 ? insets.top + 8 : 44) : 16 }]}>
         <TouchableOpacity style={styles.backButton} onPress={() => router.replace('/')}>
           <Ionicons name="arrow-back" size={24} color="#4E342E" />
           <Text style={styles.backButtonText}>Back to Welcome</Text>

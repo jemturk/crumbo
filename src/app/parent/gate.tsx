@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { View, Text, StyleSheet, TextInput, TouchableOpacity, SafeAreaView, Alert, Platform } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 interface MathQuestion {
   num1: number;
@@ -12,6 +13,7 @@ interface MathQuestion {
 
 export default function ParentGate() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const [question, setQuestion] = useState<MathQuestion | null>(null);
   const [userInput, setUserInput] = useState('');
   const [error, setError] = useState(false);
@@ -60,7 +62,7 @@ export default function ParentGate() {
   return (
     <SafeAreaView style={styles.container}>
       {/* Header */}
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: Platform.OS === 'android' ? (insets.top > 0 ? insets.top + 8 : 40) : 10 }]}>
         <TouchableOpacity style={styles.closeButton} onPress={() => router.back()}>
           <Ionicons name="close-circle" size={36} color="#8D6E63" />
         </TouchableOpacity>

@@ -4,8 +4,11 @@ import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { StorageService, Friend, KidProfile, Message } from '@/services/storage';
 
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+
 export default function ChatDashboard() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
 
   // State
   const [profile, setProfile] = useState<KidProfile | null>(null);
@@ -118,7 +121,7 @@ export default function ChatDashboard() {
   return (
     <SafeAreaView style={styles.container}>
       {/* Custom Header */}
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: Platform.OS === 'android' ? (insets.top > 0 ? insets.top + 8 : 44) : 14 }]}>
         <View style={styles.headerLeft}>
           <Text style={styles.headerAvatar}>🍪</Text>
           <View>

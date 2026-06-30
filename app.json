@@ -15,7 +15,7 @@
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#FFFDF3",
-        "foregroundImage": "./assets/images/logo.png"
+        "foregroundImage": "./assets/images/logo-transparent.png"
       },
       "predictiveBackGestureEnabled": false,
       "package": "com.jemturk.Crumbo"
@@ -38,6 +38,12 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "fe5da923-09c1-4999-b09c-3d2a84c7e368"
+      }
     }
   }
 }

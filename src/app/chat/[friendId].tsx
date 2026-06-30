@@ -9,15 +9,18 @@ import {
   SafeAreaView, 
   KeyboardAvoidingView, 
   Platform, 
-  ActivityIndicator
+  ActivityIndicator,
+  Keyboard
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { StorageService, Message, Friend, triggerMockReply } from '@/services/storage';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export default function ChatScreen() {
   const router = useRouter();
   const { friendId } = useLocalSearchParams<{ friendId: string }>();
+  const insets = useSafeAreaInsets();
 
   // State
   const [friend, setFriend] = useState<Friend | null>(null);
@@ -25,6 +28,30 @@ export default function ChatScreen() {
   const [inputText, setInputText] = useState('');
   const [loading, setLoading] = useState(true);
   const [isTyping, setIsTyping] = useState(false);
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+
+  useEffect(() => {
+    const showSubscription = Keyboard.addListener(
+      Platform.OS === 'android' ? 'keyboardDidShow' : 'keyboardWillShow',
+      (e) => {
+        setKeyboardVisible(true);
+        setKeyboardHeight(e.endCoordinates.height);
+      }
+    );
+    const hideSubscription = Keyboard.addListener(
+      Platform.OS === 'android' ? 'keyboardDidHide' : 'keyboardWillHide',
+      () => {
+        setKeyboardVisible(false);
+        setKeyboardHeight(0);
+      }
+    );
+
+    return () => {
+      showSubscription.remove();
+      hideSubscription.remove();
+    };
+  }, []);
 
   const flatListRef = useRef<FlatList>(null);
 
@@ -114,7 +141,7 @@ export default function ChatScreen() {
   return (
     <SafeAreaView style={styles.container}>
       {/* Header matching requested visual specs */}
-      <View style={styles.header}>
+      <View style={[styles.header, { paddingTop: Platform.OS === 'android' ? (insets.top > 0 ? insets.top + 8 : 44) : 14 }]}>
         <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
           <Ionicons name="arrow-back" size={26} color="#4E342E" />
         </TouchableOpacity>
@@ -130,7 +157,7 @@ export default function ChatScreen() {
 
       {/* Keyboard Avoiding Container */}
       <KeyboardAvoidingView 
-        style={styles.keyboardContainer}
+        style={[styles.keyboardContainer, Platform.OS === 'android' && { paddingBottom: keyboardHeight > 0 ? keyboardHeight + 24 : 0 }]}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
       >
@@ -140,8 +167,10 @@ export default function ChatScreen() {
           data={messages}
           keyExtractor={(item) => item.id}
           renderItem={renderMessageItem}
+          style={{ flex: 1 }}
           contentContainerStyle={styles.messagesList}
           onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
+          onLayout={() => flatListRef.current?.scrollToEnd({ animated: true })}
         />
 
         {/* Typing indicator */}
@@ -152,7 +181,7 @@ export default function ChatScreen() {
         )}
 
         {/* Bottom Input Area */}
-        <View style={styles.inputArea}>
+        <View style={[styles.inputArea, { paddingBottom: Platform.OS === 'android' ? (insets.bottom > 0 && !keyboardVisible ? insets.bottom + 12 : 12) : 12 }]}>
           <View style={styles.inputContainer}>
             <TextInput
               style={styles.textInput}
