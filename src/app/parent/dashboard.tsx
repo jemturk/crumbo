@@ -1,5 +1,18 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, TextInput, TouchableOpacity, SafeAreaView, ScrollView, Alert, Platform } from 'react-native';
+import { 
+  View, 
+  Text, 
+  StyleSheet, 
+  TextInput, 
+  TouchableOpacity, 
+  SafeAreaView, 
+  ScrollView, 
+  Alert, 
+  Platform, 
+  Modal, 
+  Clipboard,
+  ActivityIndicator
+} from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { StorageService, KidProfile } from '@/services/storage';
@@ -12,9 +25,21 @@ export default function ParentDashboard() {
   // State
   const [subscribed, setSubscribed] = useState(false);
   const [emailInput, setEmailInput] = useState('');
-  const [kidNameInput, setKidNameInput] = useState('');
   const [profile, setProfile] = useState<KidProfile | null>(null);
   const [parentEmail, setParentEmail] = useState<string | null>(null);
+  const [kidsList, setKidsList] = useState<KidProfile[]>([]);
+
+  // Accordion Toggles
+  const [childrenExpanded, setChildrenExpanded] = useState(true);
+  const [subscriptionExpanded, setSubscriptionExpanded] = useState(false);
+  const [cacheExpanded, setCacheExpanded] = useState(false);
+
+  // Modals
+  const [friendsModalVisible, setFriendsModalVisible] = useState(false);
+  const [addKidModalVisible, setAddKidModalVisible] = useState(false);
+  const [newKidName, setNewKidName] = useState('');
+  const [selectedKidForLogs, setSelectedKidForLogs] = useState<KidProfile | null>(null);
+  const [syncing, setSyncing] = useState(false);
 
   useEffect(() => {
     loadSettings();
@@ -25,10 +50,12 @@ export default function ParentDashboard() {
       const isSub = await StorageService.isSubscribed();
       const pEmail = await StorageService.getParentEmail();
       const kidProf = await StorageService.getKidProfile();
+      const list = await StorageService.getKidsList();
 
       setSubscribed(isSub);
       setParentEmail(pEmail);
       setProfile(kidProf);
+      setKidsList(list);
 
       if (pEmail) {
         setEmailInput(pEmail);
@@ -36,6 +63,26 @@ export default function ParentDashboard() {
     } catch (e) {
       console.error("Error loading settings", e);
     }
+  };
+
+  const handleLogout = () => {
+    Alert.alert(
+      "Log Out",
+      "Are you sure you want to log out of the Parent Area? Your child's active chat session will remain active.",
+      [
+        { text: "Cancel", style: "cancel" },
+        { 
+          text: "Log Out", 
+          style: "destructive",
+          onPress: async () => {
+            await StorageService.saveParentEmail('');
+            await StorageService.saveParentPassword('');
+            setParentEmail(null);
+            router.replace('/');
+          }
+        }
+      ]
+    );
   };
 
   const handleSubscribe = async () => {
@@ -46,16 +93,28 @@ export default function ParentDashboard() {
     }
 
     try {
-      // Simulate successful payment gateway verification and storage save
+      setSyncing(true);
+      const restored = await StorageService.fetchAndRestoreParentData(trimmedEmail);
+      if (restored) {
+        Alert.alert(
+          "Welcome Back! 🎉", 
+          "We found your existing parent profile. All settings and child data have been restored."
+        );
+        await loadSettings();
+        setSyncing(false);
+        return;
+      }
+
       await StorageService.saveParentEmail(trimmedEmail);
       await StorageService.setSubscribed(true);
-      
       setParentEmail(trimmedEmail);
       setSubscribed(true);
-      
-      Alert.alert("Subscription Active! 🎉", "Welcome to Crumbo. Only this email address has been saved. Your kid's chat environment is now completely unlocked.");
+      await StorageService.syncParentData();
+      setSyncing(false);
+      Alert.alert("Subscription Activated!", "Your Crumbo parental control account is active.");
     } catch (e) {
-      Alert.alert("Error", "Could not complete simulated subscription. Please try again.");
+      setSyncing(false);
+      Alert.alert("Error", "Could not complete registration.");
     }
   };
 
@@ -78,31 +137,147 @@ export default function ParentDashboard() {
     );
   };
 
+  const handleAddChildClick = () => {
+    setNewKidName('');
+    setAddKidModalVisible(true);
+  };
+
   const handleCreateProfile = async () => {
-    const name = kidNameInput.trim();
+    const name = newKidName.trim();
     if (!name) {
-      Alert.alert("Nickname Required", "Please enter a nickname or name for your kid's profile.");
+      Alert.alert("Name Required", "Please enter a nickname for the profile.");
       return;
     }
 
     try {
-      const prof = await StorageService.createKidProfile(name);
-      setProfile(prof);
-      setKidNameInput('');
-      Alert.alert("Profile Created!", `Welcome aboard, ${name}! Your unique cookie code is ready.`);
+      setSyncing(true);
+      await StorageService.createKidProfile(name);
+      setAddKidModalVisible(false);
+      await StorageService.syncParentData();
+      await loadSettings();
+      setSyncing(false);
+      Alert.alert("Profile Created!", `Child profile for ${name} has been added.`);
     } catch (e) {
-      Alert.alert("Error", "Could not create kid profile.");
+      setSyncing(false);
+      Alert.alert("Error", "Could not create child profile.");
+    }
+  };
+
+  const handleDeleteChild = (cookieCode: string, name: string) => {
+    Alert.alert(
+      "Delete Profile?",
+      `Are you sure you want to delete ${name}'s profile? All local chats, buddies, and pairing codes will be deleted permanently.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete Profile",
+          style: "destructive",
+          onPress: async () => {
+            setSyncing(true);
+            await StorageService.deleteKidProfile(cookieCode);
+            await StorageService.syncParentData();
+            await loadSettings();
+            setSyncing(false);
+            Alert.alert("Deleted", "Profile successfully deleted.");
+          }
+        }
+      ]
+    );
+  };
+
+  const handleActivateProfile = async (cookieCode: string, name: string) => {
+    try {
+      setSyncing(true);
+      await StorageService.activateKidProfile(cookieCode);
+      await loadSettings();
+      setSyncing(false);
+      Alert.alert("Profile Activated", `${name} is now the active profile on this device.`);
+    } catch (e) {
+      setSyncing(false);
+      Alert.alert("Error", "Could not activate profile.");
+    }
+  };
+
+  // Lock toggles
+  const handleToggleChat = async (kid: KidProfile) => {
+    const nextChatDisabled = !kid.chatDisabled;
+    let nextCallingDisabled = !!kid.callingDisabled;
+    let nextVideoCallingDisabled = !!kid.videoCallingDisabled;
+
+    if (nextChatDisabled) {
+      // Disabling chat disables voice and video calls too
+      nextCallingDisabled = true;
+      nextVideoCallingDisabled = true;
+    }
+
+    await StorageService.updateKidSettingsForProfile(kid.cookieCode, {
+      chatDisabled: nextChatDisabled,
+      callingDisabled: nextCallingDisabled,
+      videoCallingDisabled: nextVideoCallingDisabled
+    });
+    await StorageService.syncParentData().catch(e => console.error(e));
+    await loadSettings();
+  };
+
+  const handleToggleCalling = async (kid: KidProfile) => {
+    const nextCallingDisabled = !kid.callingDisabled;
+    let nextChatDisabled = !!kid.chatDisabled;
+    let nextVideoCallingDisabled = !!kid.videoCallingDisabled;
+
+    if (nextCallingDisabled) {
+      // Disabling voice calls disables video calls too
+      nextVideoCallingDisabled = true;
+    } else {
+      // Enabling voice calls enables chat too
+      nextChatDisabled = false;
+    }
+
+    await StorageService.updateKidSettingsForProfile(kid.cookieCode, {
+      chatDisabled: nextChatDisabled,
+      callingDisabled: nextCallingDisabled,
+      videoCallingDisabled: nextVideoCallingDisabled
+    });
+    await StorageService.syncParentData().catch(e => console.error(e));
+    await loadSettings();
+  };
+
+  const handleToggleVideo = async (kid: KidProfile) => {
+    const nextVideoCallingDisabled = !kid.videoCallingDisabled;
+    let nextChatDisabled = !!kid.chatDisabled;
+    let nextCallingDisabled = !!kid.callingDisabled;
+
+    if (!nextVideoCallingDisabled) {
+      // Enabling video calls enables voice calls and chat too
+      nextCallingDisabled = false;
+      nextChatDisabled = false;
+    }
+
+    await StorageService.updateKidSettingsForProfile(kid.cookieCode, {
+      chatDisabled: nextChatDisabled,
+      callingDisabled: nextCallingDisabled,
+      videoCallingDisabled: nextVideoCallingDisabled
+    });
+    await StorageService.syncParentData().catch(e => console.error(e));
+    await loadSettings();
+  };
+
+  const copyToClipboard = (code: string) => {
+    try {
+      Clipboard.setString(code);
+      Alert.alert("Copied! 📋", "Pairing code copied to clipboard.");
+    } catch (e) {
+      Alert.alert("Pairing Code", code);
     }
   };
 
   const handleResetApp = async () => {
     Alert.alert(
-      "Reset App?",
-      "This will erase ALL local profiles, friends list, and messaging histories. This action cannot be undone.",
+      "Erase All Data?",
+      "This will erase ALL local profiles, friends, and messaging histories. This action cannot be undone.",
       [
         { text: "Cancel", style: "cancel" },
         {
-          text: "Reset Everything",
+          text: "Erase Everything",
           style: "destructive",
           onPress: async () => {
             await StorageService.clearAll();
@@ -110,8 +285,8 @@ export default function ParentDashboard() {
             setParentEmail(null);
             setProfile(null);
             setEmailInput('');
-            setKidNameInput('');
-            Alert.alert("Reset Completed", "All local data has been successfully deleted.");
+            setKidsList([]);
+            Alert.alert("Reset Completed", "All data successfully cleared.");
           }
         }
       ]
@@ -120,131 +295,315 @@ export default function ParentDashboard() {
 
   return (
     <SafeAreaView style={styles.container}>
-      {/* Header */}
+      {/* Header matching exact layout specs */}
       <View style={[styles.header, { paddingTop: Platform.OS === 'android' ? (insets.top > 0 ? insets.top + 8 : 44) : 16 }]}>
-        <TouchableOpacity style={styles.backButton} onPress={() => router.replace('/')}>
-          <Ionicons name="arrow-back" size={24} color="#4E342E" />
-          <Text style={styles.backButtonText}>Back to Welcome</Text>
+        <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
+          <Ionicons name="log-out-outline" size={22} color="#D32F2F" />
+          <Text style={styles.logoutButtonText}>Log Out</Text>
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Parent Controls</Text>
+        
+        <Text style={styles.headerTitle}>Parent Area</Text>
       </View>
 
       <ScrollView contentContainerStyle={styles.scrollContent}>
         
-        {/* Card 1: Subscription Status */}
+        {/* Accordion 1: Managed Children */}
         <View style={styles.card}>
-          <View style={styles.cardHeader}>
-            <Ionicons name="card" size={24} color="#D4A373" style={styles.cardIcon} />
-            <Text style={styles.cardTitle}>Subscription & Email</Text>
-          </View>
-          
-          {!subscribed ? (
-            <View>
-              <Text style={styles.infoText}>
-                Crumbo is ad-free and does not monetize or track kids. To cover operating costs and maintain privacy, we require a subscription of **$4.99/month**.
-              </Text>
-              
-              <Text style={styles.label}>Parent Email Address</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="parent@example.com"
-                placeholderTextColor="#A1887F"
-                keyboardType="email-address"
-                autoCapitalize="none"
-                value={emailInput}
-                onChangeText={setEmailInput}
-              />
-              
-              <TouchableOpacity style={styles.subscribeButton} onPress={handleSubscribe}>
-                <Text style={styles.subscribeButtonText}>Subscribe Now - $4.99/mo</Text>
-              </TouchableOpacity>
-              
-              <Text style={styles.privacyGuarantee}>
-                🔒 Privacy Guarantee: This email is the *only* piece of information saved on our servers. No kid data is ever collected.
-              </Text>
+          <TouchableOpacity 
+            style={styles.cardHeader} 
+            onPress={() => setChildrenExpanded(!childrenExpanded)}
+            activeOpacity={0.7}
+          >
+            <View style={styles.cardHeaderLeft}>
+              <Ionicons name="people-outline" size={24} color="#D4A373" style={styles.cardIcon} />
+              <Text style={styles.cardTitle}>Managed Children</Text>
             </View>
-          ) : (
-            <View>
-              <View style={styles.statusBadge}>
-                <Ionicons name="checkmark-circle" size={18} color="#2E7D32" />
-                <Text style={styles.statusBadgeText}>Active Subscription</Text>
-              </View>
-              
-              <Text style={styles.label}>Registered Email</Text>
-              <Text style={styles.emailValue}>{parentEmail}</Text>
+            <Ionicons 
+              name={childrenExpanded ? "chevron-up" : "chevron-down"} 
+              size={20} 
+              color="#A1887F" 
+            />
+          </TouchableOpacity>
 
-              <TouchableOpacity style={styles.cancelButton} onPress={handleCancelSubscription}>
-                <Text style={styles.cancelButtonText}>Cancel Subscription</Text>
+          {childrenExpanded && (
+            <View style={styles.cardBody}>
+              {kidsList.length > 0 ? (
+                kidsList.map((kid) => {
+                  const isActiveOnDevice = profile?.cookieCode === kid.cookieCode;
+                  return (
+                    <View key={kid.cookieCode} style={styles.childContainer}>
+                      {/* Name, Active Status Badge, and Delete Row */}
+                      <View style={styles.childMetaRow}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                          <Text style={styles.childName}>{kid.name}</Text>
+                          {isActiveOnDevice ? (
+                            <View style={styles.activeDeviceBadge}>
+                              <Text style={styles.activeDeviceBadgeText}>Active</Text>
+                            </View>
+                          ) : (
+                            <TouchableOpacity 
+                              style={styles.activateDeviceBtn} 
+                              onPress={() => handleActivateProfile(kid.cookieCode, kid.name)}
+                            >
+                              <Text style={styles.activateDeviceBtnText}>Use Profile</Text>
+                            </TouchableOpacity>
+                          )}
+                        </View>
+                        <TouchableOpacity style={styles.deleteChildBtn} onPress={() => handleDeleteChild(kid.cookieCode, kid.name)}>
+                          <Ionicons name="trash" size={18} color="#D32F2F" />
+                        </TouchableOpacity>
+                      </View>
+
+                      {/* Pairing Code Pill and QR */}
+                      <View style={styles.codeRow}>
+                        <TouchableOpacity style={styles.codePill} onPress={() => copyToClipboard(kid.cookieCode)} activeOpacity={0.7}>
+                          <Text style={styles.codeText}>{kid.cookieCode}</Text>
+                          <Ionicons name="copy-outline" size={14} color="#8D6E63" />
+                        </TouchableOpacity>
+                        
+                        <TouchableOpacity style={styles.qrBtn}>
+                          <Ionicons name="qr-code-outline" size={16} color="#8D6E63" />
+                        </TouchableOpacity>
+                      </View>
+
+                      {/* Locks & Controls Row */}
+                      <View style={styles.controlsRow}>
+                        <View style={styles.togglesGroup}>
+                          {/* Chat Toggle */}
+                          <TouchableOpacity 
+                            style={[styles.toggleCircle, kid.chatDisabled ? styles.toggleRedBg : styles.toggleGreenBg]}
+                            onPress={() => handleToggleChat(kid)}
+                            activeOpacity={0.8}
+                          >
+                            <Ionicons name="chatbubble" size={20} color="#FFFFFF" />
+                            {kid.chatDisabled && <View style={styles.slashOverlay} />}
+                          </TouchableOpacity>
+
+                          {/* Voice Call Toggle */}
+                          <TouchableOpacity 
+                            style={[styles.toggleCircle, kid.callingDisabled ? styles.toggleRedBg : styles.toggleGreenBg]}
+                            onPress={() => handleToggleCalling(kid)}
+                            activeOpacity={0.8}
+                          >
+                            <Ionicons name="call" size={20} color="#FFFFFF" />
+                            {kid.callingDisabled && <View style={styles.slashOverlay} />}
+                          </TouchableOpacity>
+
+                          {/* Video Call Toggle */}
+                          <TouchableOpacity 
+                            style={[styles.toggleCircle, kid.videoCallingDisabled ? styles.toggleRedBg : styles.toggleGreenBg]}
+                            onPress={() => handleToggleVideo(kid)}
+                            activeOpacity={0.8}
+                          >
+                            <Ionicons name="videocam" size={20} color="#FFFFFF" />
+                            {kid.videoCallingDisabled && <View style={styles.slashOverlay} />}
+                          </TouchableOpacity>
+                        </View>
+
+                        {/* Friends and Logs Button */}
+                        <TouchableOpacity 
+                          style={styles.friendsLogsBtn} 
+                          onPress={() => {
+                            setSelectedKidForLogs(kid);
+                            setFriendsModalVisible(true);
+                          }}
+                        >
+                          <Text style={styles.friendsLogsBtnText}>Friends & Logs</Text>
+                          <Ionicons name="chevron-forward" size={14} color="#8D6E63" />
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  );
+                })
+              ) : (
+                <Text style={styles.noChildrenText}>No children paired on this device yet.</Text>
+              )}
+
+              {/* Add Child Profile Button */}
+              <TouchableOpacity style={styles.addChildBtn} onPress={handleAddChildClick}>
+                <Ionicons name="add" size={18} color="#8D6E63" />
+                <Text style={styles.addChildBtnText}>Add Child Profile</Text>
               </TouchableOpacity>
             </View>
           )}
         </View>
 
-        {/* Card 2: Kid Profile Management */}
-        {subscribed && (
-          <View style={styles.card}>
-            <View style={styles.cardHeader}>
-              <Ionicons name="happy" size={24} color="#D4A373" style={styles.cardIcon} />
-              <Text style={styles.cardTitle}>Kid Profile</Text>
-            </View>
-
-            {!profile ? (
-              <View>
-                <Text style={styles.infoText}>
-                  Set up a local nickname for your child. This name is stored **only on this device** and is never collected on the server.
-                </Text>
-                
-                <Text style={styles.label}>Child's Nickname</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="e.g. Alex"
-                  placeholderTextColor="#A1887F"
-                  value={kidNameInput}
-                  onChangeText={setKidNameInput}
-                />
-                
-                <TouchableOpacity style={styles.createButton} onPress={handleCreateProfile}>
-                  <Text style={styles.createButtonText}>Create Local Profile</Text>
-                </TouchableOpacity>
-              </View>
-            ) : (
-              <View>
-                <View style={styles.profileBadge}>
-                  <Text style={styles.profileAvatar}>🍪</Text>
-                  <View>
-                    <Text style={styles.profileName}>{profile.name}</Text>
-                    <Text style={styles.profileStatus}>Active Profile</Text>
-                  </View>
-                </View>
-
-                <View style={styles.codeContainer}>
-                  <Text style={styles.codeLabel}>Child's Anonymous pairing Code:</Text>
-                  <Text style={styles.codeValue}>{profile.cookieCode}</Text>
-                  <Text style={styles.codeInstructions}>
-                    Share this code with your kid's friends so they can add each other. This is an anonymous identifier.
-                  </Text>
-                </View>
-              </View>
-            )}
-          </View>
-        )}
-
-        {/* Card 3: Storage & Diagnostics */}
+        {/* Accordion 2: Subscription Settings */}
         <View style={styles.card}>
-          <View style={styles.cardHeader}>
-            <Ionicons name="shield-checkmark" size={24} color="#D4A373" style={styles.cardIcon} />
-            <Text style={styles.cardTitle}>Privacy & Device Data</Text>
-          </View>
-          <Text style={styles.infoText}>
-            All messages, chat histories, friend names, and child information are stored strictly inside this device's local database. Our servers only route transient, encrypted message packages without logging them.
-          </Text>
-          
-          <TouchableOpacity style={styles.dangerButton} onPress={handleResetApp}>
-            <Text style={styles.dangerButtonText}>Erase All Local Data</Text>
+          <TouchableOpacity 
+            style={styles.cardHeader} 
+            onPress={() => setSubscriptionExpanded(!subscriptionExpanded)}
+            activeOpacity={0.7}
+          >
+            <View style={styles.cardHeaderLeft}>
+              <Ionicons name="card-outline" size={24} color="#D4A373" style={styles.cardIcon} />
+              <Text style={styles.cardTitle}>Subscription Settings</Text>
+            </View>
+            <Ionicons 
+              name={subscriptionExpanded ? "chevron-up" : "chevron-down"} 
+              size={20} 
+              color="#A1887F" 
+            />
           </TouchableOpacity>
+
+          {subscriptionExpanded && (
+            <View style={styles.cardBodyPadding}>
+              {!subscribed ? (
+                <View>
+                  <Text style={styles.infoText}>
+                    Crumbo requires a simulation subscription to cover hosting and keep messaging ad-free and tracking-free.
+                  </Text>
+                  <Text style={styles.inputLabel}>Parent Email Address</Text>
+                  <TextInput
+                    style={styles.textInput}
+                    placeholder="parent@example.com"
+                    placeholderTextColor="#A1887F"
+                    keyboardType="email-address"
+                    autoCapitalize="none"
+                    value={emailInput}
+                    onChangeText={setEmailInput}
+                  />
+                  <TouchableOpacity style={styles.actionBtnPrimary} onPress={handleSubscribe} disabled={syncing}>
+                    {syncing ? (
+                      <ActivityIndicator color="#4E342E" />
+                    ) : (
+                      <Text style={styles.actionBtnPrimaryText}>Subscribe Now - $4.99/mo</Text>
+                    )}
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <View>
+                  <View style={styles.activeSubBadge}>
+                    <Ionicons name="checkmark-circle" size={18} color="#2E7D32" />
+                    <Text style={styles.activeSubText}>Active Subscription</Text>
+                  </View>
+                  <Text style={styles.inputLabel}>Registered Email</Text>
+                  <Text style={styles.emailDisplay}>{parentEmail}</Text>
+                  
+                  <TouchableOpacity style={styles.actionBtnSecondary} onPress={handleCancelSubscription}>
+                    <Text style={styles.actionBtnSecondaryText}>Cancel Subscription</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+            </View>
+          )}
         </View>
 
+        {/* Accordion 3: Local Device Cache */}
+        <View style={styles.card}>
+          <TouchableOpacity 
+            style={styles.cardHeader} 
+            onPress={() => setCacheExpanded(!cacheExpanded)}
+            activeOpacity={0.7}
+          >
+            <View style={styles.cardHeaderLeft}>
+              <Ionicons name="trash-outline" size={24} color="#D4A373" style={styles.cardIcon} />
+              <Text style={styles.cardTitle}>Local Device Cache</Text>
+            </View>
+            <Ionicons 
+              name={cacheExpanded ? "chevron-up" : "chevron-down"} 
+              size={20} 
+              color="#A1887F" 
+            />
+          </TouchableOpacity>
+
+          {cacheExpanded && (
+            <View style={styles.cardBodyPadding}>
+              <Text style={styles.infoText}>
+                Erase local cookies, pairing profiles, messaging history, and cached media on this local device. This action cannot be undone.
+              </Text>
+              <TouchableOpacity style={styles.actionBtnSecondary} onPress={handleResetApp}>
+                <Text style={styles.actionBtnSecondaryText}>Erase All Local Data</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+        </View>
       </ScrollView>
+
+      {/* Friends & Logs Modal */}
+      <Modal
+        animationType="slide"
+        transparent={true}
+        visible={friendsModalVisible}
+        onRequestClose={() => setFriendsModalVisible(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Buddies & Logs</Text>
+              <TouchableOpacity onPress={() => setFriendsModalVisible(false)}>
+                <Ionicons name="close-circle" size={28} color="#8D6E63" />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView contentContainerStyle={styles.modalScroll}>
+              {(!selectedKidForLogs || !selectedKidForLogs.friends || selectedKidForLogs.friends.length === 0) ? (
+                <Text style={styles.noFriendsText}>No friends added yet. Share your child's pairing code to connect!</Text>
+              ) : (
+                selectedKidForLogs.friends.map((friend: any) => (
+                  <View key={friend.id} style={styles.friendRow}>
+                    <View style={styles.friendAvatar}>
+                      <Text style={styles.friendAvatarEmoji}>{friend.avatarEmoji || '🍪'}</Text>
+                    </View>
+                    <View style={styles.friendInfo}>
+                      <Text style={styles.friendNameText}>{friend.name}</Text>
+                      <Text style={styles.friendCodeText}>{friend.cookieCode}</Text>
+                    </View>
+                    <View style={styles.friendLogBadge}>
+                      <Text style={styles.friendLogBadgeText}>Active</Text>
+                    </View>
+                  </View>
+                ))
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Add Child Nickname Modal */}
+      <Modal
+        animationType="fade"
+        transparent={true}
+        visible={addKidModalVisible}
+        onRequestClose={() => setAddKidModalVisible(false)}
+      >
+        <View style={styles.modalOverlayCentered}>
+          <View style={styles.modalDialog}>
+            <Text style={styles.dialogTitle}>Add Child Profile</Text>
+            
+            <Text style={styles.dialogLabel}>Enter child's name or nickname:</Text>
+            <TextInput
+              style={styles.dialogInput}
+              placeholder="e.g. Cem"
+              placeholderTextColor="#A1887F"
+              value={newKidName}
+              onChangeText={setNewKidName}
+              autoFocus={true}
+            />
+
+            <View style={styles.dialogButtons}>
+              <TouchableOpacity 
+                style={styles.dialogBtnCancel} 
+                onPress={() => setAddKidModalVisible(false)}
+              >
+                <Text style={styles.dialogBtnCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity 
+                style={styles.dialogBtnCreate} 
+                onPress={handleCreateProfile}
+                disabled={syncing}
+              >
+                {syncing ? (
+                  <ActivityIndicator color="#FFFFFF" />
+                ) : (
+                  <Text style={styles.dialogBtnCreateText}>Create</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -261,19 +620,18 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingVertical: 16,
     borderBottomWidth: 1,
-    borderColor: '#FFF5D1',
+    borderColor: '#FFFDF0',
     backgroundColor: '#FFFFFF',
-    paddingTop: Platform.OS === 'android' ? 44 : 16,
   },
-  backButton: {
+  logoutButton: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
   },
-  backButtonText: {
+  logoutButtonText: {
     fontSize: 14,
-    fontWeight: '700',
-    color: '#4E342E',
+    fontWeight: '800',
+    color: '#D32F2F',
   },
   headerTitle: {
     fontSize: 18,
@@ -281,34 +639,178 @@ const styles = StyleSheet.create({
     color: '#4E342E',
   },
   scrollContent: {
-    padding: 20,
-    gap: 20,
+    padding: 16,
+    gap: 16,
     paddingBottom: 40,
   },
   card: {
     backgroundColor: '#FFFFFF',
     borderRadius: 24,
-    padding: 20,
     shadowColor: '#8D6E63',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.08,
+    shadowOpacity: 0.06,
     shadowRadius: 8,
     elevation: 2,
     borderWidth: 1,
-    borderColor: '#FFF5D1',
+    borderColor: '#FFFDF0',
+    overflow: 'hidden',
   },
   cardHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 16,
+    justifyContent: 'space-between',
+    padding: 20,
+  },
+  cardHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   cardIcon: {
-    marginRight: 10,
+    marginRight: 12,
   },
   cardTitle: {
-    fontSize: 18,
+    fontSize: 17,
     fontWeight: '800',
     color: '#4E342E',
+  },
+  cardBody: {
+    borderTopWidth: 1,
+    borderColor: '#FFFDF0',
+    padding: 20,
+  },
+  cardBodyPadding: {
+    paddingHorizontal: 20,
+    paddingBottom: 24,
+  },
+  noChildrenText: {
+    fontSize: 14,
+    color: '#8D6E63',
+    fontWeight: '600',
+    textAlign: 'center',
+    marginVertical: 16,
+  },
+  childContainer: {
+    backgroundColor: '#FFFDF8',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#FFEFC0',
+    padding: 16,
+    marginBottom: 16,
+  },
+  childMetaRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  childName: {
+    fontSize: 20,
+    fontWeight: '900',
+    color: '#4E342E',
+  },
+  deleteChildBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#FFEBEE',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  codeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 16,
+  },
+  codePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFDE7',
+    borderWidth: 1,
+    borderColor: '#FFD54F',
+    borderRadius: 12,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    gap: 6,
+  },
+  codeText: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#8D6E63',
+  },
+  qrBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#FFEFC0',
+    backgroundColor: '#FFFDF5',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  controlsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  togglesGroup: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  toggleCircle: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    justifyContent: 'center',
+    alignItems: 'center',
+    position: 'relative',
+    overflow: 'hidden',
+  },
+  toggleGreenBg: {
+    backgroundColor: '#2E7D32',
+  },
+  toggleRedBg: {
+    backgroundColor: '#D32F2F',
+  },
+  slashOverlay: {
+    position: 'absolute',
+    width: '75%',
+    height: 2,
+    backgroundColor: '#FFFFFF',
+    transform: [{ rotate: '-45deg' }],
+  },
+  friendsLogsBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFDF5',
+    borderWidth: 1,
+    borderColor: '#FFEFC0',
+    borderRadius: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    gap: 4,
+  },
+  friendsLogsBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#8D6E63',
+  },
+  addChildBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderColor: '#D4A373',
+    borderRadius: 16,
+    paddingVertical: 14,
+    gap: 6,
+    backgroundColor: '#FFFDF5',
+  },
+  addChildBtnText: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#8D6E63',
   },
   infoText: {
     fontSize: 14,
@@ -317,51 +819,38 @@ const styles = StyleSheet.create({
     marginBottom: 16,
     fontWeight: '500',
   },
-  label: {
-    fontSize: 13,
-    fontWeight: '700',
+  inputLabel: {
+    fontSize: 11,
+    fontWeight: '800',
     color: '#8D6E63',
-    marginBottom: 8,
     textTransform: 'uppercase',
+    marginBottom: 6,
   },
-  input: {
+  textInput: {
     backgroundColor: '#FFFDF5',
     borderWidth: 2,
     borderColor: '#FFEFC0',
     borderRadius: 16,
-    height: 52,
+    height: 50,
     paddingHorizontal: 16,
-    fontSize: 16,
+    fontSize: 15,
     color: '#4E342E',
     fontWeight: '600',
-    marginBottom: 16,
+    marginBottom: 14,
   },
-  subscribeButton: {
+  actionBtnPrimary: {
     backgroundColor: '#FFC93C',
     borderRadius: 16,
-    height: 54,
+    height: 50,
     justifyContent: 'center',
     alignItems: 'center',
-    shadowColor: '#FFC93C',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
-    elevation: 2,
   },
-  subscribeButtonText: {
-    fontSize: 16,
+  actionBtnPrimaryText: {
+    fontSize: 15,
     fontWeight: '800',
     color: '#4E342E',
   },
-  privacyGuarantee: {
-    fontSize: 11,
-    color: '#A1887F',
-    textAlign: 'center',
-    marginTop: 12,
-    lineHeight: 16,
-    fontWeight: '600',
-  },
-  statusBadge: {
+  activeSubBadge: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
@@ -370,109 +859,212 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     borderRadius: 20,
     alignSelf: 'flex-start',
-    marginBottom: 16,
+    marginBottom: 14,
   },
-  statusBadgeText: {
+  activeSubText: {
     fontSize: 12,
     color: '#2E7D32',
     fontWeight: '800',
   },
-  emailValue: {
-    fontSize: 18,
+  emailDisplay: {
+    fontSize: 16,
     fontWeight: '700',
     color: '#4E342E',
-    marginBottom: 20,
+    marginBottom: 18,
   },
-  cancelButton: {
-    borderWidth: 2,
+  actionBtnSecondary: {
+    borderWidth: 1.5,
     borderColor: '#E57373',
     borderRadius: 16,
-    height: 50,
+    height: 48,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  cancelButtonText: {
+  actionBtnSecondaryText: {
     fontSize: 14,
     fontWeight: '800',
     color: '#D32F2F',
   },
-  createButton: {
-    backgroundColor: '#4E342E',
+  // Modal layout
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(78, 52, 46, 0.4)',
+    justifyContent: 'flex-end',
+  },
+  modalContent: {
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    maxHeight: '80%',
+    padding: 24,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  modalTitle: {
+    fontSize: 22,
+    fontWeight: '900',
+    color: '#4E342E',
+  },
+  modalScroll: {
+    gap: 14,
+    paddingBottom: 40,
+  },
+  noFriendsText: {
+    fontSize: 14,
+    color: '#8D6E63',
+    textAlign: 'center',
+    lineHeight: 20,
+    marginVertical: 32,
+    fontWeight: '600',
+  },
+  friendRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFDF8',
     borderRadius: 16,
-    height: 52,
+    borderWidth: 1,
+    borderColor: '#FFEFC0',
+    padding: 12,
+    gap: 12,
+  },
+  friendAvatar: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 2,
+    borderColor: '#FFEFC0',
     justifyContent: 'center',
     alignItems: 'center',
   },
-  createButtonText: {
+  friendAvatarEmoji: {
+    fontSize: 24,
+  },
+  friendInfo: {
+    flex: 1,
+  },
+  friendNameText: {
     fontSize: 16,
     fontWeight: '800',
-    color: '#FFFFFF',
+    color: '#4E342E',
   },
-  profileBadge: {
-    flexDirection: 'row',
+  friendCodeText: {
+    fontSize: 12,
+    color: '#8D6E63',
+    fontWeight: '600',
+    marginTop: 2,
+  },
+  friendLogBadge: {
+    backgroundColor: '#E8F5E9',
+    borderRadius: 12,
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+  },
+  friendLogBadgeText: {
+    fontSize: 11,
+    color: '#2E7D32',
+    fontWeight: '800',
+  },
+  // Centered Dialog
+  modalOverlayCentered: {
+    flex: 1,
+    backgroundColor: 'rgba(78, 52, 46, 0.4)',
+    justifyContent: 'center',
     alignItems: 'center',
-    gap: 16,
-    backgroundColor: '#FFFDF5',
-    padding: 16,
-    borderRadius: 20,
-    borderWidth: 2,
-    borderColor: '#FFEFC0',
-    marginBottom: 20,
+    padding: 20,
   },
-  profileAvatar: {
-    fontSize: 36,
+  modalDialog: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 24,
+    width: '100%',
+    padding: 24,
+    shadowColor: '#8D6E63',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.12,
+    shadowRadius: 12,
+    elevation: 4,
   },
-  profileName: {
+  dialogTitle: {
     fontSize: 20,
     fontWeight: '900',
     color: '#4E342E',
+    marginBottom: 16,
   },
-  profileStatus: {
-    fontSize: 12,
-    color: '#8D6E63',
+  dialogLabel: {
+    fontSize: 14,
     fontWeight: '700',
-  },
-  codeContainer: {
-    backgroundColor: '#FFFDF5',
-    borderRadius: 20,
-    padding: 16,
-    borderWidth: 2,
-    borderColor: '#FFD966',
-    alignItems: 'center',
-  },
-  codeLabel: {
-    fontSize: 12,
-    fontWeight: '800',
     color: '#8D6E63',
-    textTransform: 'uppercase',
-    marginBottom: 6,
-  },
-  codeValue: {
-    fontSize: 28,
-    fontWeight: '900',
-    color: '#4E342E',
-    letterSpacing: 2,
     marginBottom: 8,
   },
-  codeInstructions: {
-    fontSize: 11,
-    color: '#795548',
-    textAlign: 'center',
-    lineHeight: 16,
-    fontWeight: '600',
-  },
-  dangerButton: {
+  dialogInput: {
+    backgroundColor: '#FFFDF5',
     borderWidth: 2,
     borderColor: '#FFEFC0',
     borderRadius: 16,
     height: 50,
+    paddingHorizontal: 16,
+    fontSize: 16,
+    color: '#4E342E',
+    fontWeight: '600',
+    marginBottom: 20,
+  },
+  dialogButtons: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  dialogBtnCancel: {
+    flex: 1,
+    height: 48,
+    borderWidth: 1.5,
+    borderColor: '#FFEFC0',
+    borderRadius: 16,
     justifyContent: 'center',
     alignItems: 'center',
-    marginTop: 8,
   },
-  dangerButtonText: {
+  dialogBtnCancelText: {
     fontSize: 14,
     fontWeight: '800',
-    color: '#795548',
+    color: '#8D6E63',
+  },
+  dialogBtnCreate: {
+    flex: 1,
+    height: 48,
+    backgroundColor: '#FFC93C',
+    borderRadius: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  dialogBtnCreateText: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#4E342E',
+  },
+  activeDeviceBadge: {
+    backgroundColor: '#E8F5E9',
+    borderRadius: 8,
+    paddingVertical: 2,
+    paddingHorizontal: 8,
+  },
+  activeDeviceBadgeText: {
+    fontSize: 11,
+    color: '#2E7D32',
+    fontWeight: '800',
+  },
+  activateDeviceBtn: {
+    backgroundColor: '#FFF8E1',
+    borderWidth: 1,
+    borderColor: '#FFD54F',
+    borderRadius: 8,
+    paddingVertical: 2,
+    paddingHorizontal: 8,
+  },
+  activateDeviceBtnText: {
+    fontSize: 11,
+    color: '#F57F17',
+    fontWeight: '800',
   },
 });

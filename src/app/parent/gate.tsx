@@ -1,63 +1,143 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, TextInput, TouchableOpacity, SafeAreaView, Alert, Platform } from 'react-native';
+import { View, Text, StyleSheet, TextInput, TouchableOpacity, SafeAreaView, Alert, Platform, ActivityIndicator } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-
-interface MathQuestion {
-  num1: number;
-  num2: number;
-  operation: '+' | 'x';
-  answer: number;
-}
+import { StorageService } from '@/services/storage';
+import { supabase } from '@/services/supabase';
 
 export default function ParentGate() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const [question, setQuestion] = useState<MathQuestion | null>(null);
-  const [userInput, setUserInput] = useState('');
+  
+  // Mode: 'signin' | 'register'
+  const [mode, setMode] = useState<'signin' | 'register'>('signin');
+  
+  const [emailInput, setEmailInput] = useState('');
+  const [passwordInput, setPasswordInput] = useState('');
+  const [confirmInput, setConfirmInput] = useState('');
+  
   const [error, setError] = useState(false);
+  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    generateQuestion();
+    prefillEmail();
   }, []);
 
-  const generateQuestion = () => {
-    const isMultiplication = Math.random() > 0.5;
-    let num1, num2, answer;
-    let operation: '+' | 'x' = isMultiplication ? 'x' : '+';
+  const prefillEmail = async () => {
+    try {
+      const email = await StorageService.getParentEmail();
+      if (email) {
+        setEmailInput(email);
+      }
+    } catch (e) {
+      console.error("Error prefilling email", e);
+    }
+  };
 
-    if (isMultiplication) {
-      num1 = Math.floor(3 + Math.random() * 7); // 3 to 9
-      num2 = Math.floor(3 + Math.random() * 7); // 3 to 9
-      answer = num1 * num2;
-    } else {
-      num1 = Math.floor(20 + Math.random() * 40); // 20 to 59
-      num2 = Math.floor(20 + Math.random() * 40); // 20 to 59
-      answer = num1 + num2;
+  const handleSignIn = async () => {
+    const email = emailInput.trim().toLowerCase();
+    const pwd = passwordInput.trim();
+
+    if (!email || !email.includes('@')) {
+      Alert.alert("Invalid Email", "Please enter a valid parent email address.");
+      return;
+    }
+    if (!pwd) {
+      Alert.alert("Password Required", "Please enter your password.");
+      return;
     }
 
-    setQuestion({ num1, num2, operation, answer });
-    setUserInput('');
+    setLoading(true);
     setError(false);
-  };
 
-  const handleVerify = () => {
-    if (!question) return;
+    try {
+      const { data, error: fetchError } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('cookie_code', `PARENT:${email}`)
+        .single();
 
-    const parsedAnswer = parseInt(userInput.trim(), 10);
-    if (parsedAnswer === question.answer) {
-      // Correct! Route to Parent Dashboard
-      router.replace('/parent/dashboard');
-    } else {
-      setError(true);
-      setUserInput('');
-      // Vibrate or show hint
-      Alert.alert("Oops!", "That answer is not correct. Parents only! Ask your mom or dad for help.");
+      if (fetchError || !data || !data.push_token) {
+        setLoading(false);
+        setError(true);
+        Alert.alert("Account Not Found", "No account found with this email. Please register first.");
+        return;
+      }
+
+      const payload = JSON.parse(data.push_token);
+      
+      if (payload.parentPassword === pwd) {
+        // Correct password! Call restore helper to pull profile
+        await StorageService.fetchAndRestoreParentData(email);
+        await StorageService.saveParentPassword(pwd);
+
+        setLoading(false);
+        router.replace('/parent/dashboard');
+      } else {
+        setLoading(false);
+        setError(true);
+        setPasswordInput('');
+        Alert.alert("Access Denied", "Incorrect password. Please try again.");
+      }
+    } catch (e) {
+      setLoading(false);
+      Alert.alert("Connection Error", "Could not connect to the database. Please check your network.");
     }
   };
 
-  if (!question) return null;
+  const handleRegister = async () => {
+    const email = emailInput.trim().toLowerCase();
+    const pwd = passwordInput.trim();
+    const confirm = confirmInput.trim();
+
+    if (!email || !email.includes('@')) {
+      Alert.alert("Invalid Email", "Please enter a valid parent email address.");
+      return;
+    }
+    if (pwd.length < 4) {
+      Alert.alert("Weak Password", "Please set a password of at least 4 characters.");
+      return;
+    }
+    if (pwd !== confirm) {
+      Alert.alert("Passwords Match", "The passwords you entered do not match. Please try again.");
+      return;
+    }
+
+    setLoading(true);
+    setError(false);
+
+    try {
+      // Check if email already exists in Supabase
+      const { data } = await supabase
+        .from('profiles')
+        .select('cookie_code')
+        .eq('cookie_code', `PARENT:${email}`)
+        .single();
+
+      if (data) {
+        setLoading(false);
+        Alert.alert("Account Exists", "An account with this email already exists. Please sign in.");
+        setMode('signin');
+        return;
+      }
+
+      // Save credentials locally
+      await StorageService.saveParentEmail(email);
+      await StorageService.saveParentPassword(pwd);
+      await StorageService.setSubscribed(true); // Default active status on register
+
+      // Sync settings to Supabase
+      await StorageService.syncParentData();
+
+      setLoading(false);
+      Alert.alert("Registration Complete! 🔒", "Your parent account and subscription are now active.");
+      router.replace('/parent/dashboard');
+    } catch (e) {
+      setLoading(false);
+      Alert.alert("Error", "Could not complete registration. Please check your connection.");
+    }
+  };
 
   return (
     <SafeAreaView style={styles.container}>
@@ -73,39 +153,106 @@ export default function ParentGate() {
           <Text style={styles.lockIcon}>🔒</Text>
         </View>
 
-        <Text style={styles.title}>Parents Only!</Text>
+        <Text style={styles.title}>Parent Controls</Text>
+        
         <Text style={styles.subtitle}>
-          Please solve this simple problem to verify you are a parent:
+          Sign in or register to manage controls, buddy requests, and limits.
         </Text>
 
-        {/* Question Area */}
-        <View style={styles.equationContainer}>
-          <Text style={styles.equationText}>
-            {question.num1} {question.operation === 'x' ? '×' : '+'} {question.num2} = ?
-          </Text>
+        {/* Tab Selection */}
+        <View style={styles.tabContainer}>
+          <TouchableOpacity 
+            style={[styles.tabButton, mode === 'signin' ? styles.tabButtonActive : styles.tabButtonInactive]} 
+            onPress={() => { setMode('signin'); setError(false); }}
+          >
+            <Text style={[styles.tabText, mode === 'signin' ? styles.tabTextActive : styles.tabTextInactive]}>Sign In</Text>
+          </TouchableOpacity>
+          
+          <TouchableOpacity 
+            style={[styles.tabButton, mode === 'register' ? styles.tabButtonActive : styles.tabButtonInactive]} 
+            onPress={() => { setMode('register'); setError(false); }}
+          >
+            <Text style={[styles.tabText, mode === 'register' ? styles.tabTextActive : styles.tabTextInactive]}>Register</Text>
+          </TouchableOpacity>
         </View>
 
-        {/* Answer Input */}
-        <TextInput
-          style={[styles.input, error && styles.inputError]}
-          placeholder="Answer"
-          placeholderTextColor="#A1887F"
-          keyboardType="number-pad"
-          value={userInput}
-          onChangeText={setUserInput}
-          onSubmitEditing={handleVerify}
-          autoFocus={true}
-        />
+        {mode === 'signin' ? (
+          <View style={styles.formWidth}>
+            {/* Email Input */}
+            <TextInput
+              style={[styles.input, error && styles.inputError]}
+              placeholder="Email Address"
+              placeholderTextColor="#A1887F"
+              keyboardType="email-address"
+              autoCapitalize="none"
+              value={emailInput}
+              onChangeText={setEmailInput}
+            />
 
-        {/* Verify Button */}
-        <TouchableOpacity style={styles.verifyButton} onPress={handleVerify}>
-          <Text style={styles.verifyButtonText}>Verify & Enter</Text>
-        </TouchableOpacity>
+            {/* Password Input */}
+            <TextInput
+              style={[styles.input, error && styles.inputError]}
+              placeholder="Parent Password"
+              placeholderTextColor="#A1887F"
+              secureTextEntry={true}
+              value={passwordInput}
+              onChangeText={setPasswordInput}
+              onSubmitEditing={handleSignIn}
+            />
 
-        {/* Dynamic Retry Button */}
-        <TouchableOpacity style={styles.retryButton} onPress={generateQuestion}>
-          <Text style={styles.retryButtonText}>Give me another question</Text>
-        </TouchableOpacity>
+            {/* Submit Button */}
+            <TouchableOpacity style={styles.verifyButton} onPress={handleSignIn} disabled={loading}>
+              {loading ? (
+                <ActivityIndicator color="#4E342E" />
+              ) : (
+                <Text style={styles.verifyButtonText}>Sign In</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <View style={styles.formWidth}>
+            {/* Email Input */}
+            <TextInput
+              style={[styles.input, error && styles.inputError]}
+              placeholder="Email Address"
+              placeholderTextColor="#A1887F"
+              keyboardType="email-address"
+              autoCapitalize="none"
+              value={emailInput}
+              onChangeText={setEmailInput}
+            />
+
+            {/* Create Password Input */}
+            <TextInput
+              style={[styles.input, error && styles.inputError]}
+              placeholder="Create Password"
+              placeholderTextColor="#A1887F"
+              secureTextEntry={true}
+              value={passwordInput}
+              onChangeText={setPasswordInput}
+            />
+
+            {/* Confirm Password Input */}
+            <TextInput
+              style={[styles.input, error && styles.inputError]}
+              placeholder="Confirm Password"
+              placeholderTextColor="#A1887F"
+              secureTextEntry={true}
+              value={confirmInput}
+              onChangeText={setConfirmInput}
+              onSubmitEditing={handleRegister}
+            />
+
+            {/* Submit Button */}
+            <TouchableOpacity style={styles.verifyButton} onPress={handleRegister} disabled={loading}>
+              {loading ? (
+                <ActivityIndicator color="#4E342E" />
+              ) : (
+                <Text style={styles.verifyButtonText}>Register & Subscribe</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        )}
       </View>
     </SafeAreaView>
   );
@@ -130,68 +277,84 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: 32,
-    marginTop: -40,
+    marginTop: -30,
   },
   iconContainer: {
     backgroundColor: '#FFEFC0',
-    width: 90,
-    height: 90,
-    borderRadius: 45,
+    width: 80,
+    height: 80,
+    borderRadius: 40,
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 24,
+    marginBottom: 20,
     borderWidth: 2,
     borderColor: '#FFD966',
   },
   lockIcon: {
-    fontSize: 44,
+    fontSize: 40,
   },
   title: {
     fontSize: 32,
     fontWeight: '900',
     color: '#4E342E',
-    marginBottom: 12,
+    marginBottom: 8,
   },
   subtitle: {
-    fontSize: 16,
+    fontSize: 14,
     color: '#795548',
     textAlign: 'center',
-    lineHeight: 24,
-    marginBottom: 32,
+    lineHeight: 20,
+    marginBottom: 24,
     fontWeight: '600',
   },
-  equationContainer: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 20,
-    paddingVertical: 16,
-    paddingHorizontal: 40,
+  tabContainer: {
+    flexDirection: 'row',
+    backgroundColor: '#FFFDF0',
     borderWidth: 2,
-    borderColor: '#FFF5D1',
+    borderColor: '#FFEFC0',
+    borderRadius: 25,
+    padding: 4,
     marginBottom: 24,
-    shadowColor: '#8D6E63',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
-    elevation: 2,
+    width: '100%',
   },
-  equationText: {
-    fontSize: 36,
-    fontWeight: '900',
+  tabButton: {
+    flex: 1,
+    paddingVertical: 10,
+    alignItems: 'center',
+    borderRadius: 20,
+  },
+  tabButtonActive: {
+    backgroundColor: '#FFC93C',
+  },
+  tabButtonInactive: {
+    backgroundColor: 'transparent',
+  },
+  tabText: {
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  tabTextActive: {
     color: '#4E342E',
-    letterSpacing: 2,
+  },
+  tabTextInactive: {
+    color: '#A1887F',
+  },
+  formWidth: {
+    width: '100%',
+    alignItems: 'center',
   },
   input: {
     backgroundColor: '#FFFFFF',
     width: '100%',
-    height: 64,
+    height: 52,
     borderRadius: 20,
     borderWidth: 2,
     borderColor: '#FFD966',
-    textAlign: 'center',
-    fontSize: 28,
-    fontWeight: '800',
+    paddingHorizontal: 20,
+    fontSize: 16,
+    fontWeight: '600',
     color: '#4E342E',
-    marginBottom: 24,
+    marginBottom: 14,
     shadowColor: '#8D6E63',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.05,
@@ -204,7 +367,7 @@ const styles = StyleSheet.create({
   verifyButton: {
     backgroundColor: '#FFC93C',
     borderRadius: 20,
-    paddingVertical: 18,
+    paddingVertical: 16,
     width: '100%',
     alignItems: 'center',
     shadowColor: '#FFC93C',
@@ -212,20 +375,11 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.3,
     shadowRadius: 6,
     elevation: 3,
+    marginTop: 8,
   },
   verifyButtonText: {
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: '800',
     color: '#4E342E',
-  },
-  retryButton: {
-    marginTop: 20,
-    padding: 8,
-  },
-  retryButtonText: {
-    fontSize: 14,
-    color: '#8D6E63',
-    fontWeight: '700',
-    textDecorationLine: 'underline',
   },
 });

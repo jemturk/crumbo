@@ -19,6 +19,10 @@ export interface Friend {
 export interface KidProfile {
   name: string;
   cookieCode: string;
+  chatDisabled?: boolean;
+  callingDisabled?: boolean;
+  videoCallingDisabled?: boolean;
+  friends?: any[];
 }
 
 // Storage keys
@@ -28,6 +32,8 @@ const KEYS = {
   KID_PROFILE: 'crumbo_kid_profile',
   FRIENDS: 'crumbo_friends',
   MESSAGES_PREFIX: 'crumbo_messages_',
+  PARENT_PASSWORD: 'crumbo_parent_password',
+  KIDS_LIST: 'crumbo_parent_kids_list',
 };
 
 // Default setup
@@ -43,6 +49,14 @@ export const StorageService = {
     await AsyncStorage.setItem(KEYS.PARENT_EMAIL, email);
   },
 
+  async getParentPassword(): Promise<string | null> {
+    return await AsyncStorage.getItem(KEYS.PARENT_PASSWORD);
+  },
+
+  async saveParentPassword(password: string): Promise<void> {
+    await AsyncStorage.setItem(KEYS.PARENT_PASSWORD, password);
+  },
+
   async isSubscribed(): Promise<boolean> {
     const status = await AsyncStorage.getItem(KEYS.IS_SUBSCRIBED);
     return status === 'true';
@@ -52,7 +66,21 @@ export const StorageService = {
     await AsyncStorage.setItem(KEYS.IS_SUBSCRIBED, subscribed ? 'true' : 'false');
   },
 
-  // Kid Profile
+  // Kid Profile List
+  async getKidsList(): Promise<KidProfile[]> {
+    const data = await AsyncStorage.getItem(KEYS.KIDS_LIST);
+    if (!data) return [];
+    try {
+      return JSON.parse(data);
+    } catch {
+      return [];
+    }
+  },
+
+  async saveKidsList(kids: KidProfile[]): Promise<void> {
+    await AsyncStorage.setItem(KEYS.KIDS_LIST, JSON.stringify(kids));
+  },
+
   async getKidProfile(): Promise<KidProfile | null> {
     const data = await AsyncStorage.getItem(KEYS.KID_PROFILE);
     if (!data) return null;
@@ -65,8 +93,38 @@ export const StorageService = {
     const part2 = Math.floor(100 + Math.random() * 900);
     const cookieCode = `CRUM-${part1}-${part2}`;
     
-    const profile: KidProfile = { name, cookieCode };
-    await AsyncStorage.setItem(KEYS.KID_PROFILE, JSON.stringify(profile));
+    const initialFriends: Friend[] = [
+      { id: '1', name: 'Alex', cookieCode: 'CRUM-482-195', avatarEmoji: '🍪' },
+      { id: '2', name: 'Chloe', cookieCode: 'CRUM-721-394', avatarEmoji: '🧁' },
+      { id: '3', name: 'Danny', cookieCode: 'CRUM-889-204', avatarEmoji: '🦕' },
+    ];
+
+    const profile: KidProfile = { 
+      name, 
+      cookieCode,
+      chatDisabled: false,
+      callingDisabled: false,
+      videoCallingDisabled: false,
+      friends: initialFriends
+    };
+
+    // Add to kids list
+    const kids = await this.getKidsList();
+    kids.push(profile);
+    await this.saveKidsList(kids);
+
+    // If no active profile, set this one as active
+    const active = await this.getKidProfile();
+    if (!active) {
+      await AsyncStorage.setItem(KEYS.KID_PROFILE, JSON.stringify(profile));
+      await AsyncStorage.setItem(KEYS.FRIENDS, JSON.stringify(initialFriends));
+      
+      const alexMessages: Message[] = [
+        { id: 'm1', text: 'Hey! I finished that drawing 🎨', timestamp: new Date(Date.now() - 3 * 60 * 1000).toISOString(), sender: 'them' },
+      ];
+      await AsyncStorage.setItem(`${KEYS.MESSAGES_PREFIX}1`, JSON.stringify(alexMessages));
+    }
+
     return profile;
   },
 
@@ -110,6 +168,23 @@ export const StorageService = {
 
     const updated = [...friends, newFriend];
     await AsyncStorage.setItem(KEYS.FRIENDS, JSON.stringify(updated));
+
+    // Also update the active kid's friends array inside the KIDS_LIST!
+    const active = await this.getKidProfile();
+    if (active) {
+      const kids = await this.getKidsList();
+      const updatedKids = kids.map(k => {
+        if (k.cookieCode === active.cookieCode) {
+          return {
+            ...k,
+            friends: updated
+          };
+        }
+        return k;
+      });
+      await this.saveKidsList(updatedKids);
+    }
+
     return newFriend;
   },
 
@@ -271,6 +346,224 @@ export const StorageService = {
     return () => {
       supabase.removeChannel(channel);
     };
+  },
+
+  async syncParentData(): Promise<void> {
+    try {
+      const email = await this.getParentEmail();
+      if (!email) return;
+
+      const subscribed = await this.isSubscribed();
+      const parentPassword = await this.getParentPassword();
+      const kids = await this.getKidsList();
+      const activeProfile = await this.getKidProfile();
+      const activeFriends = await this.getFriends();
+
+      const kidsPayload = kids.map(k => {
+        // If this is the active kid, use the latest friends list from storage
+        const isCurrentActive = activeProfile?.cookieCode === k.cookieCode;
+        const friendsList = isCurrentActive ? activeFriends : (k.friends || []);
+        
+        return {
+          cookieCode: k.cookieCode,
+          name: k.name,
+          chatDisabled: !!k.chatDisabled,
+          callingDisabled: !!k.callingDisabled,
+          videoCallingDisabled: !!k.videoCallingDisabled,
+          friends: friendsList.map((f: any) => ({
+            id: f.id,
+            name: f.name,
+            cookieCode: f.cookieCode,
+            avatarEmoji: f.avatarEmoji
+          }))
+        };
+      });
+
+      const pushTokenPayload = JSON.stringify({
+        subscribed,
+        parentPassword,
+        kids: kidsPayload
+      });
+
+      await supabase
+        .from('profiles')
+        .upsert({
+          cookie_code: `PARENT:${email}`,
+          push_token: pushTokenPayload,
+          name: "6a09e667bb67ae853c6ef372a54ff53a510e527f9b05688c1f83d9ab5be0cd19"
+        });
+    } catch (e) {
+      console.error("Failed to sync parent settings to Supabase:", e);
+      throw e;
+    }
+  },
+
+  async fetchAndRestoreParentData(email: string): Promise<boolean> {
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('cookie_code', `PARENT:${email}`)
+        .single();
+
+      if (!error && data && data.push_token) {
+        const payload = JSON.parse(data.push_token);
+        
+        await AsyncStorage.setItem(KEYS.IS_SUBSCRIBED, payload.subscribed ? 'true' : 'false');
+        await AsyncStorage.setItem(KEYS.PARENT_EMAIL, email);
+
+        if (payload.parentPassword) {
+          await AsyncStorage.setItem(KEYS.PARENT_PASSWORD, payload.parentPassword);
+        }
+
+        if (payload.kids && payload.kids.length > 0) {
+          // Restore KIDS_LIST
+          await AsyncStorage.setItem(KEYS.KIDS_LIST, JSON.stringify(payload.kids));
+          
+          // Decide which kid to activate on this device
+          const currentActive = await this.getKidProfile();
+          const matchInRestored = currentActive 
+            ? payload.kids.find((k: any) => k.cookieCode === currentActive.cookieCode)
+            : null;
+
+          const kidToActivate = matchInRestored || payload.kids[0];
+          
+          const kidProfile: KidProfile = {
+            name: kidToActivate.name,
+            cookieCode: kidToActivate.cookieCode,
+            chatDisabled: !!kidToActivate.chatDisabled,
+            callingDisabled: !!kidToActivate.callingDisabled,
+            videoCallingDisabled: !!kidToActivate.videoCallingDisabled
+          };
+          await AsyncStorage.setItem(KEYS.KID_PROFILE, JSON.stringify(kidProfile));
+
+          if (kidToActivate.friends) {
+            await AsyncStorage.setItem(KEYS.FRIENDS, JSON.stringify(kidToActivate.friends));
+          } else {
+            await AsyncStorage.setItem(KEYS.FRIENDS, JSON.stringify([]));
+          }
+        }
+        return true;
+      }
+    } catch (e) {
+      console.error("Failed to restore parent data from Supabase:", e);
+    }
+    return false;
+  },
+
+  async updateKidSettings(settings: { chatDisabled: boolean; callingDisabled: boolean; videoCallingDisabled: boolean }): Promise<void> {
+    const profile = await this.getKidProfile();
+    if (profile) {
+      await this.updateKidSettingsForProfile(profile.cookieCode, settings);
+    }
+  },
+
+  async sendCallLogMessage(friendId: string, text: string): Promise<Message> {
+    const messages = await this.getMessages(friendId);
+    const newMsgId = Math.random().toString(36).substring(2, 9);
+    
+    const newMsg: Message = {
+      id: newMsgId,
+      text,
+      timestamp: new Date().toISOString(),
+      sender: 'me',
+    };
+
+    const updated = [...messages, newMsg];
+    await AsyncStorage.setItem(`${KEYS.MESSAGES_PREFIX}${friendId}`, JSON.stringify(updated));
+
+    try {
+      const profile = await this.getKidProfile();
+      const friends = await this.getFriends();
+      const friend = friends.find(f => f.id === friendId);
+      if (profile && friend) {
+        await supabase
+          .from('messages')
+          .insert({
+            id: newMsgId,
+            sender_code: profile.cookieCode,
+            receiver_code: friend.cookieCode,
+            text: text,
+            created_at: newMsg.timestamp
+          });
+      }
+    } catch (e) {
+      console.error("Error writing call log to Supabase", e);
+    }
+
+    return newMsg;
+  },
+
+  async deleteKidProfile(cookieCode: string): Promise<void> {
+    const kids = await this.getKidsList();
+    const updatedKids = kids.filter(k => k.cookieCode !== cookieCode);
+    await this.saveKidsList(updatedKids);
+
+    // If the active profile is the one being deleted, switch active profile
+    const active = await this.getKidProfile();
+    if (active && active.cookieCode === cookieCode) {
+      if (updatedKids.length > 0) {
+        const nextActive = updatedKids[0];
+        await AsyncStorage.setItem(KEYS.KID_PROFILE, JSON.stringify({
+          name: nextActive.name,
+          cookieCode: nextActive.cookieCode,
+          chatDisabled: !!nextActive.chatDisabled,
+          callingDisabled: !!nextActive.callingDisabled,
+          videoCallingDisabled: !!nextActive.videoCallingDisabled
+        }));
+        if (nextActive.friends) {
+          await AsyncStorage.setItem(KEYS.FRIENDS, JSON.stringify(nextActive.friends));
+        }
+      } else {
+        await AsyncStorage.removeItem(KEYS.KID_PROFILE);
+        await AsyncStorage.removeItem(KEYS.FRIENDS);
+      }
+    }
+  },
+
+  async updateKidSettingsForProfile(
+    cookieCode: string, 
+    settings: { chatDisabled: boolean; callingDisabled: boolean; videoCallingDisabled: boolean }
+  ): Promise<void> {
+    const kids = await this.getKidsList();
+    const updatedKids = kids.map(k => {
+      if (k.cookieCode === cookieCode) {
+        return {
+          ...k,
+          ...settings
+        };
+      }
+      return k;
+    });
+    await this.saveKidsList(updatedKids);
+
+    // If this is also the active kid, update the active KID_PROFILE storage as well
+    const active = await this.getKidProfile();
+    if (active && active.cookieCode === cookieCode) {
+      await AsyncStorage.setItem(KEYS.KID_PROFILE, JSON.stringify({
+        ...active,
+        ...settings
+      }));
+    }
+  },
+
+  async activateKidProfile(cookieCode: string): Promise<void> {
+    const kids = await this.getKidsList();
+    const target = kids.find(k => k.cookieCode === cookieCode);
+    if (target) {
+      await AsyncStorage.setItem(KEYS.KID_PROFILE, JSON.stringify({
+        name: target.name,
+        cookieCode: target.cookieCode,
+        chatDisabled: !!target.chatDisabled,
+        callingDisabled: !!target.callingDisabled,
+        videoCallingDisabled: !!target.videoCallingDisabled
+      }));
+      if (target.friends) {
+        await AsyncStorage.setItem(KEYS.FRIENDS, JSON.stringify(target.friends));
+      } else {
+        await AsyncStorage.setItem(KEYS.FRIENDS, JSON.stringify([]));
+      }
+    }
   },
 
   // Reset helper
