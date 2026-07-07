@@ -40,10 +40,29 @@ export default function ParentDashboard() {
   const [newKidName, setNewKidName] = useState('');
   const [selectedKidForLogs, setSelectedKidForLogs] = useState<KidProfile | null>(null);
   const [syncing, setSyncing] = useState(false);
+  const [newFriendName, setNewFriendName] = useState('');
+  const [newFriendCode, setNewFriendCode] = useState('');
+  const [pairingStatuses, setPairingStatuses] = useState<Record<string, 'paired' | 'pending'>>({});
 
   useEffect(() => {
     loadSettings();
   }, []);
+
+  useEffect(() => {
+    if (selectedKidForLogs && friendsModalVisible) {
+      loadPairingStatuses(selectedKidForLogs);
+    }
+  }, [selectedKidForLogs, friendsModalVisible]);
+
+  const loadPairingStatuses = async (kid: KidProfile) => {
+    if (!kid || !kid.friends) return;
+    const statuses: Record<string, 'paired' | 'pending'> = {};
+    for (const friend of kid.friends) {
+      const status = await StorageService.checkFriendPairingStatus(kid.cookieCode, friend.cookieCode);
+      statuses[friend.cookieCode] = status;
+    }
+    setPairingStatuses(statuses);
+  };
 
   const loadSettings = async () => {
     try {
@@ -185,18 +204,87 @@ export default function ParentDashboard() {
     );
   };
 
-  const handleActivateProfile = async (cookieCode: string, name: string) => {
+  const handleAddFriendToKid = async () => {
+    if (!selectedKidForLogs) return;
+    const name = newFriendName.trim();
+    const code = newFriendCode.trim().toUpperCase();
+
+    if (!name) {
+      Alert.alert("Name Required", "Please enter a name for the buddy.");
+      return;
+    }
+
+    const codePattern = /^CRUM-\d{3}-\d{3}$/;
+    if (!codePattern.test(code)) {
+      Alert.alert(
+        "Invalid Cookie Code", 
+        "Cookie Code must match format: CRUM-123-456"
+      );
+      return;
+    }
+
+    if (code === selectedKidForLogs.cookieCode) {
+      Alert.alert("Invalid Buddy Code", "A child cannot add themselves as a buddy!");
+      return;
+    }
+
+    setSyncing(true);
     try {
-      setSyncing(true);
-      await StorageService.activateKidProfile(cookieCode);
-      await loadSettings();
-      setSyncing(false);
-      Alert.alert("Profile Activated", `${name} is now the active profile on this device.`);
+      await StorageService.addFriendToKidProfile(selectedKidForLogs.cookieCode, name, code);
+      // Sync update to Supabase
+      await StorageService.syncParentData();
+      
+      // Reload lists
+      const freshKids = await StorageService.getKidsList();
+      setKidsList(freshKids);
+      const updatedKid = freshKids.find(k => k.cookieCode === selectedKidForLogs.cookieCode) || null;
+      setSelectedKidForLogs(updatedKid);
+
+      setNewFriendName('');
+      setNewFriendCode('');
+      Alert.alert("Success", `${name} added to buddy list!`);
     } catch (e) {
+      Alert.alert("Error", "Could not add buddy.");
+    } finally {
       setSyncing(false);
-      Alert.alert("Error", "Could not activate profile.");
     }
   };
+
+  const handleDeleteFriendFromKid = async (friendCookieCode: string, friendName: string) => {
+    if (!selectedKidForLogs) return;
+
+    Alert.alert(
+      "Remove Buddy?",
+      `Are you sure you want to remove ${friendName} from ${selectedKidForLogs.name}'s buddies list?`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Remove",
+          style: "destructive",
+          onPress: async () => {
+            setSyncing(true);
+            try {
+              await StorageService.removeFriendFromKidProfile(selectedKidForLogs.cookieCode, friendCookieCode);
+              // Sync update to Supabase
+              await StorageService.syncParentData();
+              
+              // Reload lists
+              const freshKids = await StorageService.getKidsList();
+              setKidsList(freshKids);
+              const updatedKid = freshKids.find(k => k.cookieCode === selectedKidForLogs.cookieCode) || null;
+              setSelectedKidForLogs(updatedKid);
+              Alert.alert("Success", "Buddy removed.");
+            } catch (e) {
+              Alert.alert("Error", "Could not remove buddy.");
+            } finally {
+              setSyncing(false);
+            }
+          }
+        }
+      ]
+    );
+  };
+
 
   // Lock toggles
   const handleToggleChat = async (kid: KidProfile) => {
@@ -329,25 +417,12 @@ export default function ParentDashboard() {
             <View style={styles.cardBody}>
               {kidsList.length > 0 ? (
                 kidsList.map((kid) => {
-                  const isActiveOnDevice = profile?.cookieCode === kid.cookieCode;
                   return (
                     <View key={kid.cookieCode} style={styles.childContainer}>
-                      {/* Name, Active Status Badge, and Delete Row */}
+                      {/* Name and Delete Row */}
                       <View style={styles.childMetaRow}>
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                           <Text style={styles.childName}>{kid.name}</Text>
-                          {isActiveOnDevice ? (
-                            <View style={styles.activeDeviceBadge}>
-                              <Text style={styles.activeDeviceBadgeText}>Active</Text>
-                            </View>
-                          ) : (
-                            <TouchableOpacity 
-                              style={styles.activateDeviceBtn} 
-                              onPress={() => handleActivateProfile(kid.cookieCode, kid.name)}
-                            >
-                              <Text style={styles.activateDeviceBtnText}>Use Profile</Text>
-                            </TouchableOpacity>
-                          )}
                         </View>
                         <TouchableOpacity style={styles.deleteChildBtn} onPress={() => handleDeleteChild(kid.cookieCode, kid.name)}>
                           <Ionicons name="trash" size={18} color="#D32F2F" />
@@ -530,32 +605,76 @@ export default function ParentDashboard() {
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Buddies & Logs</Text>
+              <Text style={styles.modalTitle}>{selectedKidForLogs?.name}'s Buddies</Text>
               <TouchableOpacity onPress={() => setFriendsModalVisible(false)}>
                 <Ionicons name="close-circle" size={28} color="#8D6E63" />
               </TouchableOpacity>
             </View>
 
-            <ScrollView contentContainerStyle={styles.modalScroll}>
+            <ScrollView contentContainerStyle={styles.modalScroll} style={{ maxHeight: 220 }}>
               {(!selectedKidForLogs || !selectedKidForLogs.friends || selectedKidForLogs.friends.length === 0) ? (
-                <Text style={styles.noFriendsText}>No friends added yet. Share your child's pairing code to connect!</Text>
+                <Text style={styles.noFriendsText}>No buddies added yet. Use the form below to connect!</Text>
               ) : (
-                selectedKidForLogs.friends.map((friend: any) => (
-                  <View key={friend.id} style={styles.friendRow}>
-                    <View style={styles.friendAvatar}>
-                      <Text style={styles.friendAvatarEmoji}>{friend.avatarEmoji || '🍪'}</Text>
+                selectedKidForLogs.friends.map((friend: any) => {
+                  const status = pairingStatuses[friend.cookieCode] || 'pending';
+                  return (
+                    <View key={friend.id} style={styles.friendRow}>
+                      <View style={styles.friendAvatar}>
+                        <Text style={styles.friendAvatarEmoji}>{friend.avatarEmoji || '🍪'}</Text>
+                      </View>
+                      <View style={styles.friendInfo}>
+                        <Text style={styles.friendNameText}>{friend.name}</Text>
+                        <Text style={styles.friendCodeText}>{friend.cookieCode}</Text>
+                      </View>
+                      
+                      <View style={[styles.statusBadge, status === 'paired' ? styles.statusPaired : styles.statusPending]}>
+                        <Text style={styles.statusBadgeText}>
+                          {status === 'paired' ? 'Paired' : 'Pending'}
+                        </Text>
+                      </View>
+
+                      <TouchableOpacity 
+                        style={styles.deleteFriendBtn} 
+                        onPress={() => handleDeleteFriendFromKid(friend.cookieCode, friend.name)}
+                      >
+                        <Ionicons name="trash" size={16} color="#D32F2F" />
+                      </TouchableOpacity>
                     </View>
-                    <View style={styles.friendInfo}>
-                      <Text style={styles.friendNameText}>{friend.name}</Text>
-                      <Text style={styles.friendCodeText}>{friend.cookieCode}</Text>
-                    </View>
-                    <View style={styles.friendLogBadge}>
-                      <Text style={styles.friendLogBadgeText}>Active</Text>
-                    </View>
-                  </View>
-                ))
+                  );
+                })
               )}
             </ScrollView>
+
+            {/* Add Buddy Section */}
+            <View style={styles.addBuddySection}>
+              <Text style={styles.addBuddyTitle}>Add New Buddy</Text>
+              
+              <TextInput
+                style={styles.buddyInput}
+                placeholder="Buddy Name (e.g. Sam)"
+                placeholderTextColor="#A1887F"
+                value={newFriendName}
+                onChangeText={setNewFriendName}
+              />
+
+              <TextInput
+                style={styles.buddyInput}
+                placeholder="Buddy Cookie Code (e.g. CRUM-123-456)"
+                placeholderTextColor="#A1887F"
+                autoCapitalize="characters"
+                autoCorrect={false}
+                value={newFriendCode}
+                onChangeText={setNewFriendCode}
+              />
+
+              <TouchableOpacity style={styles.addBuddySubmitBtn} onPress={handleAddFriendToKid} disabled={syncing}>
+                {syncing ? (
+                  <ActivityIndicator color="#4E342E" />
+                ) : (
+                  <Text style={styles.addBuddySubmitText}>Add Buddy</Text>
+                )}
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </Modal>
@@ -1066,5 +1185,62 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: '#F57F17',
     fontWeight: '800',
+  },
+  statusBadge: {
+    borderRadius: 12,
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+  },
+  statusPaired: {
+    backgroundColor: '#E8F5E9',
+  },
+  statusPending: {
+    backgroundColor: '#FFF3E0',
+  },
+  statusBadgeText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#37474F',
+  },
+  deleteFriendBtn: {
+    padding: 6,
+    marginLeft: 4,
+  },
+  addBuddySection: {
+    marginTop: 16,
+    borderTopWidth: 1,
+    borderTopColor: '#FFEFC0',
+    paddingTop: 16,
+  },
+  addBuddyTitle: {
+    fontSize: 16,
+    fontWeight: '900',
+    color: '#4E342E',
+    marginBottom: 12,
+  },
+  buddyInput: {
+    backgroundColor: '#FFFDF5',
+    borderWidth: 1.5,
+    borderColor: '#FFEFC0',
+    borderRadius: 12,
+    height: 44,
+    paddingHorizontal: 12,
+    fontSize: 14,
+    color: '#4E342E',
+    fontWeight: '600',
+    marginBottom: 10,
+  },
+  addBuddySubmitBtn: {
+    backgroundColor: '#FFC93C',
+    borderRadius: 12,
+    height: 44,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 4,
+  },
+  addBuddySubmitText: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#4E342E',
   },
 });

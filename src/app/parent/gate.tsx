@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, TextInput, TouchableOpacity, SafeAreaView, Alert, Platform, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, TextInput, TouchableOpacity, SafeAreaView, Alert, Platform, ActivityIndicator, KeyboardAvoidingView, ScrollView } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -141,119 +141,127 @@ export default function ParentGate() {
 
   return (
     <SafeAreaView style={styles.container}>
-      {/* Header */}
-      <View style={[styles.header, { paddingTop: Platform.OS === 'android' ? (insets.top > 0 ? insets.top + 8 : 40) : 10 }]}>
-        <TouchableOpacity style={styles.closeButton} onPress={() => router.back()}>
-          <Ionicons name="close-circle" size={36} color="#8D6E63" />
-        </TouchableOpacity>
-      </View>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={{ flex: 1 }}
+      >
+        <ScrollView 
+          contentContainerStyle={[styles.content, { flex: 0, flexGrow: 1, paddingBottom: 24 }]} 
+          keyboardShouldPersistTaps="handled"
+        >
+          {/* Header */}
+          <View style={[styles.header, { width: '100%', paddingTop: Platform.OS === 'android' ? (insets.top > 0 ? insets.top + 8 : 40) : 10 }]}>
+            <TouchableOpacity style={styles.closeButton} onPress={() => router.back()}>
+              <Ionicons name="close-circle" size={36} color="#8D6E63" />
+            </TouchableOpacity>
+          </View>
 
-      <View style={styles.content}>
-        <View style={styles.iconContainer}>
-          <Text style={styles.lockIcon}>🔒</Text>
-        </View>
+          <View style={styles.iconContainer}>
+            <Text style={styles.lockIcon}>🔒</Text>
+          </View>
 
-        <Text style={styles.title}>Parent Controls</Text>
-        
-        <Text style={styles.subtitle}>
-          Sign in or register to manage controls, buddy requests, and limits.
-        </Text>
-
-        {/* Tab Selection */}
-        <View style={styles.tabContainer}>
-          <TouchableOpacity 
-            style={[styles.tabButton, mode === 'signin' ? styles.tabButtonActive : styles.tabButtonInactive]} 
-            onPress={() => { setMode('signin'); setError(false); }}
-          >
-            <Text style={[styles.tabText, mode === 'signin' ? styles.tabTextActive : styles.tabTextInactive]}>Sign In</Text>
-          </TouchableOpacity>
+          <Text style={styles.title}>Parent Controls</Text>
           
-          <TouchableOpacity 
-            style={[styles.tabButton, mode === 'register' ? styles.tabButtonActive : styles.tabButtonInactive]} 
-            onPress={() => { setMode('register'); setError(false); }}
-          >
-            <Text style={[styles.tabText, mode === 'register' ? styles.tabTextActive : styles.tabTextInactive]}>Register</Text>
-          </TouchableOpacity>
-        </View>
+          <Text style={styles.subtitle}>
+            Sign in or register to manage controls, buddy requests, and limits.
+          </Text>
 
-        {mode === 'signin' ? (
-          <View style={styles.formWidth}>
-            {/* Email Input */}
-            <TextInput
-              style={[styles.input, error && styles.inputError]}
-              placeholder="Email Address"
-              placeholderTextColor="#A1887F"
-              keyboardType="email-address"
-              autoCapitalize="none"
-              value={emailInput}
-              onChangeText={setEmailInput}
-            />
-
-            {/* Password Input */}
-            <TextInput
-              style={[styles.input, error && styles.inputError]}
-              placeholder="Parent Password"
-              placeholderTextColor="#A1887F"
-              secureTextEntry={true}
-              value={passwordInput}
-              onChangeText={setPasswordInput}
-              onSubmitEditing={handleSignIn}
-            />
-
-            {/* Submit Button */}
-            <TouchableOpacity style={styles.verifyButton} onPress={handleSignIn} disabled={loading}>
-              {loading ? (
-                <ActivityIndicator color="#4E342E" />
-              ) : (
-                <Text style={styles.verifyButtonText}>Sign In</Text>
-              )}
+          {/* Tab Selection */}
+          <View style={styles.tabContainer}>
+            <TouchableOpacity 
+              style={[styles.tabButton, mode === 'signin' ? styles.tabButtonActive : styles.tabButtonInactive]} 
+              onPress={() => { setMode('signin'); setError(false); }}
+            >
+              <Text style={[styles.tabText, mode === 'signin' ? styles.tabTextActive : styles.tabTextInactive]}>Sign In</Text>
+            </TouchableOpacity>
+            
+            <TouchableOpacity 
+              style={[styles.tabButton, mode === 'register' ? styles.tabButtonActive : styles.tabButtonInactive]} 
+              onPress={() => { setMode('register'); setError(false); }}
+            >
+              <Text style={[styles.tabText, mode === 'register' ? styles.tabTextActive : styles.tabTextInactive]}>Register</Text>
             </TouchableOpacity>
           </View>
-        ) : (
-          <View style={styles.formWidth}>
-            {/* Email Input */}
-            <TextInput
-              style={[styles.input, error && styles.inputError]}
-              placeholder="Email Address"
-              placeholderTextColor="#A1887F"
-              keyboardType="email-address"
-              autoCapitalize="none"
-              value={emailInput}
-              onChangeText={setEmailInput}
-            />
 
-            {/* Create Password Input */}
-            <TextInput
-              style={[styles.input, error && styles.inputError]}
-              placeholder="Create Password"
-              placeholderTextColor="#A1887F"
-              secureTextEntry={true}
-              value={passwordInput}
-              onChangeText={setPasswordInput}
-            />
+          {mode === 'signin' ? (
+            <View style={styles.formWidth}>
+              {/* Email Input */}
+              <TextInput
+                style={[styles.input, error && styles.inputError]}
+                placeholder="Email Address"
+                placeholderTextColor="#A1887F"
+                keyboardType="email-address"
+                autoCapitalize="none"
+                value={emailInput}
+                onChangeText={setEmailInput}
+              />
 
-            {/* Confirm Password Input */}
-            <TextInput
-              style={[styles.input, error && styles.inputError]}
-              placeholder="Confirm Password"
-              placeholderTextColor="#A1887F"
-              secureTextEntry={true}
-              value={confirmInput}
-              onChangeText={setConfirmInput}
-              onSubmitEditing={handleRegister}
-            />
+              {/* Password Input */}
+              <TextInput
+                style={[styles.input, error && styles.inputError]}
+                placeholder="Parent Password"
+                placeholderTextColor="#A1887F"
+                secureTextEntry={true}
+                value={passwordInput}
+                onChangeText={setPasswordInput}
+                onSubmitEditing={handleSignIn}
+              />
 
-            {/* Submit Button */}
-            <TouchableOpacity style={styles.verifyButton} onPress={handleRegister} disabled={loading}>
-              {loading ? (
-                <ActivityIndicator color="#4E342E" />
-              ) : (
-                <Text style={styles.verifyButtonText}>Register & Subscribe</Text>
-              )}
-            </TouchableOpacity>
-          </View>
-        )}
-      </View>
+              {/* Submit Button */}
+              <TouchableOpacity style={styles.verifyButton} onPress={handleSignIn} disabled={loading}>
+                {loading ? (
+                  <ActivityIndicator color="#4E342E" />
+                ) : (
+                  <Text style={styles.verifyButtonText}>Sign In</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <View style={styles.formWidth}>
+              {/* Email Input */}
+              <TextInput
+                style={[styles.input, error && styles.inputError]}
+                placeholder="Email Address"
+                placeholderTextColor="#A1887F"
+                keyboardType="email-address"
+                autoCapitalize="none"
+                value={emailInput}
+                onChangeText={setEmailInput}
+              />
+
+              {/* Create Password Input */}
+              <TextInput
+                style={[styles.input, error && styles.inputError]}
+                placeholder="Create Password"
+                placeholderTextColor="#A1887F"
+                secureTextEntry={true}
+                value={passwordInput}
+                onChangeText={setPasswordInput}
+              />
+
+              {/* Confirm Password Input */}
+              <TextInput
+                style={[styles.input, error && styles.inputError]}
+                placeholder="Confirm Password"
+                placeholderTextColor="#A1887F"
+                secureTextEntry={true}
+                value={confirmInput}
+                onChangeText={setConfirmInput}
+                onSubmitEditing={handleRegister}
+              />
+
+              {/* Submit Button */}
+              <TouchableOpacity style={styles.verifyButton} onPress={handleRegister} disabled={loading}>
+                {loading ? (
+                  <ActivityIndicator color="#4E342E" />
+                ) : (
+                  <Text style={styles.verifyButtonText}>Register & Subscribe</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          )}
+        </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }

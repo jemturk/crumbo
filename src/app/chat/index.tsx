@@ -15,9 +15,7 @@ export default function ChatDashboard() {
   const [profile, setProfile] = useState<KidProfile | null>(null);
   const [friends, setFriends] = useState<Friend[]>([]);
   const [lastMessages, setLastMessages] = useState<Record<string, Message | null>>({});
-  const [modalVisible, setModalVisible] = useState(false);
-  const [friendName, setFriendName] = useState('');
-  const [friendCode, setFriendCode] = useState('');
+  const [pairingStatuses, setPairingStatuses] = useState<Record<string, 'paired' | 'pending'>>({});
 
   useFocusEffect(
     useCallback(() => {
@@ -36,7 +34,8 @@ export default function ChatDashboard() {
         return;
       }
 
-      setProfile(kidProf);
+      const syncedProf = await StorageService.syncKidProfileAndFriends();
+      setProfile(syncedProf || kidProf);
       
       // Async request and register push notification token, always syncing the profile to Supabase
       registerForPushNotificationsAsync().then(async (token) => {
@@ -55,57 +54,48 @@ export default function ChatDashboard() {
 
       // 3. Load last messages for previews
       const previews: Record<string, Message | null> = {};
+      const statuses: Record<string, 'paired' | 'pending'> = {};
       for (const friend of friendsList) {
         const msgs = await StorageService.getMessages(friend.id);
         previews[friend.id] = msgs.length > 0 ? msgs[msgs.length - 1] : null;
+
+        if (syncedProf || kidProf) {
+          const kp = syncedProf || kidProf;
+          const status = await StorageService.checkFriendPairingStatus(kp.cookieCode, friend.cookieCode);
+          statuses[friend.id] = status;
+        }
       }
       setLastMessages(previews);
+      setPairingStatuses(statuses);
 
     } catch (e) {
       console.error("Error loading chat dashboard", e);
     }
   };
 
-  const handleAddFriend = async () => {
-    const name = friendName.trim();
-    const code = friendCode.trim().toUpperCase();
-
-    if (!name) {
-      Alert.alert("Friend's Name", "Please enter your friend's name.");
-      return;
-    }
-
-    // Basic format validation for CRUM-XXX-XXX
-    const codePattern = /^CRUM-\d{3}-\d{3}$/;
-    if (!codePattern.test(code)) {
-      Alert.alert(
-        "Invalid Cookie Code", 
-        "Code should look like CRUM-123-456. Ask your friend for their code!"
-      );
-      return;
-    }
-
-    try {
-      const added = await StorageService.addFriend(name, code);
-      setModalVisible(false);
-      setFriendName('');
-      setFriendCode('');
-      
-      // Seed first hello message from the added friend
-      await StorageService.receiveMockMessage(
-        added.id, 
-        `Hey ${profile?.name}! I just added you on Crumbo! 🍪`
-      );
-      
-      await loadDashboardData();
-      Alert.alert("Added Friend!", `${name} has been added to your cookie jar!`);
-    } catch (e) {
-      Alert.alert("Error", "Could not add friend.");
-    }
+  const handleLogout = () => {
+    Alert.alert(
+      "Log Out?",
+      "Are you sure you want to log out of your Cookie Jar?",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Log Out",
+          style: "destructive",
+          onPress: async () => {
+            await StorageService.logoutKid();
+            router.replace('/');
+          }
+        }
+      ]
+    );
   };
+
+
 
   const renderFriendItem = ({ item }: { item: Friend }) => {
     const lastMsg = lastMessages[item.id];
+    const status = pairingStatuses[item.id] || 'pending';
     
     return (
       <TouchableOpacity 
@@ -117,11 +107,20 @@ export default function ChatDashboard() {
         </View>
 
         <View style={styles.friendInfo}>
-          <Text style={styles.friendName}>{item.name}</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <Text style={styles.friendName}>{item.name}</Text>
+            {status === 'pending' && (
+              <View style={styles.pendingBadgeSmall}>
+                <Text style={styles.pendingBadgeTextSmall}>Pending</Text>
+              </View>
+            )}
+          </View>
           <Text style={styles.lastMessage} numberOfLines={1}>
-            {lastMsg 
-              ? `${lastMsg.sender === 'me' ? 'You: ' : ''}${lastMsg.text}`
-              : 'Tap to start chatting! 🍪'}
+            {status === 'pending' 
+              ? 'Waiting for parent approval ⏳'
+              : (lastMsg 
+                  ? `${lastMsg.sender === 'me' ? 'You: ' : ''}${lastMsg.text}`
+                  : 'Tap to start chatting! 🍪')}
           </Text>
         </View>
 
@@ -142,12 +141,21 @@ export default function ChatDashboard() {
           </View>
         </View>
 
-        <TouchableOpacity 
-          style={styles.settingsButton}
-          onPress={() => router.push('/parent/gate')}
-        >
-          <Ionicons name="settings" size={24} color="#8D6E63" />
-        </TouchableOpacity>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+          <TouchableOpacity 
+            style={styles.logoutButton}
+            onPress={handleLogout}
+          >
+            <Ionicons name="log-out-outline" size={24} color="#D32F2F" />
+          </TouchableOpacity>
+
+          <TouchableOpacity 
+            style={styles.settingsButton}
+            onPress={() => router.push('/parent/gate')}
+          >
+            <Ionicons name="settings" size={24} color="#8D6E63" />
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/* Friends List */}
@@ -156,14 +164,8 @@ export default function ChatDashboard() {
           <Text style={styles.emptyEmoji}>🧁</Text>
           <Text style={styles.emptyText}>Your cookie jar is empty!</Text>
           <Text style={styles.emptySubtext}>
-            Add a friend using their Cookie Code to start chatting.
+            Ask your parent to add buddies for you using your Cookie Code: {profile?.cookieCode}
           </Text>
-          <TouchableOpacity 
-            style={styles.addFriendBtnInline}
-            onPress={() => setModalVisible(true)}
-          >
-            <Text style={styles.addFriendBtnText}>Add a Friend</Text>
-          </TouchableOpacity>
         </View>
       ) : (
         <FlatList
@@ -173,66 +175,6 @@ export default function ChatDashboard() {
           contentContainerStyle={styles.listContent}
         />
       )}
-
-      {/* Floating Add Friend Button */}
-      {friends.length > 0 && (
-        <TouchableOpacity 
-          style={styles.fab}
-          onPress={() => setModalVisible(true)}
-        >
-          <Ionicons name="add" size={32} color="#4E342E" />
-        </TouchableOpacity>
-      )}
-
-      {/* Add Friend Modal */}
-      <Modal
-        animationType="slide"
-        transparent={true}
-        visible={modalVisible}
-        onRequestClose={() => setModalVisible(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            {/* Modal Header */}
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Add a Friend 🍪</Text>
-              <TouchableOpacity onPress={() => setModalVisible(false)}>
-                <Ionicons name="close-circle" size={28} color="#8D6E63" />
-              </TouchableOpacity>
-            </View>
-
-            <Text style={styles.modalSubtitle}>
-              Ask your friend for their name and code, then type it below!
-            </Text>
-
-            {/* Inputs */}
-            <Text style={styles.label}>Friend's Name</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="e.g. Alex"
-              placeholderTextColor="#A1887F"
-              value={friendName}
-              onChangeText={setFriendName}
-            />
-
-            <Text style={styles.label}>Friend's Cookie Code</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="e.g. CRUM-123-456"
-              placeholderTextColor="#A1887F"
-              autoCapitalize="characters"
-              autoCorrect={false}
-              value={friendCode}
-              onChangeText={setFriendCode}
-            />
-
-            {/* Submit */}
-            <TouchableOpacity style={styles.modalSubmit} onPress={handleAddFriend}>
-              <Text style={styles.modalSubmitText}>Add to Jar</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
     </SafeAreaView>
   );
 }
@@ -445,5 +387,19 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '800',
     color: '#4E342E',
+  },
+  logoutButton: {
+    padding: 6,
+  },
+  pendingBadgeSmall: {
+    backgroundColor: '#FFE0B2',
+    borderRadius: 8,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  pendingBadgeTextSmall: {
+    fontSize: 10,
+    color: '#E65100',
+    fontWeight: '800',
   },
 });

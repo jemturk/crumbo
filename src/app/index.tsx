@@ -1,13 +1,17 @@
 import React, { useState, useCallback } from 'react';
-import { View, Text, StyleSheet, Image, TouchableOpacity, SafeAreaView, ActivityIndicator, Platform } from 'react-native';
+import { View, Text, StyleSheet, Image, TouchableOpacity, SafeAreaView, ActivityIndicator, Platform, Modal, TextInput, Alert, KeyboardAvoidingView, ScrollView } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { StorageService, KidProfile } from '@/services/storage';
+import { Ionicons } from '@expo/vector-icons';
 
 export default function WelcomeScreen() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [subscribed, setSubscribed] = useState(false);
   const [profile, setProfile] = useState<KidProfile | null>(null);
+
+  const [cookieCodeInput, setCookieCodeInput] = useState('');
+  const [syncing, setSyncing] = useState(false);
 
   useFocusEffect(
     useCallback(() => {
@@ -29,18 +33,37 @@ export default function WelcomeScreen() {
     }
   };
 
-  const handleStartChatting = async () => {
-    if (!subscribed) {
-      // Direct them to tell their parent if not subscribed
+  const handleKidLogin = async () => {
+    const code = cookieCodeInput.trim().toUpperCase();
+    const codePattern = /^CRUM-\d{3}-\d{3}$/;
+    
+    if (!codePattern.test(code)) {
+      Alert.alert(
+        "Invalid Cookie Code", 
+        "Code should look like CRUM-123-456. Ask your parent for your code!"
+      );
       return;
     }
-    
-    if (!profile) {
-      // If subscribed but no profile yet, go to parent dashboard to set one up
-      router.push('/parent/gate');
-    } else {
-      // Go directly to chat list!
-      router.push('/chat');
+
+    setSyncing(true);
+    try {
+      const kidProfile = await StorageService.loginKidWithCode(code);
+      if (kidProfile) {
+        setProfile(kidProfile);
+        setSubscribed(true);
+        setCookieCodeInput('');
+        Alert.alert("Welcome! 🍪", `Logged in as ${kidProfile.name}!`);
+        router.push('/chat');
+      } else {
+        Alert.alert(
+          "Profile Not Found", 
+          "Could not find a kid profile with this Cookie Code. Please verify the code in the parent dashboard."
+        );
+      }
+    } catch (e) {
+      Alert.alert("Error", "An error occurred during login. Please try again.");
+    } finally {
+      setSyncing(false);
     }
   };
 
@@ -54,75 +77,86 @@ export default function WelcomeScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
-      <View style={styles.content}>
-        
-        {/* Brand Header */}
-        <View style={styles.brandContainer}>
-          <Image 
-            source={require('@/assets/images/logo.png')} 
-            style={styles.logo}
-            resizeMode="contain"
-          />
-          <Text style={styles.title}>Crumbo</Text>
-          <Text style={styles.subtitle}>The cookie-jar chat messenger for kids!</Text>
-        </View>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={{ flex: 1 }}
+      >
+        <ScrollView 
+          contentContainerStyle={[styles.content, { flex: 0, flexGrow: 1 }]} 
+          keyboardShouldPersistTaps="handled"
+        >
+          {/* Brand Header */}
+          <View style={styles.brandContainer}>
+            <Image 
+              source={require('@/assets/images/logo.png')} 
+              style={styles.logo}
+              resizeMode="contain"
+            />
+            <Text style={styles.title}>Crumbo</Text>
+            <Text style={styles.subtitle}>The cookie-jar chat messenger for kids!</Text>
+          </View>
 
-        {/* Dynamic Action Card */}
-        <View style={styles.card}>
-          {!subscribed ? (
-            <View style={styles.cardContent}>
-              <Text style={styles.cardEmoji}>🔒</Text>
-              <Text style={styles.cardTitle}>Ask your parent to set up Crumbo!</Text>
-              <Text style={styles.cardText}>
-                Crumbo is a safe space for messaging friends. We collect absolutely zero kid data.
-              </Text>
-              <TouchableOpacity 
-                style={styles.parentGateButton}
-                onPress={() => router.push('/parent/gate')}
-              >
-                <Text style={styles.parentGateButtonText}>Setup Crumbo for Kids</Text>
-              </TouchableOpacity>
-            </View>
-          ) : (
-            <View style={styles.cardContent}>
-              <Text style={styles.cardEmoji}>🍪</Text>
-              <Text style={styles.cardTitle}>
-                {profile ? `Hey, ${profile.name}!` : 'Ready to start?'}
-              </Text>
-              <Text style={styles.cardText}>
-                {profile 
-                  ? 'Your cookie jar is ready. Jump in to chat with your friends!' 
-                  : 'Your parent has activated Crumbo! Let\'s set up your profile.'}
-              </Text>
-              
-              <TouchableOpacity 
-                style={styles.primaryButton}
-                onPress={handleStartChatting}
-              >
-                <Text style={styles.primaryButtonText}>
-                  {profile ? 'Enter Cookie Jar 🍪' : 'Create Kid Profile'}
+          {/* Dynamic Action Card */}
+          <View style={styles.card}>
+            {profile ? (
+              <View style={styles.cardContent}>
+                <Text style={styles.cardEmoji}>🍪</Text>
+                <Text style={styles.cardTitle}>Hey, {profile.name}!</Text>
+                <Text style={styles.cardText}>
+                  Your cookie jar is ready. Jump in to chat with your friends!
                 </Text>
-              </TouchableOpacity>
-            </View>
-          )}
-        </View>
+                <TouchableOpacity 
+                  style={styles.primaryButton}
+                  onPress={() => router.push('/chat')}
+                >
+                  <Text style={styles.primaryButtonText}>Enter Cookie Jar 🍪</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <View style={[styles.cardContent, { width: '100%' }]}>
+                <Text style={styles.cardEmoji}>🍪</Text>
+                <Text style={styles.cardTitle}>Ready to start chatting?</Text>
+                <Text style={styles.cardText}>
+                  Log in as a kid using the Cookie Code provided by your parent.
+                </Text>
+                <TextInput
+                  style={[styles.input, { width: '100%', marginBottom: 16 }]}
+                  placeholder="Cookie Code (e.g. CRUM-123-456)"
+                  placeholderTextColor="#A1887F"
+                  autoCapitalize="characters"
+                  autoCorrect={false}
+                  value={cookieCodeInput}
+                  onChangeText={setCookieCodeInput}
+                />
+                <TouchableOpacity 
+                  style={styles.primaryButton}
+                  onPress={handleKidLogin}
+                  disabled={syncing}
+                >
+                  {syncing ? (
+                    <ActivityIndicator color="#4E342E" />
+                  ) : (
+                    <Text style={styles.primaryButtonText}>Kid Login 🍪</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
 
-        {/* Footer Area for parents */}
-        <View style={styles.footer}>
-          {subscribed && (
+          {/* Footer Area for parents */}
+          <View style={styles.footer}>
             <TouchableOpacity 
               style={styles.linkButton} 
               onPress={() => router.push('/parent/gate')}
             >
-              <Text style={styles.linkButtonText}>Parents Area (Manage Subscription)</Text>
+              <Text style={styles.linkButtonText}>Parents Area (Setup & Controls)</Text>
             </TouchableOpacity>
-          )}
-          <Text style={styles.privacyText}>
-            Privacy promise: No child data will ever be collected or stored.
-          </Text>
-        </View>
-
-      </View>
+            <Text style={styles.privacyText}>
+              Privacy promise: No child data will ever be collected or stored.
+            </Text>
+          </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -221,19 +255,6 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: '#4E342E',
   },
-  parentGateButton: {
-    backgroundColor: '#4E342E',
-    borderRadius: 20,
-    paddingVertical: 16,
-    paddingHorizontal: 32,
-    width: '100%',
-    alignItems: 'center',
-  },
-  parentGateButtonText: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: '#FFFFFF',
-  },
   footer: {
     width: '100%',
     alignItems: 'center',
@@ -253,5 +274,75 @@ const styles = StyleSheet.create({
     color: '#A1887F',
     textAlign: 'center',
     fontWeight: '600',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(78, 52, 46, 0.4)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  modalContent: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 28,
+    padding: 24,
+    width: '100%',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.15,
+    shadowRadius: 16,
+    elevation: 5,
+    borderWidth: 2,
+    borderColor: '#FFF5D1',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  modalTitle: {
+    fontSize: 22,
+    fontWeight: '900',
+    color: '#4E342E',
+  },
+  modalSubtitle: {
+    fontSize: 14,
+    color: '#795548',
+    lineHeight: 20,
+    marginBottom: 20,
+    fontWeight: '600',
+  },
+  label: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#8D6E63',
+    textTransform: 'uppercase',
+    marginBottom: 8,
+  },
+  input: {
+    backgroundColor: '#FFFDF5',
+    borderWidth: 2,
+    borderColor: '#FFEFC0',
+    borderRadius: 16,
+    height: 50,
+    paddingHorizontal: 16,
+    fontSize: 16,
+    color: '#4E342E',
+    fontWeight: '600',
+    marginBottom: 16,
+  },
+  modalSubmit: {
+    backgroundColor: '#FFC93C',
+    borderRadius: 16,
+    height: 52,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  modalSubmitText: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#4E342E',
   },
 });

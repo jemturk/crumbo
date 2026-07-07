@@ -37,6 +37,7 @@ export default function ChatScreen() {
   const [chatDisabled, setChatDisabled] = useState(false);
   const [callingDisabled, setCallingDisabled] = useState(false);
   const [videoCallingDisabled, setVideoCallingDisabled] = useState(false);
+  const [pairingStatus, setPairingStatus] = useState<'paired' | 'pending'>('paired');
 
   // Call simulation states
   const [callModalVisible, setCallModalVisible] = useState(false);
@@ -124,6 +125,11 @@ export default function ChatScreen() {
       if (currentFriend) {
         const msgs = await StorageService.getMessages(currentFriend.id);
         setMessages(msgs);
+        
+        if (kidProf) {
+          const status = await StorageService.checkFriendPairingStatus(kidProf.cookieCode, currentFriend.cookieCode);
+          setPairingStatus(status);
+        }
       }
     } catch (e) {
       console.error("Error loading chat", e);
@@ -295,17 +301,17 @@ export default function ChatScreen() {
         </View>
 
         <View style={styles.headerRight}>
-          {!callingDisabled && (
+          {!callingDisabled && pairingStatus === 'paired' && (
             <TouchableOpacity style={styles.headerCallBtn} onPress={() => handleStartCall(false)}>
               <Ionicons name="call" size={20} color="#8D6E63" />
             </TouchableOpacity>
           )}
-          {!videoCallingDisabled && (
+          {!videoCallingDisabled && pairingStatus === 'paired' && (
             <TouchableOpacity style={styles.headerCallBtn} onPress={() => handleStartCall(true)}>
               <Ionicons name="videocam" size={20} color="#8D6E63" />
             </TouchableOpacity>
           )}
-          {callingDisabled && videoCallingDisabled && (
+          {(callingDisabled || pairingStatus === 'pending') && (videoCallingDisabled || pairingStatus === 'pending') && (
             <View style={{ width: 36 }} />
           )}
         </View>
@@ -342,6 +348,13 @@ export default function ChatScreen() {
           <View style={[styles.disabledInputArea, { paddingBottom: Platform.OS === 'android' ? (insets.bottom > 0 && !keyboardVisible ? insets.bottom + 16 : 16) : 16 }]}>
             <Ionicons name="lock-closed" size={20} color="#8D6E63" />
             <Text style={styles.disabledInputText}>Chatting is paused by your parent 🍪</Text>
+          </View>
+        ) : pairingStatus === 'pending' ? (
+          <View style={[styles.pendingInputArea, { paddingBottom: Platform.OS === 'android' ? (insets.bottom > 0 && !keyboardVisible ? insets.bottom + 16 : 16) : 16 }]}>
+            <Ionicons name="alert-circle" size={20} color="#E65100" />
+            <Text style={styles.pendingInputText}>
+              Waiting for parent approval. Tell friend's parent your Cookie Code: {profile?.cookieCode}
+            </Text>
           </View>
         ) : (
           <View style={[styles.inputArea, { paddingBottom: Platform.OS === 'android' ? (insets.bottom > 0 && !keyboardVisible ? insets.bottom + 12 : 12) : 12 }]}>
@@ -718,5 +731,23 @@ const styles = StyleSheet.create({
     color: '#8D6E63',
     marginLeft: 6,
     fontWeight: '600',
+  },
+  pendingInputArea: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 18,
+    backgroundColor: '#FFF3E0',
+    borderTopWidth: 1,
+    borderColor: '#FFE0B2',
+    gap: 8,
+  },
+  pendingInputText: {
+    fontSize: 13,
+    color: '#E65100',
+    fontWeight: '800',
+    flexShrink: 1,
+    textAlign: 'center',
   },
 });

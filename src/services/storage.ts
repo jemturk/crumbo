@@ -93,11 +93,7 @@ export const StorageService = {
     const part2 = Math.floor(100 + Math.random() * 900);
     const cookieCode = `CRUM-${part1}-${part2}`;
     
-    const initialFriends: Friend[] = [
-      { id: '1', name: 'Alex', cookieCode: 'CRUM-482-195', avatarEmoji: '🍪' },
-      { id: '2', name: 'Chloe', cookieCode: 'CRUM-721-394', avatarEmoji: '🧁' },
-      { id: '3', name: 'Danny', cookieCode: 'CRUM-889-204', avatarEmoji: '🦕' },
-    ];
+    const initialFriends: Friend[] = [];
 
     const profile: KidProfile = { 
       name, 
@@ -118,11 +114,6 @@ export const StorageService = {
     if (!active) {
       await AsyncStorage.setItem(KEYS.KID_PROFILE, JSON.stringify(profile));
       await AsyncStorage.setItem(KEYS.FRIENDS, JSON.stringify(initialFriends));
-      
-      const alexMessages: Message[] = [
-        { id: 'm1', text: 'Hey! I finished that drawing 🎨', timestamp: new Date(Date.now() - 3 * 60 * 1000).toISOString(), sender: 'them' },
-      ];
-      await AsyncStorage.setItem(`${KEYS.MESSAGES_PREFIX}1`, JSON.stringify(alexMessages));
     }
 
     return profile;
@@ -133,18 +124,8 @@ export const StorageService = {
     const data = await AsyncStorage.getItem(KEYS.FRIENDS);
     if (!data) {
       // Seed some initial friendly contacts for the demo
-      const initialFriends: Friend[] = [
-        { id: '1', name: 'Alex', cookieCode: 'CRUM-482-195', avatarEmoji: '🍪' },
-        { id: '2', name: 'Chloe', cookieCode: 'CRUM-721-394', avatarEmoji: '🧁' },
-        { id: '3', name: 'Danny', cookieCode: 'CRUM-889-204', avatarEmoji: '🦕' },
-      ];
+      const initialFriends: Friend[] = [];
       await AsyncStorage.setItem(KEYS.FRIENDS, JSON.stringify(initialFriends));
-      
-      // Seed initial messages for Alex as shown in mockup
-      const alexMessages: Message[] = [
-        { id: 'm1', text: 'Hey! I finished that drawing 🎨', timestamp: new Date(Date.now() - 3 * 60 * 1000).toISOString(), sender: 'them' },
-      ];
-      await AsyncStorage.setItem(`${KEYS.MESSAGES_PREFIX}1`, JSON.stringify(alexMessages));
       
       return initialFriends;
     }
@@ -566,6 +547,209 @@ export const StorageService = {
     }
   },
 
+
+
+  async loginKidWithCode(cookieCode: string): Promise<KidProfile | null> {
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .like('cookie_code', 'PARENT:%')
+        .like('push_token', `%"cookieCode":"${cookieCode}"%`);
+
+      if (error || !data || data.length === 0) {
+        return null;
+      }
+
+      // Find the parent profile that actually OWNS this kid
+      let targetKid = null;
+      for (const parentProfile of data) {
+        try {
+          const payload = JSON.parse(parentProfile.push_token);
+          if (payload && payload.kids) {
+            const found = payload.kids.find((k: any) => k.cookieCode === cookieCode);
+            if (found) {
+              targetKid = found;
+              break;
+            }
+          }
+        } catch {}
+      }
+
+      if (targetKid) {
+        const kidProfile: KidProfile = {
+          name: targetKid.name,
+          cookieCode: targetKid.cookieCode,
+          chatDisabled: !!targetKid.chatDisabled,
+          callingDisabled: !!targetKid.callingDisabled,
+          videoCallingDisabled: !!targetKid.videoCallingDisabled
+        };
+        await AsyncStorage.setItem(KEYS.KID_PROFILE, JSON.stringify(kidProfile));
+        await AsyncStorage.setItem(KEYS.IS_SUBSCRIBED, 'true');
+        
+        if (targetKid.friends) {
+          await AsyncStorage.setItem(KEYS.FRIENDS, JSON.stringify(targetKid.friends));
+        } else {
+          await AsyncStorage.setItem(KEYS.FRIENDS, JSON.stringify([]));
+        }
+
+        return kidProfile;
+      }
+    } catch (e) {
+      console.error("Error logging in kid with code:", e);
+    }
+    return null;
+  },
+
+  async logoutKid(): Promise<void> {
+    await AsyncStorage.removeItem(KEYS.KID_PROFILE);
+    await AsyncStorage.removeItem(KEYS.FRIENDS);
+    await AsyncStorage.removeItem(KEYS.IS_SUBSCRIBED);
+  },
+
+  async syncKidProfileAndFriends(): Promise<KidProfile | null> {
+    try {
+      const active = await this.getKidProfile();
+      if (!active) return null;
+
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .like('cookie_code', 'PARENT:%')
+        .like('push_token', `%"cookieCode":"${active.cookieCode}"%`);
+
+      if (!error && data && data.length > 0) {
+        // Find the parent profile that actually OWNS this kid
+        let targetKid = null;
+        for (const parentProfile of data) {
+          try {
+            const payload = JSON.parse(parentProfile.push_token);
+            if (payload && payload.kids) {
+              const found = payload.kids.find((k: any) => k.cookieCode === active.cookieCode);
+              if (found) {
+                targetKid = found;
+                break;
+              }
+            }
+          } catch {}
+        }
+
+        if (targetKid) {
+          const updatedProfile: KidProfile = {
+            name: targetKid.name,
+            cookieCode: targetKid.cookieCode,
+            chatDisabled: !!targetKid.chatDisabled,
+            callingDisabled: !!targetKid.callingDisabled,
+            videoCallingDisabled: !!targetKid.videoCallingDisabled
+          };
+          await AsyncStorage.setItem(KEYS.KID_PROFILE, JSON.stringify(updatedProfile));
+          if (targetKid.friends) {
+            await AsyncStorage.setItem(KEYS.FRIENDS, JSON.stringify(targetKid.friends));
+          } else {
+            await AsyncStorage.setItem(KEYS.FRIENDS, JSON.stringify([]));
+          }
+          return updatedProfile;
+        }
+      }
+    } catch (e) {
+      console.error("Failed to sync kid profile from Supabase:", e);
+    }
+    return null;
+  },
+
+  async addFriendToKidProfile(kidCookieCode: string, friendName: string, friendCookieCode: string): Promise<Friend> {
+    const randomEmoji = DEFAULT_EMOJIS[Math.floor(Math.random() * DEFAULT_EMOJIS.length)];
+    const newFriend: Friend = {
+      id: Math.random().toString(36).substring(2, 9),
+      name: friendName,
+      cookieCode: friendCookieCode,
+      avatarEmoji: randomEmoji
+    };
+
+    // 1. Update friends list in the KIDS_LIST array
+    const kids = await this.getKidsList();
+    const updatedKids = kids.map(k => {
+      if (k.cookieCode === kidCookieCode) {
+        const friends = k.friends || [];
+        if (!friends.some(f => f.cookieCode === friendCookieCode)) {
+          return { ...k, friends: [...friends, newFriend] };
+        }
+      }
+      return k;
+    });
+    await this.saveKidsList(updatedKids);
+
+    // 2. If this is the active profile on this device, also update active KEYS.FRIENDS
+    const active = await this.getKidProfile();
+    if (active && active.cookieCode === kidCookieCode) {
+      const activeFriends = await this.getFriends();
+      if (!activeFriends.some(f => f.cookieCode === friendCookieCode)) {
+        await AsyncStorage.setItem(KEYS.FRIENDS, JSON.stringify([...activeFriends, newFriend]));
+      }
+    }
+
+    return newFriend;
+  },
+
+  async removeFriendFromKidProfile(kidCookieCode: string, friendCookieCode: string): Promise<void> {
+    // 1. Update in KIDS_LIST
+    const kids = await this.getKidsList();
+    const updatedKids = kids.map(k => {
+      if (k.cookieCode === kidCookieCode) {
+        const friends = k.friends || [];
+        return { ...k, friends: friends.filter(f => f.cookieCode !== friendCookieCode) };
+      }
+      return k;
+    });
+    await this.saveKidsList(updatedKids);
+
+    // 2. If active profile, also update KEYS.FRIENDS
+    const active = await this.getKidProfile();
+    if (active && active.cookieCode === kidCookieCode) {
+      const activeFriends = await this.getFriends();
+      await AsyncStorage.setItem(KEYS.FRIENDS, JSON.stringify(activeFriends.filter(f => f.cookieCode !== friendCookieCode)));
+    }
+  },
+
+  async checkFriendPairingStatus(kidCookieCode: string, friendCookieCode: string): Promise<'paired' | 'pending'> {
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .like('cookie_code', 'PARENT:%')
+        .like('push_token', `%"cookieCode":"${friendCookieCode}"%`);
+
+      if (error || !data || data.length === 0) {
+        return 'pending';
+      }
+
+      // Find the parent profile that actually OWNS the friend (not just a parent who has added the friend as a buddy)
+      let friendProfileInDb = null;
+      for (const parentProfile of data) {
+        try {
+          const payload = JSON.parse(parentProfile.push_token);
+          if (payload && payload.kids) {
+            const found = payload.kids.find((k: any) => k.cookieCode === friendCookieCode);
+            if (found) {
+              friendProfileInDb = found;
+              break;
+            }
+          }
+        } catch {}
+      }
+
+      if (friendProfileInDb && friendProfileInDb.friends) {
+        const isPaired = friendProfileInDb.friends.some((f: any) => f.cookieCode === kidCookieCode);
+        if (isPaired) {
+          return 'paired';
+        }
+      }
+    } catch (e) {
+      console.error("Error checking pairing status:", e);
+    }
+    return 'pending';
+  },
+
   // Reset helper
   async clearAll(): Promise<void> {
     await AsyncStorage.clear();
@@ -583,12 +767,6 @@ const MOCK_ANSWERS: Record<string, string[]> = {
     "Wow, I love that! ❤️",
     "What are you doing today? 🎈",
     "I am building a lego castle right now 🧱"
-  ],
-  alex: [
-    "Yeah, uploading now 🖌️",
-    "Got it! Let me know if you like the details!",
-    "Thanks! It took me like an hour to sketch 🎨",
-    "Let's draw together tomorrow! ✏️"
   ]
 };
 
@@ -598,22 +776,8 @@ export function triggerMockReply(
   onReply: (msg: Message) => void
 ) {
   setTimeout(async () => {
-    let replyText = "";
-    const lowercaseMsg = userMessageText.toLowerCase();
-
-    if (friend.name.toLowerCase() === 'alex') {
-      if (lowercaseMsg.includes('drawing') || lowercaseMsg.includes('send')) {
-        replyText = MOCK_ANSWERS.alex[0]; // "Yeah, uploading now 🖌️"
-      } else if (lowercaseMsg.includes('love') || lowercaseMsg.includes('colors') || lowercaseMsg.includes('got it')) {
-        replyText = "Thanks! It took me like an hour to sketch 🎨";
-      } else {
-        const list = MOCK_ANSWERS.alex;
-        replyText = list[Math.floor(Math.random() * list.length)];
-      }
-    } else {
-      const list = MOCK_ANSWERS.general;
-      replyText = list[Math.floor(Math.random() * list.length)];
-    }
+    const list = MOCK_ANSWERS.general;
+    const replyText = list[Math.floor(Math.random() * list.length)];
 
     const received = await StorageService.receiveMockMessage(friend.id, replyText);
     onReply(received);
