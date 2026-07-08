@@ -19,10 +19,16 @@ import { StorageService, KidProfile } from '@/services/storage';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import CustomAlertModal, { AlertButton } from '@/components/CustomAlertModal';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import { useDisplayScale } from '@/hooks/use-display-scale';
+import { useAppTheme } from '@/hooks/use-app-theme';
+import { useSettings } from '@/context/settings-context';
 
 export default function ParentDashboard() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { s } = useDisplayScale();
+  const { theme, colors, isDark } = useAppTheme();
+  const { displaySize, theme: appTheme, changeDisplaySize, changeTheme } = useSettings();
   
   // Custom Alert State
   const [alertConfig, setAlertConfig] = useState<{
@@ -50,6 +56,7 @@ export default function ParentDashboard() {
   // Accordion Toggles
   const [childrenExpanded, setChildrenExpanded] = useState(true);
   const [subscriptionExpanded, setSubscriptionExpanded] = useState(false);
+  const [appSettingsExpanded, setAppSettingsExpanded] = useState(false);
   const [cacheExpanded, setCacheExpanded] = useState(false);
 
   // Modals
@@ -140,6 +147,22 @@ export default function ParentDashboard() {
       }
     } catch (e) {
       console.error("Error loading settings", e);
+    }
+  };
+
+  const handleUpdateDisplaySize = async (size: 'small' | 'default' | 'large') => {
+    try {
+      await changeDisplaySize(size);
+    } catch (e) {
+      console.error("Failed to save display size:", e);
+    }
+  };
+
+  const handleUpdateTheme = async (newTheme: 'light' | 'dark') => {
+    try {
+      await changeTheme(newTheme);
+    } catch (e) {
+      console.error("Failed to save theme:", e);
     }
   };
 
@@ -443,62 +466,62 @@ export default function ParentDashboard() {
   };
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
       {/* Header matching exact layout specs */}
-      <View style={[styles.header, { paddingTop: Platform.OS === 'android' ? (insets.top > 0 ? insets.top + 8 : 44) : 16 }]}>
+      <View style={[styles.header, { borderBottomColor: colors.border, backgroundColor: colors.cardBg, paddingTop: Platform.OS === 'android' ? (insets.top > 0 ? insets.top + s(8) : s(44)) : s(16), paddingHorizontal: s(16), borderBottomWidth: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }]}>
         <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
-          <Ionicons name="log-out-outline" size={22} color="#D32F2F" />
-          <Text style={styles.logoutButtonText}>Log Out</Text>
+          <Ionicons name="log-out-outline" size={s(22)} color="#D32F2F" />
+          <Text style={[styles.logoutButtonText, { fontSize: s(14) }]}>Log Out</Text>
         </TouchableOpacity>
         
-        <Text style={styles.headerTitle}>Parent Area</Text>
+        <Text style={[styles.headerTitle, { color: colors.text, fontSize: s(18) }]}>Parent Area</Text>
       </View>
 
-      <ScrollView contentContainerStyle={styles.scrollContent}>
+      <ScrollView contentContainerStyle={[styles.scrollContent, { padding: s(16), gap: s(16) }]}>
         
         {/* Accordion 1: Managed Children */}
-        <View style={styles.card}>
+        <View style={[styles.card, { backgroundColor: colors.cardBg, borderColor: colors.border, borderRadius: s(24) }]}>
           <TouchableOpacity 
-            style={styles.cardHeader} 
+            style={[styles.cardHeader, { paddingHorizontal: s(16), paddingVertical: s(14) }]} 
             onPress={() => setChildrenExpanded(!childrenExpanded)}
             activeOpacity={0.7}
           >
             <View style={styles.cardHeaderLeft}>
-              <Ionicons name="people-outline" size={24} color="#D4A373" style={styles.cardIcon} />
-              <Text style={styles.cardTitle}>Managed Children</Text>
+              <Ionicons name="people-outline" size={s(24)} color={colors.cardHeaderLeftIcon} style={styles.cardIcon} />
+              <Text style={[styles.cardTitle, { color: colors.text, fontSize: s(16) }]}>Managed Children</Text>
             </View>
             <Ionicons 
               name={childrenExpanded ? "chevron-up" : "chevron-down"} 
-              size={20} 
+              size={s(20)} 
               color="#A1887F" 
             />
           </TouchableOpacity>
 
           {childrenExpanded && (
-            <View style={styles.cardBody}>
+            <View style={[styles.cardBody, { borderTopColor: colors.border }]}>
               {kidsList.length > 0 ? (
                 kidsList.map((kid) => {
                   return (
-                    <View key={kid.cookieCode} style={styles.childContainer}>
+                    <View key={kid.cookieCode} style={[styles.childContainer, { borderColor: colors.border, padding: s(16), borderRadius: s(20), backgroundColor: isDark ? colors.inputBg : '#FFFDF8' }]}>
                       {/* Name and Delete Row */}
                       <View style={styles.childMetaRow}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                          <Text style={styles.childName}>{kid.name}</Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: s(8) }}>
+                          <Text style={[styles.childName, { color: colors.text, fontSize: s(18) }]}>{kid.name}</Text>
                         </View>
                         <TouchableOpacity style={styles.deleteChildBtn} onPress={() => handleDeleteChild(kid.cookieCode, kid.name)}>
-                          <Ionicons name="trash" size={18} color="#D32F2F" />
+                          <Ionicons name="trash" size={s(18)} color="#D32F2F" />
                         </TouchableOpacity>
                       </View>
 
                       {/* Pairing Code Pill and QR */}
                       <View style={styles.codeRow}>
-                        <TouchableOpacity style={styles.codePill} onPress={() => copyToClipboard(kid.cookieCode)} activeOpacity={0.7}>
-                          <Text style={styles.codeText}>{kid.cookieCode}</Text>
-                          <Ionicons name="copy-outline" size={14} color="#8D6E63" />
+                        <TouchableOpacity style={[styles.codePill, { backgroundColor: isDark ? '#3D2A1D' : '#FFF5D1', paddingHorizontal: s(12), paddingVertical: s(6), borderRadius: s(12) }]} onPress={() => copyToClipboard(kid.cookieCode)} activeOpacity={0.7}>
+                          <Text style={[styles.codeText, { color: colors.textSecondary, fontSize: s(13) }]}>{kid.cookieCode}</Text>
+                          <Ionicons name="copy-outline" size={s(14)} color="#8D6E63" />
                         </TouchableOpacity>
                         
-                        <TouchableOpacity style={styles.qrBtn}>
-                          <Ionicons name="qr-code-outline" size={16} color="#8D6E63" />
+                        <TouchableOpacity style={[styles.qrBtn, { width: s(36), height: s(36), borderRadius: s(18), backgroundColor: isDark ? '#3D2A1D' : '#FFFDF5' }]} onPress={() => { setSelectedKidForLogs(kid); setQrCodeVisible(true); }}>
+                          <Ionicons name="qr-code-outline" size={s(16)} color="#8D6E63" />
                         </TouchableOpacity>
                       </View>
 
@@ -507,77 +530,77 @@ export default function ParentDashboard() {
                         <View style={styles.togglesGroup}>
                           {/* Chat Toggle */}
                           <TouchableOpacity 
-                            style={[styles.toggleCircle, kid.chatDisabled ? styles.toggleRedBg : styles.toggleGreenBg]}
+                            style={[styles.toggleCircle, { width: s(40), height: s(40), borderRadius: s(20) }, kid.chatDisabled ? styles.toggleRedBg : styles.toggleGreenBg]}
                             onPress={() => handleToggleChat(kid)}
                             activeOpacity={0.8}
                           >
-                            <Ionicons name="chatbubble" size={20} color="#FFFFFF" />
+                            <Ionicons name="chatbubble" size={s(20)} color="#FFFFFF" />
                             {kid.chatDisabled && <View style={styles.slashOverlay} />}
                           </TouchableOpacity>
 
                           {/* Voice Call Toggle */}
                           <TouchableOpacity 
-                            style={[styles.toggleCircle, kid.callingDisabled ? styles.toggleRedBg : styles.toggleGreenBg]}
+                            style={[styles.toggleCircle, { width: s(40), height: s(40), borderRadius: s(20) }, kid.callingDisabled ? styles.toggleRedBg : styles.toggleGreenBg]}
                             onPress={() => handleToggleCalling(kid)}
                             activeOpacity={0.8}
                           >
-                            <Ionicons name="call" size={20} color="#FFFFFF" />
+                            <Ionicons name="call" size={s(20)} color="#FFFFFF" />
                             {kid.callingDisabled && <View style={styles.slashOverlay} />}
                           </TouchableOpacity>
 
                           {/* Video Call Toggle */}
                           <TouchableOpacity 
-                            style={[styles.toggleCircle, kid.videoCallingDisabled ? styles.toggleRedBg : styles.toggleGreenBg]}
+                            style={[styles.toggleCircle, { width: s(40), height: s(40), borderRadius: s(20) }, kid.videoCallingDisabled ? styles.toggleRedBg : styles.toggleGreenBg]}
                             onPress={() => handleToggleVideo(kid)}
                             activeOpacity={0.8}
                           >
-                            <Ionicons name="videocam" size={20} color="#FFFFFF" />
+                            <Ionicons name="videocam" size={s(20)} color="#FFFFFF" />
                             {kid.videoCallingDisabled && <View style={styles.slashOverlay} />}
                           </TouchableOpacity>
                         </View>
 
                         {/* Friends and Logs Button */}
                         <TouchableOpacity 
-                          style={styles.friendsLogsBtn} 
+                          style={[styles.friendsLogsBtn, { height: s(40), borderRadius: s(12), paddingHorizontal: s(16), backgroundColor: isDark ? '#3D2A1D' : '#FFFDF5', borderColor: colors.border }]} 
                           onPress={() => {
                             setSelectedKidForLogs(kid);
                             setFriendsModalVisible(true);
                           }}
                         >
-                          <Text style={styles.friendsLogsBtnText}>Friends & Logs</Text>
-                          <Ionicons name="chevron-forward" size={14} color="#8D6E63" />
+                          <Text style={[styles.friendsLogsBtnText, { color: colors.textSecondary, fontSize: s(13) }]}>Friends & Logs</Text>
+                          <Ionicons name="chevron-forward" size={s(14)} color="#8D6E63" />
                         </TouchableOpacity>
                       </View>
                     </View>
                   );
                 })
               ) : (
-                <Text style={styles.noChildrenText}>No children paired on this device yet.</Text>
+                <Text style={[styles.noChildrenText, { color: colors.textSecondary, fontSize: s(14) }]}>No children paired on this device yet.</Text>
               )}
 
               {/* Add Child Profile Button */}
-              <TouchableOpacity style={styles.addChildBtn} onPress={handleAddChildClick}>
-                <Ionicons name="add" size={18} color="#8D6E63" />
-                <Text style={styles.addChildBtnText}>Add Child Profile</Text>
+              <TouchableOpacity style={[styles.addChildBtn, { height: s(50), borderRadius: s(16), borderColor: colors.border, marginTop: s(8) }]} onPress={handleAddChildClick}>
+                <Ionicons name="add" size={s(18)} color="#8D6E63" />
+                <Text style={[styles.addChildBtnText, { color: colors.textSecondary, fontSize: s(14) }]}>Add Child Profile</Text>
               </TouchableOpacity>
             </View>
           )}
         </View>
 
         {/* Accordion 2: Subscription Settings */}
-        <View style={styles.card}>
+        <View style={[styles.card, { backgroundColor: colors.cardBg, borderColor: colors.border, borderRadius: s(24) }]}>
           <TouchableOpacity 
-            style={styles.cardHeader} 
+            style={[styles.cardHeader, { paddingHorizontal: s(16), paddingVertical: s(14) }]} 
             onPress={() => setSubscriptionExpanded(!subscriptionExpanded)}
             activeOpacity={0.7}
           >
             <View style={styles.cardHeaderLeft}>
-              <Ionicons name="card-outline" size={24} color="#D4A373" style={styles.cardIcon} />
-              <Text style={styles.cardTitle}>Subscription Settings</Text>
+              <Ionicons name="card-outline" size={s(24)} color={colors.cardHeaderLeftIcon} style={styles.cardIcon} />
+              <Text style={[styles.cardTitle, { color: colors.text, fontSize: s(16) }]}>Subscription Settings</Text>
             </View>
             <Ionicons 
               name={subscriptionExpanded ? "chevron-up" : "chevron-down"} 
-              size={20} 
+              size={s(20)} 
               color="#A1887F" 
             />
           </TouchableOpacity>
@@ -586,12 +609,12 @@ export default function ParentDashboard() {
             <View style={styles.cardBodyPadding}>
               {!subscribed ? (
                 <View>
-                  <Text style={styles.infoText}>
+                  <Text style={[styles.infoText, { color: colors.textSecondary, fontSize: s(13), lineHeight: s(18) }]}>
                     Crumbo requires a simulation subscription to cover hosting and keep messaging ad-free and tracking-free.
                   </Text>
-                  <Text style={styles.inputLabel}>Parent Email Address</Text>
+                  <Text style={[styles.inputLabel, { color: colors.text, fontSize: s(13) }]}>Parent Email Address</Text>
                   <TextInput
-                    style={styles.textInput}
+                    style={[styles.textInput, { backgroundColor: colors.inputBg, color: colors.inputText, borderColor: colors.borderStrong, fontSize: s(14), height: s(48), borderRadius: s(14), paddingHorizontal: s(14) }]}
                     placeholder="parent@example.com"
                     placeholderTextColor="#A1887F"
                     keyboardType="email-address"
@@ -599,25 +622,25 @@ export default function ParentDashboard() {
                     value={emailInput}
                     onChangeText={setEmailInput}
                   />
-                  <TouchableOpacity style={styles.actionBtnPrimary} onPress={handleSubscribe} disabled={syncing}>
+                  <TouchableOpacity style={[styles.actionBtnPrimary, { backgroundColor: colors.primaryBtn, height: s(48), borderRadius: s(14) }]} onPress={handleSubscribe} disabled={syncing}>
                     {syncing ? (
                       <ActivityIndicator color="#4E342E" />
                     ) : (
-                      <Text style={styles.actionBtnPrimaryText}>Subscribe Now - $4.99/mo</Text>
+                      <Text style={[styles.actionBtnPrimaryText, { color: colors.primaryBtnText, fontSize: s(14) }]}>Subscribe Now - $4.99/mo</Text>
                     )}
                   </TouchableOpacity>
                 </View>
               ) : (
                 <View>
-                  <View style={styles.activeSubBadge}>
-                    <Ionicons name="checkmark-circle" size={18} color="#2E7D32" />
-                    <Text style={styles.activeSubText}>Active Subscription</Text>
+                  <View style={[styles.activeSubBadge, { backgroundColor: isDark ? '#1B5E20' : '#E8F5E9', padding: s(12), borderRadius: s(12) }]}>
+                    <Ionicons name="checkmark-circle" size={s(18)} color={colors.successText} />
+                    <Text style={[styles.activeSubText, { color: colors.successText, fontSize: s(14) }]}>Active Subscription</Text>
                   </View>
-                  <Text style={styles.inputLabel}>Registered Email</Text>
-                  <Text style={styles.emailDisplay}>{parentEmail}</Text>
+                  <Text style={[styles.inputLabel, { color: colors.text, fontSize: s(13) }]}>Registered Email</Text>
+                  <Text style={[styles.emailDisplay, { color: colors.text, fontSize: s(15) }]}>{parentEmail}</Text>
                   
-                  <TouchableOpacity style={styles.actionBtnSecondary} onPress={handleCancelSubscription}>
-                    <Text style={styles.actionBtnSecondaryText}>Cancel Subscription</Text>
+                  <TouchableOpacity style={[styles.actionBtnSecondary, { backgroundColor: colors.actionBtnSecondaryBg, borderColor: colors.border, height: s(48), borderRadius: s(14) }]} onPress={handleCancelSubscription}>
+                    <Text style={[styles.actionBtnSecondaryText, { color: colors.actionBtnSecondaryText, fontSize: s(14) }]}>Cancel Subscription</Text>
                   </TouchableOpacity>
                 </View>
               )}
@@ -625,31 +648,104 @@ export default function ParentDashboard() {
           )}
         </View>
 
-        {/* Accordion 3: Local Device Cache */}
-        <View style={styles.card}>
+        {/* Accordion 3: App Settings */}
+        <View style={[styles.card, { backgroundColor: colors.cardBg, borderColor: colors.border, borderRadius: s(24) }]}>
           <TouchableOpacity 
-            style={styles.cardHeader} 
+            style={[styles.cardHeader, { paddingHorizontal: s(16), paddingVertical: s(14) }]} 
+            onPress={() => setAppSettingsExpanded(!appSettingsExpanded)}
+            activeOpacity={0.7}
+          >
+            <View style={styles.cardHeaderLeft}>
+              <Ionicons name="settings-outline" size={s(24)} color={colors.cardHeaderLeftIcon} style={styles.cardIcon} />
+              <Text style={[styles.cardTitle, { color: colors.text, fontSize: s(16) }]}>App Settings</Text>
+            </View>
+            <Ionicons 
+              name={appSettingsExpanded ? "chevron-up" : "chevron-down"} 
+              size={s(20)} 
+              color="#A1887F" 
+            />
+          </TouchableOpacity>
+
+          {appSettingsExpanded && (
+            <View style={styles.cardBodyPadding}>
+              <Text style={[styles.infoText, { color: colors.textSecondary, fontSize: s(13), lineHeight: s(18) }]}>
+                Customize display settings for Crumbo kid's interfaces on this device.
+              </Text>
+              
+              <Text style={[styles.inputLabel, { color: colors.text, fontSize: s(13), marginTop: s(8) }]}>Display Size</Text>
+              <View style={[styles.settingsRow, { gap: s(8) }]}>
+                {(['small', 'default', 'large'] as const).map((size) => (
+                  <TouchableOpacity 
+                    key={size}
+                    style={[
+                      styles.settingsBtn, 
+                      { height: s(48), borderRadius: s(16), borderColor: colors.borderStrong, backgroundColor: colors.cardBg },
+                      displaySize === size && { backgroundColor: colors.primaryBtn, borderColor: colors.primaryBtn }
+                    ]}
+                    onPress={() => handleUpdateDisplaySize(size)}
+                  >
+                    <Text style={[
+                      styles.settingsBtnText, 
+                      { color: colors.textSecondary, fontSize: s(14), fontWeight: '800' },
+                      displaySize === size && { color: colors.primaryBtnText }
+                    ]}>
+                      {size.charAt(0).toUpperCase() + size.slice(1)}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <Text style={[styles.inputLabel, { color: colors.text, fontSize: s(13), marginTop: s(16) }]}>App Theme</Text>
+              <View style={[styles.settingsRow, { gap: s(8) }]}>
+                {(['light', 'dark'] as const).map((mode) => (
+                  <TouchableOpacity 
+                    key={mode}
+                    style={[
+                      styles.settingsBtn, 
+                      { height: s(48), borderRadius: s(16), borderColor: colors.borderStrong, backgroundColor: colors.cardBg },
+                      appTheme === mode && { backgroundColor: colors.primaryBtn, borderColor: colors.primaryBtn }
+                    ]}
+                    onPress={() => handleUpdateTheme(mode)}
+                  >
+                    <Text style={[
+                      styles.settingsBtnText, 
+                      { color: colors.textSecondary, fontSize: s(14), fontWeight: '800' },
+                      appTheme === mode && { color: colors.primaryBtnText }
+                    ]}>
+                      {mode.charAt(0).toUpperCase() + mode.slice(1)} Mode
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </View>
+          )}
+        </View>
+
+        {/* Accordion 4: Local Device Cache */}
+        <View style={[styles.card, { backgroundColor: colors.cardBg, borderColor: colors.border, borderRadius: s(24) }]}>
+          <TouchableOpacity 
+            style={[styles.cardHeader, { paddingHorizontal: s(16), paddingVertical: s(14) }]} 
             onPress={() => setCacheExpanded(!cacheExpanded)}
             activeOpacity={0.7}
           >
             <View style={styles.cardHeaderLeft}>
-              <Ionicons name="trash-outline" size={24} color="#D4A373" style={styles.cardIcon} />
-              <Text style={styles.cardTitle}>Local Device Cache</Text>
+              <Ionicons name="trash-outline" size={s(24)} color={colors.cardHeaderLeftIcon} style={styles.cardIcon} />
+              <Text style={[styles.cardTitle, { color: colors.text, fontSize: s(16) }]}>Local Device Cache</Text>
             </View>
             <Ionicons 
               name={cacheExpanded ? "chevron-up" : "chevron-down"} 
-              size={20} 
+              size={s(20)} 
               color="#A1887F" 
             />
           </TouchableOpacity>
 
           {cacheExpanded && (
             <View style={styles.cardBodyPadding}>
-              <Text style={styles.infoText}>
+              <Text style={[styles.infoText, { color: colors.textSecondary, fontSize: s(13), lineHeight: s(18) }]}>
                 Erase local cookies, pairing profiles, messaging history, and cached media on this local device. This action cannot be undone.
               </Text>
-              <TouchableOpacity style={styles.actionBtnSecondary} onPress={handleResetApp}>
-                <Text style={styles.actionBtnSecondaryText}>Erase All Local Data</Text>
+              <TouchableOpacity style={[styles.actionBtnSecondary, { backgroundColor: colors.actionBtnSecondaryBg, borderColor: colors.border, height: s(48), borderRadius: s(14) }]} onPress={handleResetApp}>
+                <Text style={[styles.actionBtnSecondaryText, { color: colors.actionBtnSecondaryText, fontSize: s(14) }]}>Erase All Local Data</Text>
               </TouchableOpacity>
             </View>
           )}
@@ -1799,5 +1895,33 @@ const styles = StyleSheet.create({
     textShadowColor: 'rgba(0, 0, 0, 0.8)',
     textShadowOffset: { width: 0, height: 1 },
     textShadowRadius: 4,
+  },
+  settingsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 12,
+  },
+  settingsBtn: {
+    flex: 1,
+    height: 48,
+    borderRadius: 16,
+    borderWidth: 2,
+    borderColor: '#FFEFC0',
+    backgroundColor: '#FFFDF8',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  settingsBtnActive: {
+    backgroundColor: '#FFC93C',
+    borderColor: '#FFC93C',
+  },
+  settingsBtnText: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#8D6E63',
+  },
+  settingsBtnTextActive: {
+    color: '#4E342E',
   },
 });

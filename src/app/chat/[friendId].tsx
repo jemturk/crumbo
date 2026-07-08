@@ -23,6 +23,8 @@ import { Camera } from 'expo-camera';
 import { RtcSurfaceView } from 'react-native-agora';
 import { agoraManager, hashCode, fetchAgoraToken } from '@/services/agora';
 import { callKeepManager } from '@/services/callkeep';
+import { useDisplayScale } from '@/hooks/use-display-scale';
+import { useAppTheme } from '@/hooks/use-app-theme';
 
 function generateUUID() {
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
@@ -33,6 +35,8 @@ function generateUUID() {
 
 export default function ChatScreen() {
   const router = useRouter();
+  const { s } = useDisplayScale();
+  const { theme, colors, isDark } = useAppTheme();
   const { friendId, incomingCall, callType, roomName } = useLocalSearchParams<{ 
     friendId: string;
     incomingCall?: string;
@@ -549,12 +553,19 @@ export default function ChatScreen() {
 
       return (
         <View style={styles.callLogWrapper}>
-          <View style={[styles.callLogContainer, isMissed ? styles.callLogMissed : styles.callLogEnded]}>
-            <Ionicons name={logIcon} size={16} color={isMissed ? '#D32F2F' : '#8D6E63'} style={styles.callLogIcon} />
-            <Text style={[styles.callLogText, isMissed && styles.callLogTextMissed]}>
+          <View style={[styles.callLogContainer, { 
+            backgroundColor: isMissed 
+              ? (isDark ? '#4C1E20' : '#FFEBEE')
+              : (isDark ? '#2C1E15' : '#F5F5F5'),
+            borderColor: isMissed
+              ? (isDark ? '#5C2E30' : '#FFCDD2')
+              : (isDark ? '#3D2A1D' : '#E0E0E0')
+          }, { paddingHorizontal: s(12), paddingVertical: s(6), gap: s(6) }]}>
+            <Ionicons name={logIcon} size={s(16)} color={isMissed ? (isDark ? '#FF8A80' : '#D32F2F') : colors.textSecondary} style={styles.callLogIcon} />
+            <Text style={[styles.callLogText, { color: isMissed ? (isDark ? '#FF8A80' : '#D32F2F') : colors.text }, { fontSize: s(12) }]}>
               {logTitle}
             </Text>
-            <Text style={styles.callLogTime}>{formatTime(item.timestamp)}</Text>
+            <Text style={[styles.callLogTime, { color: colors.textSecondary }, { fontSize: s(10) }]}>{formatTime(item.timestamp)}</Text>
           </View>
         </View>
       );
@@ -563,10 +574,15 @@ export default function ChatScreen() {
     const isMe = item.sender === 'me';
     return (
       <View style={[styles.messageRow, isMe ? styles.myRow : styles.theirRow]}>
-        <View style={[styles.bubble, isMe ? styles.myBubble : styles.theirBubble]}>
-          <Text style={styles.messageText}>{item.text}</Text>
+        <View style={[
+          styles.bubble,
+          isMe ? [styles.myBubble, { backgroundColor: colors.primaryBtn, borderBottomRightRadius: 4 }] 
+               : [styles.theirBubble, { backgroundColor: isDark ? '#3D2A1D' : '#FFFEC6', borderColor: isDark ? '#4E342E' : '#FFF9C4', borderBottomLeftRadius: 4 }],
+          { paddingHorizontal: s(16), paddingVertical: s(10), borderRadius: s(20) }
+        ]}>
+          <Text style={[styles.messageText, { color: isMe ? colors.primaryBtnText : colors.text }, { fontSize: s(16), lineHeight: s(22) }]}>{item.text}</Text>
         </View>
-        <Text style={[styles.timestamp, isMe ? styles.myTimestamp : styles.theirTimestamp]}>
+        <Text style={[styles.timestamp, isMe ? styles.myTimestamp : styles.theirTimestamp, { color: colors.textSecondary }, { fontSize: s(10) }]}>
           {formatTime(item.timestamp)}
         </Text>
       </View>
@@ -575,45 +591,45 @@ export default function ChatScreen() {
 
   if (loading) {
     return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#FFC93C" />
+      <View style={[styles.loadingContainer, { backgroundColor: colors.bg }]}>
+        <ActivityIndicator size="large" color={colors.primaryBtn} />
       </View>
     );
   }
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
       {/* Header matching requested visual specs */}
-      <View style={[styles.header, { paddingTop: Platform.OS === 'android' ? (insets.top > 0 ? insets.top + 8 : 44) : 14 }]}>
+      <View style={[styles.header, { backgroundColor: colors.cardBg, borderColor: colors.border, paddingTop: Platform.OS === 'android' ? (insets.top > 0 ? insets.top + s(8) : s(44)) : s(14), paddingHorizontal: s(20), paddingVertical: s(14) }]}>
         <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
-          <Ionicons name="arrow-back" size={26} color="#4E342E" />
+          <Ionicons name="arrow-back" size={s(26)} color={colors.text} />
         </TouchableOpacity>
         
         <View style={styles.headerInfo}>
-          <Text style={styles.headerName}>{friend?.name}</Text>
+          <Text style={[styles.headerName, { fontSize: s(20), color: colors.text }]}>{friend?.name}</Text>
           {/* CRITICAL: Active now / Active X mins ago is excluded as requested */}
         </View>
 
         <View style={styles.headerRight}>
           {!callingDisabled && pairingStatus === 'paired' && (
-            <TouchableOpacity style={styles.headerCallBtn} onPress={() => handleStartCall(false)}>
-              <Ionicons name="call" size={20} color="#8D6E63" />
+            <TouchableOpacity style={[styles.headerCallBtn, { backgroundColor: colors.actionBtnSecondaryBg, borderColor: colors.borderStrong }]} onPress={() => handleStartCall(false)}>
+              <Ionicons name="call" size={s(20)} color={colors.actionBtnSecondaryText} />
             </TouchableOpacity>
           )}
           {!videoCallingDisabled && pairingStatus === 'paired' && (
-            <TouchableOpacity style={styles.headerCallBtn} onPress={() => handleStartCall(true)}>
-              <Ionicons name="videocam" size={20} color="#8D6E63" />
+            <TouchableOpacity style={[styles.headerCallBtn, { backgroundColor: colors.actionBtnSecondaryBg, borderColor: colors.borderStrong }]} onPress={() => handleStartCall(true)}>
+              <Ionicons name="videocam" size={s(20)} color={colors.actionBtnSecondaryText} />
             </TouchableOpacity>
           )}
           {(callingDisabled || pairingStatus === 'pending') && (videoCallingDisabled || pairingStatus === 'pending') && (
-            <View style={{ width: 36 }} />
+            <View style={{ width: s(36) }} />
           )}
         </View>
       </View>
 
       {/* Keyboard Avoiding Container */}
       <KeyboardAvoidingView 
-        style={[styles.keyboardContainer, Platform.OS === 'android' && { paddingBottom: keyboardHeight > 0 ? keyboardHeight + 24 : 0 }]}
+        style={[styles.keyboardContainer, Platform.OS === 'android' && { paddingBottom: keyboardHeight > 0 ? keyboardHeight + s(24) : 0 }]}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
       >
@@ -624,39 +640,38 @@ export default function ChatScreen() {
           keyExtractor={(item) => item.id}
           renderItem={renderMessageItem}
           style={{ flex: 1 }}
-          contentContainerStyle={styles.messagesList}
+          contentContainerStyle={[styles.messagesList, { padding: s(16), gap: s(12) }]}
           onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
           onLayout={() => flatListRef.current?.scrollToEnd({ animated: true })}
         />
 
         {/* Typing indicator */}
         {isTyping && (
-          <View style={styles.typingContainer}>
-            <Text style={styles.typingText}>{friend?.name} is typing...</Text>
+          <View style={[styles.typingContainer, { paddingHorizontal: s(16), paddingVertical: s(8) }]}>
+            <Text style={[styles.typingText, { fontSize: s(14), color: colors.textSecondary }]}>{friend?.name} is typing...</Text>
           </View>
         )}
 
         {/* Bottom Input Area */}
-        {/* Bottom Input Area */}
         {chatDisabled ? (
-          <View style={[styles.disabledInputArea, { paddingBottom: Platform.OS === 'android' ? (insets.bottom > 0 && !keyboardVisible ? insets.bottom + 16 : 16) : 16 }]}>
-            <Ionicons name="lock-closed" size={20} color="#8D6E63" />
-            <Text style={styles.disabledInputText}>Chatting is paused by your parent 🍪</Text>
+          <View style={[styles.disabledInputArea, { backgroundColor: isDark ? '#3D1B1B' : '#FFF5F5', borderColor: isDark ? '#5C2525' : '#FFD1D1' }, { paddingBottom: Platform.OS === 'android' ? (insets.bottom > 0 && !keyboardVisible ? insets.bottom + s(16) : s(16)) : s(16), paddingHorizontal: s(16), paddingVertical: s(16), gap: s(12) }]}>
+            <Ionicons name="lock-closed" size={s(20)} color={colors.dangerText} />
+            <Text style={[styles.disabledInputText, { fontSize: s(14), lineHeight: s(20), color: colors.dangerText }]}>Chatting is paused by your parent 🍪</Text>
           </View>
         ) : pairingStatus === 'pending' ? (
-          <View style={[styles.pendingInputArea, { paddingBottom: Platform.OS === 'android' ? (insets.bottom > 0 && !keyboardVisible ? insets.bottom + 16 : 16) : 16 }]}>
-            <Ionicons name="alert-circle" size={20} color="#E65100" />
-            <Text style={styles.pendingInputText}>
+          <View style={[styles.pendingInputArea, { backgroundColor: isDark ? '#3D291B' : '#FFF3E0', borderColor: isDark ? '#5C3E25' : '#FFE0B2' }, { paddingBottom: Platform.OS === 'android' ? (insets.bottom > 0 && !keyboardVisible ? insets.bottom + s(16) : s(16)) : s(16), paddingHorizontal: s(16), paddingVertical: s(16), gap: s(12) }]}>
+            <Ionicons name="alert-circle" size={s(20)} color={colors.textSecondary} />
+            <Text style={[styles.pendingInputText, { fontSize: s(14), lineHeight: s(20), color: colors.textSecondary }]}>
               Waiting for parent approval. Tell friend's parent your Cookie Code: {profile?.cookieCode}
             </Text>
           </View>
         ) : (
-          <View style={[styles.inputArea, { paddingBottom: Platform.OS === 'android' ? (insets.bottom > 0 && !keyboardVisible ? insets.bottom + 12 : 12) : 12 }]}>
-            <View style={styles.inputContainer}>
+          <View style={[styles.inputArea, { backgroundColor: colors.cardBg, borderColor: colors.border }, { paddingBottom: Platform.OS === 'android' ? (insets.bottom > 0 && !keyboardVisible ? insets.bottom + s(12) : s(12)) : s(12), paddingHorizontal: s(16), paddingVertical: s(8), gap: s(12) }]}>
+            <View style={[styles.inputContainer, { backgroundColor: colors.inputBg, borderColor: colors.borderStrong }, { paddingHorizontal: s(16), borderRadius: s(24), height: s(48) }]}>
               <TextInput
-                style={styles.textInput}
+                style={[styles.textInput, { color: colors.inputText }, { fontSize: s(16) }]}
                 placeholder="Write something..."
-                placeholderTextColor="#A1887F"
+                placeholderTextColor={colors.textSecondary}
                 value={inputText}
                 onChangeText={setInputText}
                 onSubmitEditing={handleSend}
@@ -664,11 +679,11 @@ export default function ChatScreen() {
               />
             </View>
             <TouchableOpacity 
-              style={[styles.sendButton, !inputText.trim() && styles.sendButtonDisabled]} 
+              style={[styles.sendButton, { backgroundColor: colors.primaryBtn }, !inputText.trim() && styles.sendButtonDisabled, { width: s(48), height: s(48), borderRadius: s(24) }]} 
               onPress={handleSend}
               disabled={!inputText.trim()}
             >
-              <Ionicons name="paper-plane" size={20} color="#4E342E" />
+              <Ionicons name="paper-plane" size={s(20)} color={colors.primaryBtnText} />
             </TouchableOpacity>
           </View>
         )}
@@ -697,20 +712,20 @@ export default function ChatScreen() {
           )}
 
           <View style={styles.callContent}>
-            <Text style={styles.callLabel}>
+            <Text style={[styles.callLabel, { fontSize: s(12) }]}>
               {callTypeVideo ? '📹 VIDEO CALL' : '📞 CRUMBO VOICE CALL'}
             </Text>
             
             {/* Show avatar only if not in a video call or not yet connected */}
             {(!callTypeVideo || callStatus !== 'connected' || remoteUid === null) && (
-              <View style={styles.avatarContainerLarge}>
-                <Text style={styles.avatarEmojiLarge}>{friend?.avatarEmoji || '🍪'}</Text>
+              <View style={[styles.avatarContainerLarge, { width: s(120), height: s(120), borderRadius: s(60), marginBottom: s(24) }]}>
+                <Text style={[styles.avatarEmojiLarge, { fontSize: s(64) }]}>{friend?.avatarEmoji || '🍪'}</Text>
               </View>
             )}
 
-            <Text style={styles.callFriendName}>{friend?.name}</Text>
+            <Text style={[styles.callFriendName, { fontSize: s(28) }]}>{friend?.name}</Text>
             
-            <Text style={styles.callStatusText}>
+            <Text style={[styles.callStatusText, { fontSize: s(16) }]}>
               {callStatus === 'ringing' && (callDirection === 'incoming' ? 'Incoming Call...' : 'Ringing...')}
               {callStatus === 'connected' && (remoteUid === null && callTypeVideo ? 'Connecting video...' : `Connected • ${formatDuration(callDuration)}`)}
               {callStatus === 'ended' && 'Call Ended'}

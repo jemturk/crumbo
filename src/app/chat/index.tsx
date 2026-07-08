@@ -5,12 +5,16 @@ import { Ionicons } from '@expo/vector-icons';
 import { StorageService, Friend, KidProfile, Message } from '@/services/storage';
 import { registerForPushNotificationsAsync } from '@/services/notifications';
 import CustomAlertModal, { AlertButton } from '@/components/CustomAlertModal';
+import { useDisplayScale } from '@/hooks/use-display-scale';
+import { useAppTheme } from '@/hooks/use-app-theme';
 
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export default function ChatDashboard() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { s } = useDisplayScale();
+  const { theme, colors, isDark } = useAppTheme();
 
   // State
   const [profile, setProfile] = useState<KidProfile | null>(null);
@@ -157,59 +161,59 @@ export default function ChatDashboard() {
     
     return (
       <TouchableOpacity 
-        style={styles.friendCard}
+        style={[styles.friendCard, { backgroundColor: colors.cardBg, borderColor: colors.border, padding: s(16), shadowColor: colors.textSecondary }]}
         onPress={() => router.push(`/chat/${item.id}`)}
       >
-        <View style={styles.avatarContainer}>
-          <Text style={styles.avatarText}>{item.avatarEmoji}</Text>
+        <View style={[styles.avatarContainer, { backgroundColor: isDark ? colors.inputBg : '#FFFDF0', borderColor: colors.borderStrong, width: s(52), height: s(52), borderRadius: s(26), marginRight: s(16) }]}>
+          <Text style={[styles.avatarText, { fontSize: s(28) }]}>{item.avatarEmoji}</Text>
         </View>
 
         <View style={styles.friendInfo}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-            <Text style={styles.friendName}>{item.name}</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: s(6) }}>
+            <Text style={[styles.friendName, { fontSize: s(18), color: colors.text }]}>{item.name}</Text>
             {status === 'pending' && (
-              <View style={styles.pendingBadgeSmall}>
-                <Text style={styles.pendingBadgeTextSmall}>Pending</Text>
+              <View style={[styles.pendingBadgeSmall, { paddingHorizontal: s(6), paddingVertical: s(2) }]}>
+                <Text style={[styles.pendingBadgeTextSmall, { fontSize: s(10) }]}>Pending</Text>
               </View>
             )}
           </View>
-          <Text style={styles.lastMessage} numberOfLines={1}>
+          <Text style={[styles.lastMessage, { fontSize: s(14), color: colors.textSecondary }]} numberOfLines={1}>
             {status === 'pending' 
               ? 'Waiting for parent approval ⏳'
               : renderLastMsgText()}
           </Text>
         </View>
 
-        <Ionicons name="chevron-forward" size={20} color="#D4A373" />
+        <Ionicons name="chevron-forward" size={s(20)} color={colors.textSecondary} />
       </TouchableOpacity>
     );
   };
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
       {/* Custom Header */}
-      <View style={[styles.header, { paddingTop: Platform.OS === 'android' ? (insets.top > 0 ? insets.top + 8 : 44) : 14 }]}>
+      <View style={[styles.header, { backgroundColor: colors.cardBg, borderColor: colors.border, paddingTop: Platform.OS === 'android' ? (insets.top > 0 ? insets.top + s(8) : s(44)) : s(14), paddingHorizontal: s(20), paddingVertical: s(14), borderBottomWidth: 2 }]}>
         <View style={styles.headerLeft}>
-          <Text style={styles.headerAvatar}>🍪</Text>
+          <Text style={[styles.headerAvatar, { fontSize: s(32) }]}>🍪</Text>
           <View>
-            <Text style={styles.headerSub}>{profile?.name}'s</Text>
-            <Text style={styles.headerTitle}>Cookie Jar</Text>
+            <Text style={[styles.headerSub, { fontSize: s(12), color: colors.textSecondary }]}>{profile?.name}'s</Text>
+            <Text style={[styles.headerTitle, { fontSize: s(20), color: colors.text }]}>Cookie Jar</Text>
           </View>
         </View>
 
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: s(12) }}>
           <TouchableOpacity 
             style={styles.logoutButton}
             onPress={handleLogout}
           >
-            <Ionicons name="log-out-outline" size={24} color="#D32F2F" />
+            <Ionicons name="log-out-outline" size={s(24)} color="#D32F2F" />
           </TouchableOpacity>
 
           <TouchableOpacity 
             style={styles.settingsButton}
             onPress={() => router.push('/parent/gate')}
           >
-            <Ionicons name="settings" size={24} color="#8D6E63" />
+            <Ionicons name="settings" size={s(24)} color={colors.textSecondary} />
           </TouchableOpacity>
         </View>
       </View>
@@ -217,9 +221,9 @@ export default function ChatDashboard() {
       {/* Friends List */}
       {friends.length === 0 ? (
         <View style={styles.emptyContainer}>
-          <Text style={styles.emptyEmoji}>🧁</Text>
-          <Text style={styles.emptyText}>Your cookie jar is empty!</Text>
-          <Text style={styles.emptySubtext}>
+          <Text style={[styles.emptyEmoji, { fontSize: s(72) }]}>🧁</Text>
+          <Text style={[styles.emptyText, { fontSize: s(22), color: colors.text }]}>Your cookie jar is empty!</Text>
+          <Text style={[styles.emptySubtext, { fontSize: s(14), lineHeight: s(20), color: colors.textSecondary }]}>
             Ask your parent to add buddies for you using your Cookie Code: {profile?.cookieCode}
           </Text>
         </View>
@@ -228,7 +232,7 @@ export default function ChatDashboard() {
           data={friends}
           keyExtractor={(item) => item.id}
           renderItem={renderFriendItem}
-          contentContainerStyle={styles.listContent}
+          contentContainerStyle={[styles.listContent, { padding: s(16), gap: s(12) }]}
         />
       )}
       <CustomAlertModal

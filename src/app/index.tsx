@@ -4,9 +4,13 @@ import { useRouter, useFocusEffect } from 'expo-router';
 import { StorageService, KidProfile } from '@/services/storage';
 import { Ionicons } from '@expo/vector-icons';
 import CustomAlertModal, { AlertButton } from '@/components/CustomAlertModal';
+import { useDisplayScale } from '@/hooks/use-display-scale';
+import { useAppTheme } from '@/hooks/use-app-theme';
 
 export default function WelcomeScreen() {
   const router = useRouter();
+  const { s } = useDisplayScale();
+  const { theme, colors, isDark } = useAppTheme();
   const [loading, setLoading] = useState(true);
   const [subscribed, setSubscribed] = useState(false);
   const [profile, setProfile] = useState<KidProfile | null>(null);
@@ -87,14 +91,14 @@ export default function WelcomeScreen() {
 
   if (loading) {
     return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#FFC93C" />
+      <View style={[styles.loadingContainer, { backgroundColor: colors.bg }]}>
+        <ActivityIndicator size="large" color={colors.primaryBtn} />
       </View>
     );
   }
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={{ flex: 1 }}
@@ -107,54 +111,54 @@ export default function WelcomeScreen() {
           <View style={styles.brandContainer}>
             <Image 
               source={require('@/assets/images/logo.png')} 
-              style={styles.logo}
+              style={[styles.logo, { width: s(140), height: s(140) }]}
               resizeMode="contain"
             />
-            <Text style={styles.title}>Crumbo</Text>
-            <Text style={styles.subtitle}>The cookie-jar chat messenger for kids!</Text>
+            <Text style={[styles.title, { fontSize: s(48), color: colors.text }]}>Crumbo</Text>
+            <Text style={[styles.subtitle, { fontSize: s(16), color: colors.textSecondary }]}>The cookie-jar chat messenger for kids!</Text>
           </View>
 
           {/* Dynamic Action Card */}
-          <View style={styles.card}>
+          <View style={[styles.card, { backgroundColor: colors.cardBg, borderColor: colors.border, shadowColor: colors.textSecondary }]}>
             {profile ? (
               <View style={styles.cardContent}>
-                <Text style={styles.cardEmoji}>🍪</Text>
-                <Text style={styles.cardTitle}>Hey, {profile.name}!</Text>
-                <Text style={styles.cardText}>
+                <Text style={[styles.cardEmoji, { fontSize: s(48) }]}>🍪</Text>
+                <Text style={[styles.cardTitle, { fontSize: s(22), color: colors.text }]}>Hey, {profile.name}!</Text>
+                <Text style={[styles.cardText, { fontSize: s(14), lineHeight: s(20), color: colors.textSecondary }]}>
                   Your cookie jar is ready. Jump in to chat with your friends!
                 </Text>
                 <TouchableOpacity 
-                  style={styles.primaryButton}
+                  style={[styles.primaryButton, { backgroundColor: colors.primaryBtn }]}
                   onPress={() => router.push('/chat')}
                 >
-                  <Text style={styles.primaryButtonText}>Enter Cookie Jar 🍪</Text>
+                  <Text style={[styles.primaryButtonText, { fontSize: s(18), color: colors.primaryBtnText }]}>Enter Cookie Jar 🍪</Text>
                 </TouchableOpacity>
               </View>
             ) : (
               <View style={[styles.cardContent, { width: '100%' }]}>
-                <Text style={styles.cardEmoji}>🍪</Text>
-                <Text style={styles.cardTitle}>Ready to start chatting?</Text>
-                <Text style={styles.cardText}>
+                <Text style={[styles.cardEmoji, { fontSize: s(48) }]}>🍪</Text>
+                <Text style={[styles.cardTitle, { fontSize: s(22), color: colors.text }]}>Ready to start chatting?</Text>
+                <Text style={[styles.cardText, { fontSize: s(14), lineHeight: s(20), color: colors.textSecondary }]}>
                   Log in as a kid using the Cookie Code provided by your parent.
                 </Text>
                 <TextInput
-                  style={[styles.input, { width: '100%', marginBottom: 16 }]}
+                  style={[styles.input, { width: '100%', marginBottom: s(16), fontSize: s(16), backgroundColor: colors.inputBg, color: colors.inputText, borderColor: colors.borderStrong }]}
                   placeholder="Cookie Code (e.g. CRUM-123-456)"
-                  placeholderTextColor="#A1887F"
+                  placeholderTextColor={colors.textSecondary}
                   autoCapitalize="characters"
                   autoCorrect={false}
                   value={cookieCodeInput}
                   onChangeText={setCookieCodeInput}
                 />
                 <TouchableOpacity 
-                  style={styles.primaryButton}
+                  style={[styles.primaryButton, { backgroundColor: colors.primaryBtn }]}
                   onPress={handleKidLogin}
                   disabled={syncing}
                 >
                   {syncing ? (
-                    <ActivityIndicator color="#4E342E" />
+                    <ActivityIndicator color={colors.primaryBtnText} />
                   ) : (
-                    <Text style={styles.primaryButtonText}>Kid Login 🍪</Text>
+                    <Text style={[styles.primaryButtonText, { fontSize: s(18), color: colors.primaryBtnText }]}>Kid Login 🍪</Text>
                   )}
                 </TouchableOpacity>
               </View>
@@ -167,9 +171,9 @@ export default function WelcomeScreen() {
               style={styles.linkButton} 
               onPress={() => router.push('/parent/gate')}
             >
-              <Text style={styles.linkButtonText}>Parents Area (Setup & Controls)</Text>
+              <Text style={[styles.linkButtonText, { fontSize: s(14), color: colors.textSecondary }]}>Parents Area (Setup & Controls)</Text>
             </TouchableOpacity>
-            <Text style={styles.privacyText}>
+            <Text style={[styles.privacyText, { fontSize: s(11), color: colors.textSecondary }]}>
               Privacy promise: No child data will ever be collected or stored.
             </Text>
           </View>

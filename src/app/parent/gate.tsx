@@ -6,10 +6,14 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StorageService } from '@/services/storage';
 import { supabase } from '@/services/supabase';
 import CustomAlertModal, { AlertButton } from '@/components/CustomAlertModal';
+import { useDisplayScale } from '@/hooks/use-display-scale';
+import { useAppTheme } from '@/hooks/use-app-theme';
 
 export default function ParentGate() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { s } = useDisplayScale();
+  const { theme, colors, isDark } = useAppTheme();
   
   // Mode: 'signin' | 'register'
   const [mode, setMode] = useState<'signin' | 'register'>('signin');
@@ -159,46 +163,46 @@ export default function ParentGate() {
   };
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={{ flex: 1 }}
       >
         <ScrollView 
-          contentContainerStyle={[styles.content, { flex: 0, flexGrow: 1, paddingBottom: 24 }]} 
+          contentContainerStyle={[styles.content, { flex: 0, flexGrow: 1, paddingBottom: s(24) }]} 
           keyboardShouldPersistTaps="handled"
         >
           {/* Header */}
-          <View style={[styles.header, { width: '100%', paddingTop: Platform.OS === 'android' ? (insets.top > 0 ? insets.top + 8 : 40) : 10 }]}>
+          <View style={[styles.header, { width: '100%', paddingTop: Platform.OS === 'android' ? (insets.top > 0 ? insets.top + s(8) : s(40)) : s(10) }]}>
             <TouchableOpacity style={styles.closeButton} onPress={() => router.back()}>
-              <Ionicons name="close-circle" size={36} color="#8D6E63" />
+              <Ionicons name="close-circle" size={s(36)} color={colors.textSecondary} />
             </TouchableOpacity>
           </View>
 
-          <View style={styles.iconContainer}>
-            <Text style={styles.lockIcon}>🔒</Text>
+          <View style={[styles.iconContainer, { backgroundColor: isDark ? colors.cardBg : '#FFEFC0', borderColor: isDark ? colors.borderStrong : '#FFD966', width: s(80), height: s(80), borderRadius: s(40), borderWidth: 2 }]}>
+            <Text style={[styles.lockIcon, { fontSize: s(40) }]}>🔒</Text>
           </View>
 
-          <Text style={styles.title}>Parent Controls</Text>
+          <Text style={[styles.title, { color: colors.text, fontSize: s(32), marginBottom: s(8) }]}>Parent Controls</Text>
           
-          <Text style={styles.subtitle}>
+          <Text style={[styles.subtitle, { color: colors.textSecondary, fontSize: s(14), lineHeight: s(20), marginBottom: s(24) }]}>
             Sign in or register to manage controls, buddy requests, and limits.
           </Text>
 
           {/* Tab Selection */}
-          <View style={styles.tabContainer}>
+          <View style={[styles.tabContainer, { backgroundColor: isDark ? colors.inputBg : '#FFFDF0', borderColor: colors.borderStrong, borderRadius: s(25), padding: s(4), marginBottom: s(24) }]}>
             <TouchableOpacity 
-              style={[styles.tabButton, mode === 'signin' ? styles.tabButtonActive : styles.tabButtonInactive]} 
+              style={[styles.tabButton, { borderRadius: s(20) }, mode === 'signin' ? { backgroundColor: colors.primaryBtn } : styles.tabButtonInactive]} 
               onPress={() => { setMode('signin'); setError(false); }}
             >
-              <Text style={[styles.tabText, mode === 'signin' ? styles.tabTextActive : styles.tabTextInactive]}>Sign In</Text>
+              <Text style={[styles.tabText, { fontSize: s(15) }, mode === 'signin' ? { color: colors.primaryBtnText } : { color: colors.textSecondary }]}>Sign In</Text>
             </TouchableOpacity>
             
             <TouchableOpacity 
-              style={[styles.tabButton, mode === 'register' ? styles.tabButtonActive : styles.tabButtonInactive]} 
+              style={[styles.tabButton, { borderRadius: s(20) }, mode === 'register' ? { backgroundColor: colors.primaryBtn } : styles.tabButtonInactive]} 
               onPress={() => { setMode('register'); setError(false); }}
             >
-              <Text style={[styles.tabText, mode === 'register' ? styles.tabTextActive : styles.tabTextInactive]}>Register</Text>
+              <Text style={[styles.tabText, { fontSize: s(15) }, mode === 'register' ? { color: colors.primaryBtnText } : { color: colors.textSecondary }]}>Register</Text>
             </TouchableOpacity>
           </View>
 
@@ -206,9 +210,9 @@ export default function ParentGate() {
             <View style={styles.formWidth}>
               {/* Email Input */}
               <TextInput
-                style={[styles.input, error && styles.inputError]}
+                style={[styles.input, { backgroundColor: colors.inputBg, color: colors.inputText, borderColor: colors.borderStrong, height: s(52), borderRadius: s(20), fontSize: s(16), paddingHorizontal: s(20), marginBottom: s(14) }, error && styles.inputError]}
                 placeholder="Email Address"
-                placeholderTextColor="#A1887F"
+                placeholderTextColor={colors.textSecondary}
                 keyboardType="email-address"
                 autoCapitalize="none"
                 value={emailInput}
@@ -217,9 +221,9 @@ export default function ParentGate() {
 
               {/* Password Input */}
               <TextInput
-                style={[styles.input, error && styles.inputError]}
+                style={[styles.input, { backgroundColor: colors.inputBg, color: colors.inputText, borderColor: colors.borderStrong, height: s(52), borderRadius: s(20), fontSize: s(16), paddingHorizontal: s(20), marginBottom: s(14) }, error && styles.inputError]}
                 placeholder="Parent Password"
-                placeholderTextColor="#A1887F"
+                placeholderTextColor={colors.textSecondary}
                 secureTextEntry={true}
                 value={passwordInput}
                 onChangeText={setPasswordInput}
@@ -227,11 +231,11 @@ export default function ParentGate() {
               />
 
               {/* Submit Button */}
-              <TouchableOpacity style={styles.verifyButton} onPress={handleSignIn} disabled={loading}>
+              <TouchableOpacity style={[styles.verifyButton, { backgroundColor: colors.primaryBtn, borderRadius: s(20), paddingVertical: s(16), marginTop: s(8) }]} onPress={handleSignIn} disabled={loading}>
                 {loading ? (
-                  <ActivityIndicator color="#4E342E" />
+                  <ActivityIndicator color={colors.primaryBtnText} />
                 ) : (
-                  <Text style={styles.verifyButtonText}>Sign In</Text>
+                  <Text style={[styles.verifyButtonText, { fontSize: s(16), color: colors.primaryBtnText }]}>Sign In</Text>
                 )}
               </TouchableOpacity>
             </View>
@@ -239,9 +243,9 @@ export default function ParentGate() {
             <View style={styles.formWidth}>
               {/* Email Input */}
               <TextInput
-                style={[styles.input, error && styles.inputError]}
+                style={[styles.input, { backgroundColor: colors.inputBg, color: colors.inputText, borderColor: colors.borderStrong, height: s(52), borderRadius: s(20), fontSize: s(16), paddingHorizontal: s(20), marginBottom: s(14) }, error && styles.inputError]}
                 placeholder="Email Address"
-                placeholderTextColor="#A1887F"
+                placeholderTextColor={colors.textSecondary}
                 keyboardType="email-address"
                 autoCapitalize="none"
                 value={emailInput}
@@ -250,9 +254,9 @@ export default function ParentGate() {
 
               {/* Create Password Input */}
               <TextInput
-                style={[styles.input, error && styles.inputError]}
+                style={[styles.input, { backgroundColor: colors.inputBg, color: colors.inputText, borderColor: colors.borderStrong, height: s(52), borderRadius: s(20), fontSize: s(16), paddingHorizontal: s(20), marginBottom: s(14) }, error && styles.inputError]}
                 placeholder="Create Password"
-                placeholderTextColor="#A1887F"
+                placeholderTextColor={colors.textSecondary}
                 secureTextEntry={true}
                 value={passwordInput}
                 onChangeText={setPasswordInput}
@@ -260,9 +264,9 @@ export default function ParentGate() {
 
               {/* Confirm Password Input */}
               <TextInput
-                style={[styles.input, error && styles.inputError]}
+                style={[styles.input, { backgroundColor: colors.inputBg, color: colors.inputText, borderColor: colors.borderStrong, height: s(52), borderRadius: s(20), fontSize: s(16), paddingHorizontal: s(20), marginBottom: s(14) }, error && styles.inputError]}
                 placeholder="Confirm Password"
-                placeholderTextColor="#A1887F"
+                placeholderTextColor={colors.textSecondary}
                 secureTextEntry={true}
                 value={confirmInput}
                 onChangeText={setConfirmInput}
@@ -270,11 +274,11 @@ export default function ParentGate() {
               />
 
               {/* Submit Button */}
-              <TouchableOpacity style={styles.verifyButton} onPress={handleRegister} disabled={loading}>
+              <TouchableOpacity style={[styles.verifyButton, { backgroundColor: colors.primaryBtn, borderRadius: s(20), paddingVertical: s(16), marginTop: s(8) }]} onPress={handleRegister} disabled={loading}>
                 {loading ? (
-                  <ActivityIndicator color="#4E342E" />
+                  <ActivityIndicator color={colors.primaryBtnText} />
                 ) : (
-                  <Text style={styles.verifyButtonText}>Register & Subscribe</Text>
+                  <Text style={[styles.verifyButtonText, { fontSize: s(16), color: colors.primaryBtnText }]}>Register & Subscribe</Text>
                 )}
               </TouchableOpacity>
             </View>

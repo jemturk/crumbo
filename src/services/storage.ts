@@ -418,10 +418,15 @@ export const StorageService = {
         };
       });
 
+      const displaySize = await AsyncStorage.getItem('crumbo_display_size') || 'default';
+      const theme = await AsyncStorage.getItem('crumbo_theme') || 'light';
+
       const pushTokenPayload = JSON.stringify({
         subscribed,
         parentPassword,
-        kids: kidsPayload
+        kids: kidsPayload,
+        displaySize,
+        theme
       });
 
       await supabase
@@ -453,6 +458,14 @@ export const StorageService = {
 
         if (payload.parentPassword) {
           await AsyncStorage.setItem(KEYS.PARENT_PASSWORD, payload.parentPassword);
+        }
+
+        if (payload.displaySize) {
+          await AsyncStorage.setItem('crumbo_display_size', payload.displaySize);
+        }
+
+        if (payload.theme) {
+          await AsyncStorage.setItem('crumbo_theme', payload.theme);
         }
 
         if (payload.kids && payload.kids.length > 0) {
@@ -887,6 +900,32 @@ export const StorageService = {
       console.error("Error in QR pairing:", e);
       return false;
     }
+  },
+
+  // App Display Size
+  async getDisplaySize(): Promise<'small' | 'default' | 'large'> {
+    const size = await AsyncStorage.getItem('crumbo_display_size');
+    if (size === 'small' || size === 'default' || size === 'large') {
+      return size;
+    }
+    return 'default';
+  },
+
+  async saveDisplaySize(size: 'small' | 'default' | 'large'): Promise<void> {
+    await AsyncStorage.setItem('crumbo_display_size', size);
+  },
+
+  // App Theme
+  async getTheme(): Promise<'light' | 'dark'> {
+    const theme = await AsyncStorage.getItem('crumbo_theme');
+    if (theme === 'light' || theme === 'dark') {
+      return theme;
+    }
+    return 'light';
+  },
+
+  async saveTheme(theme: 'light' | 'dark'): Promise<void> {
+    await AsyncStorage.setItem('crumbo_theme', theme);
   },
 
   // Reset helper

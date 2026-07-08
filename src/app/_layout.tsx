@@ -2,13 +2,10 @@ import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect } from 'react';
 import { callKeepManager } from '@/services/callkeep';
+import { SettingsProvider, useSettings } from '@/context/settings-context';
 
-export default function RootLayout() {
-  useEffect(() => {
-    callKeepManager.setup().catch(err => {
-      console.error('[CallKeep] Setup failed in RootLayout:', err);
-    });
-  }, []);
+function NavigationLayout() {
+  const { colors } = useSettings();
 
   return (
     <>
@@ -19,7 +16,21 @@ export default function RootLayout() {
         <Stack.Screen name="chat/index" />
         <Stack.Screen name="chat/[friendId]" />
       </Stack>
-      <StatusBar style="dark" />
+      <StatusBar style={colors.statusBar} />
     </>
+  );
+}
+
+export default function RootLayout() {
+  useEffect(() => {
+    callKeepManager.setup().catch(err => {
+      console.error('[CallKeep] Setup failed in RootLayout:', err);
+    });
+  }, []);
+
+  return (
+    <SettingsProvider>
+      <NavigationLayout />
+    </SettingsProvider>
   );
 }
