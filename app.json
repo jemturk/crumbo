@@ -19,7 +19,13 @@
       },
       "predictiveBackGestureEnabled": false,
       "package": "com.jemturk.crumbo",
-      "googleServicesFile": "./google-services.json"
+      "googleServicesFile": "./google-services.json",
+      "permissions": [
+        "android.permission.BIND_TELECOM_CONNECTION_SERVICE",
+        "android.permission.MANAGE_OWN_CALLS",
+        "android.permission.READ_PHONE_STATE",
+        "android.permission.CALL_PHONE"
+      ]
     },
     "web": {
       "output": "static",
@@ -35,7 +41,15 @@
           "imageWidth": 150
         }
       ],
-      "expo-notifications"
+      "expo-notifications",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow Crumbo to access your camera for video calls.",
+          "microphonePermission": "Allow Crumbo to access your microphone for voice calls."
+        }
+      ],
+      "@config-plugins/react-native-callkeep"
     ],
     "experiments": {
       "typedRoutes": true,

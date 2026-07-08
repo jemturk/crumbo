@@ -174,6 +174,7 @@ export const StorageService = {
     // 1. Load cached messages for instant display
     const cachedData = await AsyncStorage.getItem(`${KEYS.MESSAGES_PREFIX}${friendId}`);
     let messages: Message[] = cachedData ? JSON.parse(cachedData) : [];
+    messages = messages.filter(m => m.text && !m.text.startsWith('[CALL_SIGNAL:'));
 
     // 2. Fetch fresh history from Supabase to sync
     try {
@@ -189,12 +190,14 @@ export const StorageService = {
           .order('created_at', { ascending: true });
 
         if (!error && dbMsgs) {
-          const fetchedMessages: Message[] = dbMsgs.map(msg => ({
-            id: msg.id,
-            text: msg.text,
-            timestamp: msg.created_at,
-            sender: msg.sender_code === profile.cookieCode ? 'me' : 'them',
-          }));
+          const fetchedMessages: Message[] = dbMsgs
+            .filter(msg => msg.text && !msg.text.startsWith('[CALL_SIGNAL:'))
+            .map(msg => ({
+              id: msg.id,
+              text: msg.text,
+              timestamp: msg.created_at,
+              sender: msg.sender_code === profile.cookieCode ? 'me' : 'them',
+            }));
 
           // Overwrite local storage cache with latest data
           await AsyncStorage.setItem(`${KEYS.MESSAGES_PREFIX}${friendId}`, JSON.stringify(fetchedMessages));
@@ -208,6 +211,32 @@ export const StorageService = {
     }
 
     return messages;
+  },
+
+  async getChatLogsForParent(kidCookieCode: string, friendCookieCode: string): Promise<Message[]> {
+    try {
+      const { data: dbMsgs, error } = await supabase
+        .from('messages')
+        .select('*')
+        .or(`and(sender_code.eq.${kidCookieCode},receiver_code.eq.${friendCookieCode}),and(sender_code.eq.${friendCookieCode},receiver_code.eq.${kidCookieCode})`)
+        .order('created_at', { ascending: true });
+
+      if (!error && dbMsgs) {
+        return dbMsgs
+          .filter(msg => msg.text && !msg.text.startsWith('[CALL_SIGNAL:'))
+          .map(msg => ({
+            id: msg.id,
+            text: msg.text,
+            timestamp: msg.created_at,
+            sender: msg.sender_code === kidCookieCode ? 'me' : 'them',
+          }));
+      } else if (error) {
+        console.error("Error fetching logs for parent:", error);
+      }
+    } catch (e) {
+      console.error("Failed to query parent chat logs:", e);
+    }
+    return [];
   },
 
   async sendMessage(friendId: string, text: string): Promise<Message> {
@@ -245,6 +274,28 @@ export const StorageService = {
     }
 
     return newMsg;
+  },
+
+  async sendCallSignal(friendId: string, text: string): Promise<void> {
+    try {
+      const profile = await this.getKidProfile();
+      const friends = await this.getFriends();
+      const friend = friends.find(f => f.id === friendId);
+      if (profile && friend) {
+        const signalId = Math.random().toString(36).substring(2, 9);
+        await supabase
+          .from('messages')
+          .insert({
+            id: signalId,
+            sender_code: profile.cookieCode,
+            receiver_code: friend.cookieCode,
+            text: text,
+            created_at: new Date().toISOString()
+          });
+      }
+    } catch (e) {
+      console.error("Error sending call signal to Supabase", e);
+    }
   },
 
   async receiveMockMessage(friendId: string, text: string): Promise<Message> {
@@ -309,14 +360,21 @@ export const StorageService = {
                 sender: isSentByMe ? 'me' : 'them',
               };
 
-              // Read AsyncStorage directly to check duplicates and avoid redundant API requests
-              const data = await AsyncStorage.getItem(`${KEYS.MESSAGES_PREFIX}${correspondingFriend.id}`);
-              const cachedMessages: Message[] = data ? JSON.parse(data) : [];
+              const isCallSignal = newRow.text && newRow.text.startsWith('[CALL_SIGNAL:');
 
-              if (!cachedMessages.find(m => m.id === localMsg.id)) {
-                const updated = [...cachedMessages, localMsg];
-                await AsyncStorage.setItem(`${KEYS.MESSAGES_PREFIX}${correspondingFriend.id}`, JSON.stringify(updated));
+              if (isCallSignal) {
+                // Do not cache call signals in AsyncStorage. Just forward to listener
                 onNewMessage(localMsg, correspondingFriend.id);
+              } else {
+                // Read AsyncStorage directly to check duplicates and avoid redundant API requests
+                const data = await AsyncStorage.getItem(`${KEYS.MESSAGES_PREFIX}${correspondingFriend.id}`);
+                const cachedMessages: Message[] = data ? JSON.parse(data) : [];
+
+                if (!cachedMessages.find(m => m.id === localMsg.id)) {
+                  const updated = [...cachedMessages, localMsg];
+                  await AsyncStorage.setItem(`${KEYS.MESSAGES_PREFIX}${correspondingFriend.id}`, JSON.stringify(updated));
+                  onNewMessage(localMsg, correspondingFriend.id);
+                }
               }
             }
           }
@@ -748,6 +806,87 @@ export const StorageService = {
       console.error("Error checking pairing status:", e);
     }
     return 'pending';
+  },
+
+  async pairKidsViaQRCode(kidCookieCode: string, kidName: string, friendCookieCode: string, friendName: string): Promise<boolean> {
+    try {
+      // 1. Find Friend's Parent Profile in Supabase
+      const { data: parents, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .like('cookie_code', 'PARENT:%')
+        .like('push_token', `%"cookieCode":"${friendCookieCode}"%`);
+
+      if (error || !parents || parents.length === 0) {
+        console.error("Could not find buddy's parent profile in Supabase");
+        return false;
+      }
+
+      // Find the specific parent profile that contains this kid
+      let targetParentRow = null;
+      let targetPayload: any = null;
+      for (const parent of parents) {
+        try {
+          const payload = JSON.parse(parent.push_token);
+          if (payload && payload.kids && payload.kids.some((k: any) => k.cookieCode === friendCookieCode)) {
+            targetParentRow = parent;
+            targetPayload = payload;
+            break;
+          }
+        } catch {}
+      }
+
+      if (!targetParentRow || !targetPayload) {
+        console.error("Buddy's kid profile not found inside the parent payloads");
+        return false;
+      }
+
+      // 2. Add Kid A (the scanner) to Kid B's (the scannee) friends list in their parent's profile
+      const kidAEmoji = DEFAULT_EMOJIS[Math.floor(Math.random() * DEFAULT_EMOJIS.length)];
+      const newFriendForB = {
+        id: Math.random().toString(36).substring(2, 9),
+        name: kidName,
+        cookieCode: kidCookieCode,
+        avatarEmoji: kidAEmoji
+      };
+
+      const updatedFriendKids = targetPayload.kids.map((k: any) => {
+        if (k.cookieCode === friendCookieCode) {
+          const friends = k.friends || [];
+          if (!friends.some((f: any) => f.cookieCode === kidCookieCode)) {
+            return { ...k, friends: [...friends, newFriendForB] };
+          }
+        }
+        return k;
+      });
+
+      targetPayload.kids = updatedFriendKids;
+
+      // Upsert Friend's Parent Profile back to Supabase
+      const { error: upsertError } = await supabase
+        .from('profiles')
+        .upsert({
+          cookie_code: targetParentRow.cookie_code,
+          push_token: JSON.stringify(targetPayload),
+          name: targetParentRow.name
+        });
+
+      if (upsertError) {
+        console.error("Failed to update buddy's parent profile:", upsertError);
+        return false;
+      }
+
+      // 3. Add Kid B (the scannee) to Kid A's (the scanner) local friends list
+      await this.addFriendToKidProfile(kidCookieCode, friendName, friendCookieCode);
+
+      // 4. Sync Parent A's data back to Supabase
+      await this.syncParentData();
+
+      return true;
+    } catch (e) {
+      console.error("Error in QR pairing:", e);
+      return false;
+    }
   },
 
   // Reset helper

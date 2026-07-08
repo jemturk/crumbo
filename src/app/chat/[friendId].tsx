@@ -11,16 +11,34 @@ import {
   Platform, 
   ActivityIndicator,
   Keyboard,
-  Modal
+  Modal,
+  Vibration
 } from 'react-native';
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { StorageService, Message, Friend, KidProfile, triggerMockReply } from '@/services/storage';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import CustomAlertModal, { AlertButton } from '@/components/CustomAlertModal';
+import { Camera } from 'expo-camera';
+import { RtcSurfaceView } from 'react-native-agora';
+import { agoraManager, hashCode, fetchAgoraToken } from '@/services/agora';
+import { callKeepManager } from '@/services/callkeep';
+
+function generateUUID() {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    const r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+}
 
 export default function ChatScreen() {
   const router = useRouter();
-  const { friendId } = useLocalSearchParams<{ friendId: string }>();
+  const { friendId, incomingCall, callType, roomName } = useLocalSearchParams<{ 
+    friendId: string;
+    incomingCall?: string;
+    callType?: string;
+    roomName?: string;
+  }>();
   const insets = useSafeAreaInsets();
 
   // State
@@ -32,6 +50,22 @@ export default function ChatScreen() {
   const [keyboardVisible, setKeyboardVisible] = useState(false);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
 
+  // Custom Alert State
+  const [alertConfig, setAlertConfig] = useState<{
+    visible: boolean;
+    title: string;
+    message: string;
+    buttons?: AlertButton[];
+  }>({ visible: false, title: '', message: '' });
+
+  const showAlert = (
+    title: string,
+    message: string,
+    buttons?: AlertButton[]
+  ) => {
+    setAlertConfig({ visible: true, title, message, buttons });
+  };
+
   // Parental Locks State
   const [profile, setProfile] = useState<KidProfile | null>(null);
   const [chatDisabled, setChatDisabled] = useState(false);
@@ -39,11 +73,40 @@ export default function ChatScreen() {
   const [videoCallingDisabled, setVideoCallingDisabled] = useState(false);
   const [pairingStatus, setPairingStatus] = useState<'paired' | 'pending'>('paired');
 
-  // Call simulation states
+  // Calling states
   const [callModalVisible, setCallModalVisible] = useState(false);
   const [callTypeVideo, setCallTypeVideo] = useState(false);
   const [callStatus, setCallStatus] = useState<'ringing' | 'connected' | 'ended'>('ringing');
   const [callDuration, setCallDuration] = useState(0);
+  const [callDirection, setCallDirection] = useState<'incoming' | 'outgoing'>('outgoing');
+  const [callRoom, setCallRoom] = useState<string>('');
+  const [remoteUid, setRemoteUid] = useState<number | null>(null);
+  const [isMuted, setIsMuted] = useState(false);
+  const [isVideoMuted, setIsVideoMuted] = useState(false);
+  const [activeCallUuid, setActiveCallUuid] = useState<string | null>(null);
+
+  // CallKeep callbacks hook
+  useEffect(() => {
+    callKeepManager.registerCallbacks(
+      () => {
+        handleAcceptCall();
+      },
+      () => {
+        if (callStatus === 'ringing') {
+          if (callDirection === 'incoming') {
+            handleDeclineCall();
+          } else {
+            handleEndCall();
+          }
+        } else if (callStatus === 'connected') {
+          handleEndCall();
+        }
+      }
+    );
+    return () => {
+      callKeepManager.clearCallbacks();
+    };
+  }, [callStatus, callDirection, callRoom, callTypeVideo, friendId]);
 
   useEffect(() => {
     const showSubscription = Keyboard.addListener(
@@ -68,6 +131,24 @@ export default function ChatScreen() {
   }, []);
 
   const flatListRef = useRef<FlatList>(null);
+  const initialCallHandled = useRef(false);
+
+  useEffect(() => {
+    initialCallHandled.current = false;
+  }, [friendId]);
+
+  useEffect(() => {
+    if (incomingCall === 'true' && !initialCallHandled.current) {
+      initialCallHandled.current = true;
+      const isVideo = callType === 'video';
+      setCallTypeVideo(isVideo);
+      setCallDirection('incoming');
+      setCallStatus('ringing');
+      setCallRoom(roomName || '');
+      setCallModalVisible(true);
+      Vibration.vibrate([1000, 1000], true);
+    }
+  }, [incomingCall, callType, roomName]);
 
   useFocusEffect(
     useCallback(() => {
@@ -88,9 +169,35 @@ export default function ChatScreen() {
     return () => clearInterval(timer);
   }, [callStatus]);
 
+  const callRoomRef = useRef<string>('');
+  useEffect(() => {
+    callRoomRef.current = callRoom;
+  }, [callRoom]);
+
   useEffect(() => {
     // Subscribe to realtime database updates
     const unsubscribe = StorageService.subscribeToMessages((newMsg, msgFriendId) => {
+      if (newMsg.text && newMsg.text.startsWith('[CALL_SIGNAL:')) {
+        if (newMsg.text.startsWith('[CALL_SIGNAL:START_') && newMsg.sender === 'them' && msgFriendId !== friendId) {
+          // Incoming call from a different friend! Redirect to their chat with call params
+          const isVideo = newMsg.text.includes('START_VIDEO_CALL');
+          const parts = newMsg.text.split(':');
+          const roomName = parts[parts.length - 1];
+          router.push({
+            pathname: `/chat/${msgFriendId}`,
+            params: {
+              incomingCall: 'true',
+              callType: isVideo ? 'video' : 'audio',
+              roomName
+            }
+          });
+        } else if (msgFriendId === friendId) {
+          // Call signal for the current friend's conversation
+          handleIncomingCallSignal(newMsg);
+        }
+        return;
+      }
+
       if (msgFriendId === friendId) {
         setMessages(prev => {
           if (prev.find(m => m.id === newMsg.id)) return prev;
@@ -101,6 +208,8 @@ export default function ChatScreen() {
     });
 
     return () => {
+      Vibration.cancel();
+      agoraManager.destroy();
       unsubscribe();
     };
   }, [friendId]);
@@ -140,23 +249,194 @@ export default function ChatScreen() {
     }
   };
 
-  const handleStartCall = (isVideo: boolean) => {
+  const startAgoraCall = async (channelName: string, isVideo: boolean, isIncoming: boolean) => {
+    if (!profile) return;
+
+    if (isVideo) {
+      const cameraStatus = await Camera.requestCameraPermissionsAsync();
+      if (!cameraStatus.granted) {
+        showAlert("Permission Required", "Camera permission is required for video calls.");
+        return;
+      }
+    }
+    const micStatus = await Camera.requestMicrophonePermissionsAsync();
+    if (!micStatus.granted) {
+      showAlert("Permission Required", "Microphone permission is required for voice calls.");
+      return;
+    }
+
+    const appID = process.env.EXPO_PUBLIC_AGORA_APP_ID || '';
+    if (!appID) {
+      console.warn("Agora APP ID is missing. Voice/video streaming will not work.");
+    }
+
+    try {
+      await agoraManager.init(
+        appID,
+        (uid) => {
+          setRemoteUid(uid);
+          setCallStatus('connected');
+        },
+        (uid) => {
+          setRemoteUid(null);
+          handleEndCall();
+        },
+        (err) => {
+          console.error("Agora engine error:", err);
+        }
+      );
+
+      const localUid = hashCode(profile.cookieCode);
+      let token = '';
+      try {
+        token = await fetchAgoraToken(channelName, localUid);
+      } catch (tokenErr) {
+        console.warn("[Agora] Failed to fetch token, falling back to tokenless join. If your Agora project requires tokens, this call will fail.", tokenErr);
+      }
+      await agoraManager.join(token, channelName, localUid, isVideo);
+
+      setIsMuted(false);
+      setIsVideoMuted(false);
+
+      if (!isIncoming) {
+        setCallStatus('ringing');
+      } else {
+        setCallStatus('connected');
+      }
+    } catch (e) {
+      console.error("Failed to start Agora call:", e);
+      showAlert("Call Error", "Could not establish connection.");
+      handleEndCall();
+    }
+  };
+
+  const handleIncomingCallSignal = async (msg: Message) => {
+    const isThem = msg.sender === 'them';
+
+    if (msg.text.startsWith('[CALL_SIGNAL:START_')) {
+      if (isThem) {
+        const isVideo = msg.text.includes('START_VIDEO_CALL');
+        const parts = msg.text.split(':');
+        const roomName = parts[parts.length - 1];
+
+        const uuid = generateUUID();
+        setActiveCallUuid(uuid);
+        callKeepManager.displayIncomingCall(uuid, friend?.name || 'Friend', friend?.name || 'Friend');
+
+        setCallTypeVideo(isVideo);
+        setCallDirection('incoming');
+        setCallStatus('ringing');
+        setCallRoom(roomName);
+        setCallModalVisible(true);
+        Vibration.vibrate([1000, 1000], true);
+      }
+    } else if (msg.text === '[CALL_SIGNAL:ACCEPT_CALL]') {
+      if (isThem) {
+        Vibration.cancel();
+        setCallStatus('connected');
+      }
+    } else if (msg.text === '[CALL_SIGNAL:DECLINE_CALL]') {
+      if (isThem) {
+        Vibration.cancel();
+        setCallStatus('ended');
+        if (activeCallUuid) {
+          callKeepManager.endCall(activeCallUuid);
+          setActiveCallUuid(null);
+        }
+        showAlert("Call Busy", `${friend?.name || 'Friend'} is busy right now.`);
+        await agoraManager.destroy();
+        setRemoteUid(null);
+        setTimeout(() => {
+          setCallModalVisible(false);
+        }, 1500);
+      }
+    } else if (msg.text === '[CALL_SIGNAL:END_CALL]') {
+      if (isThem) {
+        Vibration.cancel();
+        setCallStatus('ended');
+        if (activeCallUuid) {
+          callKeepManager.endCall(activeCallUuid);
+          setActiveCallUuid(null);
+        }
+        await agoraManager.destroy();
+        setRemoteUid(null);
+        setTimeout(() => {
+          setCallModalVisible(false);
+        }, 1500);
+      }
+    }
+  };
+
+  const handleStartCall = async (isVideo: boolean) => {
+    if (!profile || !friend) return;
+
+    const roomName = `CrumboCall_${profile.cookieCode}_${friend.cookieCode}`.replace(/-/g, '_');
+    setCallRoom(roomName);
     setCallTypeVideo(isVideo);
+    setCallDirection('outgoing');
     setCallStatus('ringing');
     setCallModalVisible(true);
 
-    // Simulated accept after 3 seconds
-    setTimeout(() => {
-      setCallStatus('connected');
-    }, 3000);
+    const uuid = generateUUID();
+    setActiveCallUuid(uuid);
+    callKeepManager.startCall(uuid, friend.name, friend.name);
+
+    const signalText = `[CALL_SIGNAL:START_${isVideo ? 'VIDEO' : 'AUDIO'}_CALL]:${roomName}`;
+    await StorageService.sendCallSignal(friendId, signalText);
+
+    await startAgoraCall(roomName, isVideo, false);
+  };
+
+  const handleAcceptCall = async () => {
+    Vibration.cancel();
+    setCallStatus('connected');
+    await StorageService.sendCallSignal(friendId, '[CALL_SIGNAL:ACCEPT_CALL]');
+    if (callRoom) {
+      await startAgoraCall(callRoom, callTypeVideo, true);
+    }
+  };
+
+  const handleDeclineCall = async () => {
+    Vibration.cancel();
+    setCallStatus('ended');
+    if (activeCallUuid) {
+      callKeepManager.endCall(activeCallUuid);
+      setActiveCallUuid(null);
+    }
+    await agoraManager.destroy();
+    setRemoteUid(null);
+    setCallModalVisible(false);
+    await StorageService.sendCallSignal(friendId, '[CALL_SIGNAL:DECLINE_CALL]');
+
+    const callLogText = callTypeVideo ? '[CALL_LOG:MISSED_VIDEO]' : '[CALL_LOG:MISSED_AUDIO]';
+    try {
+      const logMsg = await StorageService.sendCallLogMessage(friendId, callLogText);
+      setMessages(prev => {
+        if (prev.find(m => m.id === logMsg.id)) return prev;
+        return [...prev, logMsg];
+      });
+      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 150);
+    } catch (e) {
+      console.error("Failed to save call log:", e);
+    }
   };
 
   const handleEndCall = async () => {
+    Vibration.cancel();
     const finalStatus = callStatus;
     setCallStatus('ended');
+    if (activeCallUuid) {
+      callKeepManager.endCall(activeCallUuid);
+      setActiveCallUuid(null);
+    }
+    await agoraManager.destroy();
+    setRemoteUid(null);
+
     setTimeout(() => {
       setCallModalVisible(false);
     }, 500);
+
+    await StorageService.sendCallSignal(friendId, '[CALL_SIGNAL:END_CALL]');
 
     let callLogText = '';
     if (finalStatus === 'ringing') {
@@ -175,6 +455,20 @@ export default function ChatScreen() {
     } catch (e) {
       console.error("Failed to save call log:", e);
     }
+  };
+
+  const toggleMute = () => {
+    const nextMuted = !isMuted;
+    setIsMuted(nextMuted);
+    agoraManager.muteAudio(nextMuted);
+  };
+
+  const switchCamera = () => {
+    agoraManager.switchCamera();
+  };
+
+  const toggleSpeakerMock = () => {
+    setIsVideoMuted(prev => !prev);
   };
 
   const formatDuration = (seconds: number) => {
@@ -380,7 +674,7 @@ export default function ChatScreen() {
         )}
       </KeyboardAvoidingView>
 
-      {/* Calling Simulation Modal */}
+      {/* Calling Modal */}
       <Modal
         animationType="fade"
         transparent={false}
@@ -388,40 +682,81 @@ export default function ChatScreen() {
         onRequestClose={handleEndCall}
       >
         <SafeAreaView style={[styles.callModalContainer, callTypeVideo ? styles.callVideoBg : styles.callAudioBg]}>
+          {/* Video Views if connected/video call */}
+          {callTypeVideo && callStatus === 'connected' && (
+            <View style={styles.videoContainer}>
+              {remoteUid !== null ? (
+                <>
+                  <RtcSurfaceView style={styles.remoteVideo} canvas={{ uid: remoteUid }} />
+                  <RtcSurfaceView style={styles.localVideo} canvas={{ uid: 0 }} zOrderMediaOverlay={true} />
+                </>
+              ) : (
+                <RtcSurfaceView style={styles.localVideoFullScreen} canvas={{ uid: 0 }} />
+              )}
+            </View>
+          )}
+
           <View style={styles.callContent}>
             <Text style={styles.callLabel}>
               {callTypeVideo ? '📹 VIDEO CALL' : '📞 CRUMBO VOICE CALL'}
             </Text>
             
-            <View style={styles.avatarContainerLarge}>
-              <Text style={styles.avatarEmojiLarge}>{friend?.avatarEmoji || '🍪'}</Text>
-            </View>
+            {/* Show avatar only if not in a video call or not yet connected */}
+            {(!callTypeVideo || callStatus !== 'connected' || remoteUid === null) && (
+              <View style={styles.avatarContainerLarge}>
+                <Text style={styles.avatarEmojiLarge}>{friend?.avatarEmoji || '🍪'}</Text>
+              </View>
+            )}
 
             <Text style={styles.callFriendName}>{friend?.name}</Text>
             
             <Text style={styles.callStatusText}>
-              {callStatus === 'ringing' && 'Ringing...'}
-              {callStatus === 'connected' && formatDuration(callDuration)}
+              {callStatus === 'ringing' && (callDirection === 'incoming' ? 'Incoming Call...' : 'Ringing...')}
+              {callStatus === 'connected' && (remoteUid === null && callTypeVideo ? 'Connecting video...' : `Connected • ${formatDuration(callDuration)}`)}
               {callStatus === 'ended' && 'Call Ended'}
             </Text>
           </View>
 
           {/* Controls */}
-          <View style={styles.callControlsRow}>
-            <TouchableOpacity style={styles.callMuteBtn}>
-              <Ionicons name="mic" size={24} color="#4E342E" />
-            </TouchableOpacity>
-            
-            <TouchableOpacity style={styles.callEndBtn} onPress={handleEndCall}>
-              <Ionicons name="close" size={28} color="#FFFFFF" />
-            </TouchableOpacity>
+          {callStatus === 'ringing' && callDirection === 'incoming' ? (
+            <View style={styles.callControlsRowIncoming}>
+              <TouchableOpacity style={[styles.callControlBtn, styles.declineBtn]} onPress={handleDeclineCall}>
+                <Ionicons name="close" size={28} color="#FFFFFF" />
+              </TouchableOpacity>
+              <TouchableOpacity style={[styles.callControlBtn, styles.acceptBtn]} onPress={handleAcceptCall}>
+                <Ionicons name="checkmark" size={28} color="#FFFFFF" />
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <View style={styles.callControlsRow}>
+              <TouchableOpacity style={[styles.callMuteBtn, isMuted && styles.activeMuteBtn]} onPress={toggleMute}>
+                <Ionicons name={isMuted ? "mic-off" : "mic"} size={24} color="#4E342E" />
+              </TouchableOpacity>
+              
+              <TouchableOpacity style={styles.callEndBtn} onPress={handleEndCall}>
+                <Ionicons name="close" size={28} color="#FFFFFF" />
+              </TouchableOpacity>
 
-            <TouchableOpacity style={styles.callMuteBtn}>
-              <Ionicons name={callTypeVideo ? "videocam" : "volume-high"} size={24} color="#4E342E" />
-            </TouchableOpacity>
-          </View>
+              {callTypeVideo ? (
+                <TouchableOpacity style={styles.callMuteBtn} onPress={switchCamera}>
+                  <Ionicons name="camera-reverse" size={24} color="#4E342E" />
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity style={[styles.callMuteBtn, isVideoMuted && styles.activeMuteBtn]} onPress={toggleSpeakerMock}>
+                  <Ionicons name="volume-high" size={24} color={isVideoMuted ? "#BDBDBD" : "#4E342E"} />
+                </TouchableOpacity>
+              )}
+            </View>
+          )}
         </SafeAreaView>
       </Modal>
+      <CustomAlertModal
+        visible={alertConfig.visible}
+        title={alertConfig.title}
+        message={alertConfig.message}
+        buttons={alertConfig.buttons}
+        onClose={() => setAlertConfig(prev => ({ ...prev, visible: false }))}
+      />
     </SafeAreaView>
   );
 }
@@ -620,6 +955,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 20,
     width: '100%',
+    zIndex: 10,
+    position: 'relative',
   },
   callLabel: {
     fontSize: 12,
@@ -662,6 +999,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 28,
     marginBottom: 40,
+    zIndex: 10,
+    position: 'relative',
   },
   callMuteBtn: {
     width: 56,
@@ -732,6 +1071,34 @@ const styles = StyleSheet.create({
     marginLeft: 6,
     fontWeight: '600',
   },
+  callControlsRowIncoming: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 40,
+    width: '100%',
+    marginBottom: 40,
+    zIndex: 10,
+    position: 'relative',
+  },
+  callControlBtn: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 5,
+  },
+  acceptBtn: {
+    backgroundColor: '#4CAF50',
+  },
+  declineBtn: {
+    backgroundColor: '#F44336',
+  },
   pendingInputArea: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -749,5 +1116,37 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     flexShrink: 1,
     textAlign: 'center',
+  },
+  activeMuteBtn: {
+    backgroundColor: '#FFCDD2',
+    borderColor: '#E53935',
+  },
+  videoContainer: {
+    width: '100%',
+    height: '100%',
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    zIndex: 1,
+  },
+  remoteVideo: {
+    width: '100%',
+    height: '100%',
+  },
+  localVideo: {
+    width: 110,
+    height: 150,
+    position: 'absolute',
+    top: 60,
+    right: 20,
+    borderRadius: 16,
+    overflow: 'hidden',
+    borderWidth: 2,
+    borderColor: '#FFFFFF',
+    zIndex: 10,
+  },
+  localVideoFullScreen: {
+    width: '100%',
+    height: '100%',
   },
 });

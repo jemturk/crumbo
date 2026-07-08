@@ -1,8 +1,9 @@
 import React, { useState, useCallback } from 'react';
-import { View, Text, StyleSheet, Image, TouchableOpacity, SafeAreaView, ActivityIndicator, Platform, Modal, TextInput, Alert, KeyboardAvoidingView, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, Image, TouchableOpacity, SafeAreaView, ActivityIndicator, Platform, Modal, TextInput, KeyboardAvoidingView, ScrollView } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { StorageService, KidProfile } from '@/services/storage';
 import { Ionicons } from '@expo/vector-icons';
+import CustomAlertModal, { AlertButton } from '@/components/CustomAlertModal';
 
 export default function WelcomeScreen() {
   const router = useRouter();
@@ -12,6 +13,22 @@ export default function WelcomeScreen() {
 
   const [cookieCodeInput, setCookieCodeInput] = useState('');
   const [syncing, setSyncing] = useState(false);
+
+  // Custom Alert State
+  const [alertConfig, setAlertConfig] = useState<{
+    visible: boolean;
+    title: string;
+    message: string;
+    buttons?: AlertButton[];
+  }>({ visible: false, title: '', message: '' });
+
+  const showAlert = (
+    title: string,
+    message: string,
+    buttons?: AlertButton[]
+  ) => {
+    setAlertConfig({ visible: true, title, message, buttons });
+  };
 
   useFocusEffect(
     useCallback(() => {
@@ -38,7 +55,7 @@ export default function WelcomeScreen() {
     const codePattern = /^CRUM-\d{3}-\d{3}$/;
     
     if (!codePattern.test(code)) {
-      Alert.alert(
+      showAlert(
         "Invalid Cookie Code", 
         "Code should look like CRUM-123-456. Ask your parent for your code!"
       );
@@ -52,16 +69,17 @@ export default function WelcomeScreen() {
         setProfile(kidProfile);
         setSubscribed(true);
         setCookieCodeInput('');
-        Alert.alert("Welcome! 🍪", `Logged in as ${kidProfile.name}!`);
-        router.push('/chat');
+        showAlert("Welcome! 🍪", `Logged in as ${kidProfile.name}!`, [
+          { text: "OK", onPress: () => { router.push('/chat'); } }
+        ]);
       } else {
-        Alert.alert(
+        showAlert(
           "Profile Not Found", 
           "Could not find a kid profile with this Cookie Code. Please verify the code in the parent dashboard."
         );
       }
     } catch (e) {
-      Alert.alert("Error", "An error occurred during login. Please try again.");
+      showAlert("Error", "An error occurred during login. Please try again.");
     } finally {
       setSyncing(false);
     }
@@ -157,6 +175,13 @@ export default function WelcomeScreen() {
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
+      <CustomAlertModal
+        visible={alertConfig.visible}
+        title={alertConfig.title}
+        message={alertConfig.message}
+        buttons={alertConfig.buttons}
+        onClose={() => setAlertConfig(prev => ({ ...prev, visible: false }))}
+      />
     </SafeAreaView>
   );
 }

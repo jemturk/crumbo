@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, TextInput, TouchableOpacity, SafeAreaView, Alert, Platform, ActivityIndicator, KeyboardAvoidingView, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, TextInput, TouchableOpacity, SafeAreaView, Platform, ActivityIndicator, KeyboardAvoidingView, ScrollView } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StorageService } from '@/services/storage';
 import { supabase } from '@/services/supabase';
+import CustomAlertModal, { AlertButton } from '@/components/CustomAlertModal';
 
 export default function ParentGate() {
   const router = useRouter();
@@ -19,6 +20,22 @@ export default function ParentGate() {
   
   const [error, setError] = useState(false);
   const [loading, setLoading] = useState(false);
+
+  // Custom Alert State
+  const [alertConfig, setAlertConfig] = useState<{
+    visible: boolean;
+    title: string;
+    message: string;
+    buttons?: AlertButton[];
+  }>({ visible: false, title: '', message: '' });
+
+  const showAlert = (
+    title: string,
+    message: string,
+    buttons?: AlertButton[]
+  ) => {
+    setAlertConfig({ visible: true, title, message, buttons });
+  };
 
   useEffect(() => {
     prefillEmail();
@@ -40,11 +57,11 @@ export default function ParentGate() {
     const pwd = passwordInput.trim();
 
     if (!email || !email.includes('@')) {
-      Alert.alert("Invalid Email", "Please enter a valid parent email address.");
+      showAlert("Invalid Email", "Please enter a valid parent email address.");
       return;
     }
     if (!pwd) {
-      Alert.alert("Password Required", "Please enter your password.");
+      showAlert("Password Required", "Please enter your password.");
       return;
     }
 
@@ -61,7 +78,7 @@ export default function ParentGate() {
       if (fetchError || !data || !data.push_token) {
         setLoading(false);
         setError(true);
-        Alert.alert("Account Not Found", "No account found with this email. Please register first.");
+        showAlert("Account Not Found", "No account found with this email. Please register first.");
         return;
       }
 
@@ -78,11 +95,11 @@ export default function ParentGate() {
         setLoading(false);
         setError(true);
         setPasswordInput('');
-        Alert.alert("Access Denied", "Incorrect password. Please try again.");
+        showAlert("Access Denied", "Incorrect password. Please try again.");
       }
     } catch (e) {
       setLoading(false);
-      Alert.alert("Connection Error", "Could not connect to the database. Please check your network.");
+      showAlert("Connection Error", "Could not connect to the database. Please check your network.");
     }
   };
 
@@ -92,15 +109,15 @@ export default function ParentGate() {
     const confirm = confirmInput.trim();
 
     if (!email || !email.includes('@')) {
-      Alert.alert("Invalid Email", "Please enter a valid parent email address.");
+      showAlert("Invalid Email", "Please enter a valid parent email address.");
       return;
     }
     if (pwd.length < 4) {
-      Alert.alert("Weak Password", "Please set a password of at least 4 characters.");
+      showAlert("Weak Password", "Please set a password of at least 4 characters.");
       return;
     }
     if (pwd !== confirm) {
-      Alert.alert("Passwords Match", "The passwords you entered do not match. Please try again.");
+      showAlert("Passwords Match", "The passwords you entered do not match. Please try again.");
       return;
     }
 
@@ -117,8 +134,9 @@ export default function ParentGate() {
 
       if (data) {
         setLoading(false);
-        Alert.alert("Account Exists", "An account with this email already exists. Please sign in.");
-        setMode('signin');
+        showAlert("Account Exists", "An account with this email already exists. Please sign in.", [
+          { text: "OK", onPress: () => setMode('signin') }
+        ]);
         return;
       }
 
@@ -131,11 +149,12 @@ export default function ParentGate() {
       await StorageService.syncParentData();
 
       setLoading(false);
-      Alert.alert("Registration Complete! 🔒", "Your parent account and subscription are now active.");
-      router.replace('/parent/dashboard');
+      showAlert("Registration Complete! 🔒", "Your parent account and subscription are now active.", [
+        { text: "OK", onPress: () => router.replace('/parent/dashboard') }
+      ]);
     } catch (e) {
       setLoading(false);
-      Alert.alert("Error", "Could not complete registration. Please check your connection.");
+      showAlert("Error", "Could not complete registration. Please check your connection.");
     }
   };
 
@@ -262,6 +281,13 @@ export default function ParentGate() {
           )}
         </ScrollView>
       </KeyboardAvoidingView>
+      <CustomAlertModal
+        visible={alertConfig.visible}
+        title={alertConfig.title}
+        message={alertConfig.message}
+        buttons={alertConfig.buttons}
+        onClose={() => setAlertConfig(prev => ({ ...prev, visible: false }))}
+      />
     </SafeAreaView>
   );
 }

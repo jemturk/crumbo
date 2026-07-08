@@ -1,9 +1,10 @@
 import React, { useState, useCallback } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, Modal, TextInput, SafeAreaView, Alert, Platform } from 'react-native';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, Modal, TextInput, SafeAreaView, Platform } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { StorageService, Friend, KidProfile, Message } from '@/services/storage';
 import { registerForPushNotificationsAsync } from '@/services/notifications';
+import CustomAlertModal, { AlertButton } from '@/components/CustomAlertModal';
 
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -17,9 +18,45 @@ export default function ChatDashboard() {
   const [lastMessages, setLastMessages] = useState<Record<string, Message | null>>({});
   const [pairingStatuses, setPairingStatuses] = useState<Record<string, 'paired' | 'pending'>>({});
 
+  // Custom Alert State
+  const [alertConfig, setAlertConfig] = useState<{
+    visible: boolean;
+    title: string;
+    message: string;
+    buttons?: AlertButton[];
+  }>({ visible: false, title: '', message: '' });
+
+  const showAlert = (
+    title: string,
+    message: string,
+    buttons?: AlertButton[]
+  ) => {
+    setAlertConfig({ visible: true, title, message, buttons });
+  };
+
   useFocusEffect(
     useCallback(() => {
       loadDashboardData();
+
+      const unsubscribe = StorageService.subscribeToMessages((newMsg, friendId) => {
+        if (newMsg.text && newMsg.text.startsWith('[CALL_SIGNAL:START_') && newMsg.sender === 'them') {
+          const isVideo = newMsg.text.includes('START_VIDEO_CALL');
+          const parts = newMsg.text.split(':');
+          const roomName = parts[parts.length - 1];
+          router.push({
+            pathname: `/chat/${friendId}`,
+            params: {
+              incomingCall: 'true',
+              callType: isVideo ? 'video' : 'audio',
+              roomName
+            }
+          });
+          return;
+        }
+        loadDashboardData();
+      });
+
+      return () => unsubscribe();
     }, [])
   );
 
@@ -74,7 +111,7 @@ export default function ChatDashboard() {
   };
 
   const handleLogout = () => {
-    Alert.alert(
+    showAlert(
       "Log Out?",
       "Are you sure you want to log out of your Cookie Jar?",
       [
@@ -96,6 +133,27 @@ export default function ChatDashboard() {
   const renderFriendItem = ({ item }: { item: Friend }) => {
     const lastMsg = lastMessages[item.id];
     const status = pairingStatuses[item.id] || 'pending';
+
+    const renderLastMsgText = () => {
+      if (!lastMsg) return 'Tap to start chatting! 🍪';
+      
+      if (lastMsg.text.startsWith('[CALL_LOG:')) {
+        const logType = lastMsg.text.replace('[CALL_LOG:', '').replace(']', '');
+        switch (logType) {
+          case 'MISSED_VIDEO':
+            return '📹 Missed Video Call';
+          case 'MISSED_AUDIO':
+            return '📞 Missed Voice Call';
+          case 'ENDED_VIDEO':
+            return '📹 Video Call Ended';
+          case 'ENDED_AUDIO':
+          default:
+            return '📞 Voice Call Ended';
+        }
+      }
+      
+      return `${lastMsg.sender === 'me' ? 'You: ' : ''}${lastMsg.text}`;
+    };
     
     return (
       <TouchableOpacity 
@@ -118,9 +176,7 @@ export default function ChatDashboard() {
           <Text style={styles.lastMessage} numberOfLines={1}>
             {status === 'pending' 
               ? 'Waiting for parent approval ⏳'
-              : (lastMsg 
-                  ? `${lastMsg.sender === 'me' ? 'You: ' : ''}${lastMsg.text}`
-                  : 'Tap to start chatting! 🍪')}
+              : renderLastMsgText()}
           </Text>
         </View>
 
@@ -175,6 +231,13 @@ export default function ChatDashboard() {
           contentContainerStyle={styles.listContent}
         />
       )}
+      <CustomAlertModal
+        visible={alertConfig.visible}
+        title={alertConfig.title}
+        message={alertConfig.message}
+        buttons={alertConfig.buttons}
+        onClose={() => setAlertConfig(prev => ({ ...prev, visible: false }))}
+      />
     </SafeAreaView>
   );
 }
