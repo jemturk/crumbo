@@ -12,7 +12,9 @@ import {
   ActivityIndicator,
   Keyboard,
   Modal,
-  Vibration
+  Vibration,
+  Animated,
+  PanResponder
 } from 'react-native';
 import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -88,6 +90,32 @@ export default function ChatScreen() {
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoMuted, setIsVideoMuted] = useState(false);
   const [activeCallUuid, setActiveCallUuid] = useState<string | null>(null);
+
+  // Draggable local video view setup
+  const pan = useRef(new Animated.ValueXY()).current;
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onPanResponderGrant: () => {
+        pan.extractOffset();
+      },
+      onPanResponderMove: Animated.event(
+        [null, { dx: pan.x, dy: pan.y }],
+        { useNativeDriver: false }
+      ),
+      onPanResponderRelease: () => {
+        pan.flattenOffset();
+      }
+    })
+  ).current;
+
+  useEffect(() => {
+    if (!callModalVisible) {
+      pan.setValue({ x: 0, y: 0 });
+      pan.setOffset({ x: 0, y: 0 });
+    }
+  }, [callModalVisible]);
 
   // CallKeep callbacks hook
   useEffect(() => {
@@ -696,14 +724,26 @@ export default function ChatScreen() {
         visible={callModalVisible}
         onRequestClose={handleEndCall}
       >
-        <SafeAreaView style={[styles.callModalContainer, callTypeVideo ? styles.callVideoBg : styles.callAudioBg]}>
+        <View style={[styles.callModalContainer, callTypeVideo ? styles.callVideoBg : styles.callAudioBg]}>
           {/* Video Views if connected/video call */}
           {callTypeVideo && callStatus === 'connected' && (
-            <View style={styles.videoContainer}>
+            <View style={StyleSheet.absoluteFill}>
               {remoteUid !== null ? (
                 <>
                   <RtcSurfaceView style={styles.remoteVideo} canvas={{ uid: remoteUid }} />
-                  <RtcSurfaceView style={styles.localVideo} canvas={{ uid: 0 }} zOrderMediaOverlay={true} />
+                  
+                  <Animated.View
+                    {...panResponder.panHandlers}
+                    style={[
+                      styles.localVideo,
+                      {
+                        transform: pan.getTranslateTransform(),
+                        top: insets.top > 0 ? insets.top + s(10) : s(20),
+                      },
+                    ]}
+                  >
+                    <RtcSurfaceView style={styles.localVideoSurface} canvas={{ uid: 0 }} zOrderMediaOverlay={true} />
+                  </Animated.View>
                 </>
               ) : (
                 <RtcSurfaceView style={styles.localVideoFullScreen} canvas={{ uid: 0 }} />
@@ -711,59 +751,130 @@ export default function ChatScreen() {
             </View>
           )}
 
-          <View style={styles.callContent}>
-            <Text style={[styles.callLabel, { fontSize: s(12) }]}>
+          {/* Header Call Info */}
+          <View style={[
+            styles.callHeaderContainer,
+            { paddingTop: insets.top > 0 ? insets.top + s(10) : s(30) },
+            callTypeVideo && callStatus === 'connected' && remoteUid !== null && styles.callHeaderVideoConnected
+          ]}>
+            <Text style={[
+              styles.callLabel, 
+              { fontSize: s(11) },
+              callTypeVideo && callStatus === 'connected' && remoteUid !== null ? styles.textShadowLightBlue : styles.callLabelText
+            ]}>
               {callTypeVideo ? '📹 VIDEO CALL' : '📞 CRUMBO VOICE CALL'}
             </Text>
             
-            {/* Show avatar only if not in a video call or not yet connected */}
-            {(!callTypeVideo || callStatus !== 'connected' || remoteUid === null) && (
-              <View style={[styles.avatarContainerLarge, { width: s(120), height: s(120), borderRadius: s(60), marginBottom: s(24) }]}>
-                <Text style={[styles.avatarEmojiLarge, { fontSize: s(64) }]}>{friend?.avatarEmoji || '🍪'}</Text>
-              </View>
-            )}
-
-            <Text style={[styles.callFriendName, { fontSize: s(28) }]}>{friend?.name}</Text>
+            <Text style={[
+              styles.callFriendName, 
+              { fontSize: s(28) },
+              callTypeVideo && callStatus === 'connected' && remoteUid !== null ? [styles.callFriendNameVideo, styles.textShadow] : styles.callFriendNameAudio
+            ]}>
+              {friend?.name}
+            </Text>
             
-            <Text style={[styles.callStatusText, { fontSize: s(16) }]}>
+            <Text style={[
+              styles.callStatusText, 
+              { fontSize: s(15) },
+              callTypeVideo && callStatus === 'connected' && remoteUid !== null ? [styles.callStatusTextVideo, styles.textShadow] : styles.callStatusTextAudio
+            ]}>
               {callStatus === 'ringing' && (callDirection === 'incoming' ? 'Incoming Call...' : 'Ringing...')}
               {callStatus === 'connected' && (remoteUid === null && callTypeVideo ? 'Connecting video...' : `Connected • ${formatDuration(callDuration)}`)}
               {callStatus === 'ended' && 'Call Ended'}
             </Text>
           </View>
 
-          {/* Controls */}
-          {callStatus === 'ringing' && callDirection === 'incoming' ? (
-            <View style={styles.callControlsRowIncoming}>
-              <TouchableOpacity style={[styles.callControlBtn, styles.declineBtn]} onPress={handleDeclineCall}>
-                <Ionicons name="close" size={28} color="#FFFFFF" />
-              </TouchableOpacity>
-              <TouchableOpacity style={[styles.callControlBtn, styles.acceptBtn]} onPress={handleAcceptCall}>
-                <Ionicons name="checkmark" size={28} color="#FFFFFF" />
-              </TouchableOpacity>
-            </View>
-          ) : (
-            <View style={styles.callControlsRow}>
-              <TouchableOpacity style={[styles.callMuteBtn, isMuted && styles.activeMuteBtn]} onPress={toggleMute}>
-                <Ionicons name={isMuted ? "mic-off" : "mic"} size={24} color="#4E342E" />
-              </TouchableOpacity>
-              
-              <TouchableOpacity style={styles.callEndBtn} onPress={handleEndCall}>
-                <Ionicons name="close" size={28} color="#FFFFFF" />
-              </TouchableOpacity>
-
-              {callTypeVideo ? (
-                <TouchableOpacity style={styles.callMuteBtn} onPress={switchCamera}>
-                  <Ionicons name="camera-reverse" size={24} color="#4E342E" />
-                </TouchableOpacity>
-              ) : (
-                <TouchableOpacity style={[styles.callMuteBtn, isVideoMuted && styles.activeMuteBtn]} onPress={toggleSpeakerMock}>
-                  <Ionicons name="volume-high" size={24} color={isVideoMuted ? "#BDBDBD" : "#4E342E"} />
-                </TouchableOpacity>
-              )}
+          {/* Middle Section (for Avatar when not in active video) */}
+          {(!callTypeVideo || callStatus !== 'connected' || remoteUid === null) && (
+            <View style={styles.callMiddleContainer}>
+              <View style={[
+                styles.avatarContainerLarge, 
+                { width: s(130), height: s(130), borderRadius: s(65) }
+              ]}>
+                <Text style={[styles.avatarEmojiLarge, { fontSize: s(64) }]}>{friend?.avatarEmoji || '🍪'}</Text>
+              </View>
             </View>
           )}
-        </SafeAreaView>
+          
+          {/* Empty spacer to push controls to bottom when active video is showing */}
+          {callTypeVideo && callStatus === 'connected' && remoteUid !== null && (
+            <View style={{ flex: 1 }} />
+          )}
+
+          {/* Controls */}
+          {callStatus === 'ringing' && callDirection === 'incoming' ? (
+            <View style={[
+              styles.controlsContainer,
+              callTypeVideo ? styles.controlsContainerVideo : styles.controlsContainerAudio,
+              { paddingBottom: insets.bottom > 0 ? insets.bottom + s(20) : s(30) }
+            ]}>
+              <View style={styles.callControlsRowIncoming}>
+                <TouchableOpacity style={[styles.callControlBtn, styles.declineBtn, { width: s(64), height: s(64), borderRadius: s(32) }]} onPress={handleDeclineCall}>
+                  <Ionicons name="close" size={s(32)} color="#FFFFFF" />
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.callControlBtn, styles.acceptBtn, { width: s(64), height: s(64), borderRadius: s(32) }]} onPress={handleAcceptCall}>
+                  <Ionicons name="checkmark" size={s(32)} color="#FFFFFF" />
+                </TouchableOpacity>
+              </View>
+            </View>
+          ) : (
+            <View style={[
+              styles.controlsContainer,
+              callTypeVideo && callStatus === 'connected' && remoteUid !== null ? styles.controlsContainerVideo : styles.controlsContainerAudio,
+              { paddingBottom: insets.bottom > 0 ? insets.bottom + s(20) : s(30) }
+            ]}>
+              <View style={styles.callControlsRow}>
+                <TouchableOpacity 
+                  style={[
+                    styles.callMuteBtn, 
+                    isMuted && (callTypeVideo && callStatus === 'connected' && remoteUid !== null ? styles.activeMuteBtnVideo : styles.activeMuteBtn),
+                    callTypeVideo && callStatus === 'connected' && remoteUid !== null && styles.videoCallControlBtn,
+                    { width: s(56), height: s(56), borderRadius: s(28) }
+                  ]} 
+                  onPress={toggleMute}
+                >
+                  <Ionicons 
+                    name={isMuted ? "mic-off" : "mic"} 
+                    size={s(24)} 
+                    color={isMuted ? "#FFFFFF" : (callTypeVideo && callStatus === 'connected' && remoteUid !== null ? '#FFFFFF' : '#4E342E')} 
+                  />
+                </TouchableOpacity>
+                
+                <TouchableOpacity style={[styles.callEndBtn, { width: s(72), height: s(72), borderRadius: s(36) }]} onPress={handleEndCall}>
+                  <Ionicons name="close" size={s(32)} color="#FFFFFF" />
+                </TouchableOpacity>
+
+                {callTypeVideo ? (
+                  <TouchableOpacity 
+                    style={[
+                      styles.callMuteBtn,
+                      styles.videoCallControlBtn,
+                      { width: s(56), height: s(56), borderRadius: s(28) }
+                    ]} 
+                    onPress={switchCamera}
+                  >
+                    <Ionicons name="camera-reverse" size={s(24)} color="#FFFFFF" />
+                  </TouchableOpacity>
+                ) : (
+                  <TouchableOpacity 
+                    style={[
+                      styles.callMuteBtn, 
+                      isVideoMuted && styles.activeMuteBtn,
+                      { width: s(56), height: s(56), borderRadius: s(28) }
+                    ]} 
+                    onPress={toggleSpeakerMock}
+                  >
+                    <Ionicons 
+                      name="volume-high" 
+                      size={s(24)} 
+                      color={isVideoMuted ? '#BDBDBD' : '#4E342E'} 
+                    />
+                  </TouchableOpacity>
+                )}
+              </View>
+            </View>
+          )}
+        </View>
       </Modal>
       <CustomAlertModal
         visible={alertConfig.visible}
@@ -956,7 +1067,6 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 40,
   },
   callVideoBg: {
     backgroundColor: '#E1F5FE', // Soft video calling blue
@@ -964,26 +1074,64 @@ const styles = StyleSheet.create({
   callAudioBg: {
     backgroundColor: '#FFFDE7', // Soft warm audio calling yellow
   },
-  callContent: {
-    flex: 1,
-    justifyContent: 'center',
+  callHeaderContainer: {
     alignItems: 'center',
-    gap: 20,
     width: '100%',
     zIndex: 10,
-    position: 'relative',
+  },
+  callHeaderVideoConnected: {
+    paddingHorizontal: 20,
+    paddingVertical: 15,
+    borderRadius: 20,
+    backgroundColor: 'rgba(0, 0, 0, 0.4)',
+    width: '90%',
+    alignSelf: 'center',
   },
   callLabel: {
     fontSize: 12,
     fontWeight: '800',
-    color: '#8D6E63',
     letterSpacing: 1.5,
     textTransform: 'uppercase',
   },
+  callLabelText: {
+    color: '#8D6E63',
+  },
+  textShadowLightBlue: {
+    color: '#B3E5FC',
+    textShadowColor: 'rgba(0, 0, 0, 0.5)',
+    textShadowOffset: { width: 0, height: 1 },
+    textShadowRadius: 2,
+  },
+  callFriendName: {
+    fontWeight: '900',
+  },
+  callFriendNameAudio: {
+    color: '#4E342E',
+  },
+  callFriendNameVideo: {
+    color: '#FFFFFF',
+  },
+  callStatusText: {
+    fontWeight: '700',
+  },
+  callStatusTextAudio: {
+    color: '#8D6E63',
+  },
+  callStatusTextVideo: {
+    color: '#E1F5FE',
+  },
+  textShadow: {
+    textShadowColor: 'rgba(0, 0, 0, 0.6)',
+    textShadowOffset: { width: 0, height: 2 },
+    textShadowRadius: 4,
+  },
+  callMiddleContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    width: '100%',
+  },
   avatarContainerLarge: {
-    width: 140,
-    height: 140,
-    borderRadius: 70,
     backgroundColor: '#FFFFFF',
     justifyContent: 'center',
     alignItems: 'center',
@@ -998,44 +1146,51 @@ const styles = StyleSheet.create({
   avatarEmojiLarge: {
     fontSize: 80,
   },
-  callFriendName: {
-    fontSize: 32,
-    fontWeight: '900',
-    color: '#4E342E',
+  controlsContainer: {
+    width: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 24,
+    paddingTop: 20,
   },
-  callStatusText: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#8D6E63',
+  controlsContainerVideo: {
+    backgroundColor: 'rgba(0, 0, 0, 0.4)',
+  },
+  controlsContainerAudio: {
+    backgroundColor: '#FFFFFF',
+    borderTopWidth: 1,
+    borderColor: '#FFEFC0',
+    shadowColor: '#8D6E63',
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 10,
+    elevation: 6,
   },
   callControlsRow: {
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
     gap: 28,
-    marginBottom: 40,
     zIndex: 10,
-    position: 'relative',
   },
   callMuteBtn: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
+    justifyContent: 'center',
+    alignItems: 'center',
     backgroundColor: '#FFFFFF',
     borderWidth: 2,
     borderColor: '#FFEFC0',
-    justifyContent: 'center',
-    alignItems: 'center',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.1,
     shadowRadius: 4,
     elevation: 2,
   },
+  videoCallControlBtn: {
+    backgroundColor: 'rgba(255, 255, 255, 0.25)',
+    borderColor: 'rgba(255, 255, 255, 0.35)',
+    borderWidth: 1.5,
+  },
   callEndBtn: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
     backgroundColor: '#E53935',
     justifyContent: 'center',
     alignItems: 'center',
@@ -1092,14 +1247,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 40,
     width: '100%',
-    marginBottom: 40,
     zIndex: 10,
-    position: 'relative',
   },
   callControlBtn: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
     justifyContent: 'center',
     alignItems: 'center',
     elevation: 4,
@@ -1136,13 +1286,9 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFCDD2',
     borderColor: '#E53935',
   },
-  videoContainer: {
-    width: '100%',
-    height: '100%',
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    zIndex: 1,
+  activeMuteBtnVideo: {
+    backgroundColor: '#E53935',
+    borderColor: '#FFCDD2',
   },
   remoteVideo: {
     width: '100%',
@@ -1152,13 +1298,22 @@ const styles = StyleSheet.create({
     width: 110,
     height: 150,
     position: 'absolute',
-    top: 60,
     right: 20,
     borderRadius: 16,
     overflow: 'hidden',
-    borderWidth: 2,
+    borderWidth: 1.5,
     borderColor: '#FFFFFF',
-    zIndex: 10,
+    backgroundColor: '#000000',
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
+    elevation: 8,
+    zIndex: 20,
+  },
+  localVideoSurface: {
+    width: '100%',
+    height: '100%',
   },
   localVideoFullScreen: {
     width: '100%',

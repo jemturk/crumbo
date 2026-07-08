@@ -11,7 +11,8 @@ import {
   Modal, 
   Clipboard,
   ActivityIndicator,
-  Image
+  Image,
+  KeyboardAvoidingView
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -759,8 +760,11 @@ export default function ParentDashboard() {
         visible={friendsModalVisible}
         onRequestClose={() => setFriendsModalVisible(false)}
       >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={styles.modalOverlay}
+        >
+          <View style={[styles.modalContent, { paddingBottom: insets.bottom > 0 ? insets.bottom + s(24) : s(24) }]}>
             {selectedBuddyForLogs ? (
               // Chat Logs View
               <>
@@ -961,7 +965,7 @@ export default function ParentDashboard() {
               </>
             )}
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* Show QR Code Modal */}

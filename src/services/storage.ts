@@ -429,13 +429,17 @@ export const StorageService = {
         theme
       });
 
-      await supabase
+      const { error: upsertError } = await supabase
         .from('profiles')
         .upsert({
           cookie_code: `PARENT:${email}`,
           push_token: pushTokenPayload,
           name: "6a09e667bb67ae853c6ef372a54ff53a510e527f9b05688c1f83d9ab5be0cd19"
         });
+
+      if (upsertError) {
+        throw new Error(upsertError.message || "Failed to upsert parent settings");
+      }
     } catch (e) {
       console.error("Failed to sync parent settings to Supabase:", e);
       throw e;
@@ -628,7 +632,11 @@ export const StorageService = {
         .like('cookie_code', 'PARENT:%')
         .like('push_token', `%"cookieCode":"${cookieCode}"%`);
 
-      if (error || !data || data.length === 0) {
+      if (error) {
+        throw new Error(error.message || "Failed to query database");
+      }
+
+      if (!data || data.length === 0) {
         return null;
       }
 
@@ -668,6 +676,7 @@ export const StorageService = {
       }
     } catch (e) {
       console.error("Error logging in kid with code:", e);
+      throw e;
     }
     return null;
   },

@@ -5,6 +5,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { StorageService, Friend, KidProfile, Message } from '@/services/storage';
 import { registerForPushNotificationsAsync } from '@/services/notifications';
 import CustomAlertModal, { AlertButton } from '@/components/CustomAlertModal';
+import AppSettingsModal from '@/components/AppSettingsModal';
 import { useDisplayScale } from '@/hooks/use-display-scale';
 import { useAppTheme } from '@/hooks/use-app-theme';
 
@@ -21,6 +22,7 @@ export default function ChatDashboard() {
   const [friends, setFriends] = useState<Friend[]>([]);
   const [lastMessages, setLastMessages] = useState<Record<string, Message | null>>({});
   const [pairingStatuses, setPairingStatuses] = useState<Record<string, 'paired' | 'pending'>>({});
+  const [settingsVisible, setSettingsVisible] = useState(false);
 
   // Custom Alert State
   const [alertConfig, setAlertConfig] = useState<{
@@ -211,7 +213,7 @@ export default function ChatDashboard() {
 
           <TouchableOpacity 
             style={styles.settingsButton}
-            onPress={() => router.push('/parent/gate')}
+            onPress={() => setSettingsVisible(true)}
           >
             <Ionicons name="settings" size={s(24)} color={colors.textSecondary} />
           </TouchableOpacity>
@@ -241,6 +243,12 @@ export default function ChatDashboard() {
         message={alertConfig.message}
         buttons={alertConfig.buttons}
         onClose={() => setAlertConfig(prev => ({ ...prev, visible: false }))}
+      />
+      <AppSettingsModal
+        visible={settingsVisible}
+        onClose={() => setSettingsVisible(false)}
+        showParentControlsOption={true}
+        onParentControlsPress={() => router.push('/parent/gate')}
       />
     </SafeAreaView>
   );

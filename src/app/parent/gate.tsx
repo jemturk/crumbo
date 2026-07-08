@@ -79,7 +79,18 @@ export default function ParentGate() {
         .eq('cookie_code', `PARENT:${email}`)
         .single();
 
-      if (fetchError || !data || !data.push_token) {
+      if (fetchError) {
+        setLoading(false);
+        setError(true);
+        if (fetchError.code === 'PGRST116') {
+          showAlert("Account Not Found", "No account found with this email. Please register first.");
+        } else {
+          showAlert("Connection Error", "Could not connect to the database. Please check your network.");
+        }
+        return;
+      }
+
+      if (!data || !data.push_token) {
         setLoading(false);
         setError(true);
         showAlert("Account Not Found", "No account found with this email. Please register first.");
@@ -90,7 +101,13 @@ export default function ParentGate() {
       
       if (payload.parentPassword === pwd) {
         // Correct password! Call restore helper to pull profile
-        await StorageService.fetchAndRestoreParentData(email);
+        const restored = await StorageService.fetchAndRestoreParentData(email);
+        if (!restored) {
+          setLoading(false);
+          setError(true);
+          showAlert("Connection Error", "Could not restore your account data. Please check your network.");
+          return;
+        }
         await StorageService.saveParentPassword(pwd);
 
         setLoading(false);
@@ -130,11 +147,17 @@ export default function ParentGate() {
 
     try {
       // Check if email already exists in Supabase
-      const { data } = await supabase
+      const { data, error: checkError } = await supabase
         .from('profiles')
         .select('cookie_code')
         .eq('cookie_code', `PARENT:${email}`)
         .single();
+
+      if (checkError && checkError.code !== 'PGRST116') {
+        setLoading(false);
+        showAlert("Connection Error", "Could not connect to the database. Please check your network.");
+        return;
+      }
 
       if (data) {
         setLoading(false);

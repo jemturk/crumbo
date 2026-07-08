@@ -4,6 +4,7 @@ import { useRouter, useFocusEffect } from 'expo-router';
 import { StorageService, KidProfile } from '@/services/storage';
 import { Ionicons } from '@expo/vector-icons';
 import CustomAlertModal, { AlertButton } from '@/components/CustomAlertModal';
+import AppSettingsModal from '@/components/AppSettingsModal';
 import { useDisplayScale } from '@/hooks/use-display-scale';
 import { useAppTheme } from '@/hooks/use-app-theme';
 
@@ -17,6 +18,7 @@ export default function WelcomeScreen() {
 
   const [cookieCodeInput, setCookieCodeInput] = useState('');
   const [syncing, setSyncing] = useState(false);
+  const [settingsVisible, setSettingsVisible] = useState(false);
 
   // Custom Alert State
   const [alertConfig, setAlertConfig] = useState<{
@@ -83,7 +85,7 @@ export default function WelcomeScreen() {
         );
       }
     } catch (e) {
-      showAlert("Error", "An error occurred during login. Please try again.");
+      showAlert("Connection Error", "Could not connect to the database. Please check your network.");
     } finally {
       setSyncing(false);
     }
@@ -99,6 +101,16 @@ export default function WelcomeScreen() {
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
+      {/* Top right settings button */}
+      <View style={{ position: 'absolute', top: Platform.OS === 'ios' ? s(4) : s(16), right: s(16), zIndex: 10 }}>
+        <TouchableOpacity 
+          style={{ padding: s(8) }}
+          onPress={() => setSettingsVisible(true)}
+        >
+          <Ionicons name="settings" size={s(26)} color={colors.textSecondary} />
+        </TouchableOpacity>
+      </View>
+
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={{ flex: 1 }}
@@ -185,6 +197,10 @@ export default function WelcomeScreen() {
         message={alertConfig.message}
         buttons={alertConfig.buttons}
         onClose={() => setAlertConfig(prev => ({ ...prev, visible: false }))}
+      />
+      <AppSettingsModal
+        visible={settingsVisible}
+        onClose={() => setSettingsVisible(false)}
       />
     </SafeAreaView>
   );

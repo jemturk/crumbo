@@ -4,8 +4,18 @@ import { useEffect } from 'react';
 import { callKeepManager } from '@/services/callkeep';
 import { SettingsProvider, useSettings } from '@/context/settings-context';
 
+import { StatusBar as RNStatusBar, Platform } from 'react-native';
+
 function NavigationLayout() {
-  const { colors } = useSettings();
+  const { theme, colors } = useSettings();
+
+  useEffect(() => {
+    RNStatusBar.setBarStyle(theme === 'dark' ? 'light-content' : 'dark-content', true);
+    if (Platform.OS === 'android') {
+      RNStatusBar.setBackgroundColor('transparent');
+      RNStatusBar.setTranslucent(true);
+    }
+  }, [theme]);
 
   return (
     <>
