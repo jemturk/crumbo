@@ -41,6 +41,9 @@ class CallKeepManager {
       this.initialized = true;
       console.log('[CallKeep] Setup successfully initialized');
 
+      // Clear any ghost connections left from previous app runs/crashes
+      RNCallKeep.endAllCalls();
+
       const isConnectionAvailable = await RNCallKeep.isConnectionServiceAvailable();
       console.log('[CallKeep] Android ConnectionService available:', isConnectionAvailable);
     } catch (err) {
@@ -89,6 +92,8 @@ class CallKeepManager {
     try {
       console.log(`[CallKeep] Ending call: ${uuid}`);
       RNCallKeep.endCall(uuid);
+      // Clean up all active calls to prevent ghost calls in the Telecom system
+      RNCallKeep.endAllCalls();
     } catch (err) {
       console.error('[CallKeep] Failed to end call:', err);
     }

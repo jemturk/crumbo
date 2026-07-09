@@ -46,17 +46,7 @@ export default function ChatDashboard() {
 
       const unsubscribe = StorageService.subscribeToMessages((newMsg, friendId) => {
         if (newMsg.text && newMsg.text.startsWith('[CALL_SIGNAL:START_') && newMsg.sender === 'them') {
-          const isVideo = newMsg.text.includes('START_VIDEO_CALL');
-          const parts = newMsg.text.split(':');
-          const roomName = parts[parts.length - 1];
-          router.push({
-            pathname: `/chat/${friendId}`,
-            params: {
-              incomingCall: 'true',
-              callType: isVideo ? 'video' : 'audio',
-              roomName
-            }
-          });
+          // Handled globally in _layout.tsx
           return;
         }
         loadDashboardData();

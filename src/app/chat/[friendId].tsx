@@ -27,6 +27,7 @@ import { agoraManager, hashCode, fetchAgoraToken } from '@/services/agora';
 import { callKeepManager } from '@/services/callkeep';
 import { useDisplayScale } from '@/hooks/use-display-scale';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import { soundManager } from '@/services/sound';
 
 function generateUUID() {
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
@@ -39,13 +40,45 @@ export default function ChatScreen() {
   const router = useRouter();
   const { s } = useDisplayScale();
   const { theme, colors, isDark } = useAppTheme();
-  const { friendId, incomingCall, callType, roomName } = useLocalSearchParams<{ 
+  const { friendId, incomingCall, callType, roomName, friendName } = useLocalSearchParams<{ 
     friendId: string;
     incomingCall?: string;
     callType?: string;
     roomName?: string;
+    friendName?: string;
   }>();
   const insets = useSafeAreaInsets();
+
+  const isMounted = useRef(true);
+  const callStatusRef = useRef<string>('ringing');
+  const handleEndCallRef = useRef<(() => Promise<void>) | null>(null);
+  const handleDeclineCallRef = useRef<(() => Promise<void>) | null>(null);
+  const callDirectionRef = useRef<'incoming' | 'outgoing'>('outgoing');
+
+  useEffect(() => {
+    isMounted.current = true;
+    return () => {
+      isMounted.current = false;
+    };
+  }, []);
+
+
+  useEffect(() => {
+    return () => {
+      if (callStatusRef.current === 'ringing' || callStatusRef.current === 'connected') {
+        console.log('[ChatScreen] Unmounting while call is active. Auto-ending call.');
+        if (callStatusRef.current === 'ringing' && callDirectionRef.current === 'incoming') {
+          if (handleDeclineCallRef.current) {
+            handleDeclineCallRef.current();
+          }
+        } else {
+          if (handleEndCallRef.current) {
+            handleEndCallRef.current();
+          }
+        }
+      }
+    };
+  }, []);
 
   // State
   const [friend, setFriend] = useState<Friend | null>(null);
@@ -90,6 +123,14 @@ export default function ChatScreen() {
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoMuted, setIsVideoMuted] = useState(false);
   const [activeCallUuid, setActiveCallUuid] = useState<string | null>(null);
+
+  useEffect(() => {
+    callStatusRef.current = callStatus;
+  }, [callStatus]);
+
+  useEffect(() => {
+    callDirectionRef.current = callDirection;
+  }, [callDirection]);
 
   // Draggable local video view setup
   const pan = useRef(new Animated.ValueXY()).current;
@@ -170,8 +211,10 @@ export default function ChatScreen() {
   }, [friendId]);
 
   useEffect(() => {
-    if (incomingCall === 'true' && !initialCallHandled.current) {
-      initialCallHandled.current = true;
+    if (incomingCall === 'true') {
+      // Immediately clear the incomingCall params so they don't trigger the call again on remount
+      router.setParams({ incomingCall: undefined, callType: undefined, roomName: undefined, friendName: undefined });
+
       const isVideo = callType === 'video';
       setCallTypeVideo(isVideo);
       setCallDirection('incoming');
@@ -179,8 +222,13 @@ export default function ChatScreen() {
       setCallRoom(roomName || '');
       setCallModalVisible(true);
       Vibration.vibrate([1000, 1000], true);
+
+      const uuid = generateUUID();
+      setActiveCallUuid(uuid);
+      const displayName = friendName || friend?.name || 'Crumbo Friend';
+      callKeepManager.displayIncomingCall(uuid, displayName, displayName);
     }
-  }, [incomingCall, callType, roomName]);
+  }, [incomingCall, callType, roomName, friendName, friend]);
 
   useFocusEffect(
     useCallback(() => {
@@ -201,6 +249,23 @@ export default function ChatScreen() {
     return () => clearInterval(timer);
   }, [callStatus]);
 
+  // Call sound playback management
+  useEffect(() => {
+    if (callStatus === 'ringing') {
+      if (callDirection === 'incoming') {
+        soundManager.playRingtone();
+      }
+    } else {
+      soundManager.stopAll();
+      agoraManager.stopCallingSound().catch(err => console.warn(err));
+    }
+
+    return () => {
+      soundManager.stopAll();
+      agoraManager.stopCallingSound().catch(err => console.warn(err));
+    };
+  }, [callStatus, callDirection]);
+
   const callRoomRef = useRef<string>('');
   useEffect(() => {
     callRoomRef.current = callRoom;
@@ -211,18 +276,8 @@ export default function ChatScreen() {
     const unsubscribe = StorageService.subscribeToMessages((newMsg, msgFriendId) => {
       if (newMsg.text && newMsg.text.startsWith('[CALL_SIGNAL:')) {
         if (newMsg.text.startsWith('[CALL_SIGNAL:START_') && newMsg.sender === 'them' && msgFriendId !== friendId) {
-          // Incoming call from a different friend! Redirect to their chat with call params
-          const isVideo = newMsg.text.includes('START_VIDEO_CALL');
-          const parts = newMsg.text.split(':');
-          const roomName = parts[parts.length - 1];
-          router.push({
-            pathname: `/chat/${msgFriendId}`,
-            params: {
-              incomingCall: 'true',
-              callType: isVideo ? 'video' : 'audio',
-              roomName
-            }
-          });
+          // Handled globally in _layout.tsx
+          return;
         } else if (msgFriendId === friendId) {
           // Call signal for the current friend's conversation
           handleIncomingCallSignal(newMsg);
@@ -332,6 +387,16 @@ export default function ChatScreen() {
 
       if (!isIncoming) {
         setCallStatus('ringing');
+        try {
+          const { Asset } = require('expo-asset');
+          const callingAsset = Asset.fromModule(require('../../assets/sounds/calling.mp3'));
+          await callingAsset.downloadAsync();
+          if (callingAsset.localUri) {
+            await agoraManager.startCallingSound(callingAsset.localUri);
+          }
+        } catch (soundErr) {
+          console.error("Failed to play calling sound via Agora:", soundErr);
+        }
       } else {
         setCallStatus('connected');
       }
@@ -427,27 +492,34 @@ export default function ChatScreen() {
       await startAgoraCall(callRoom, callTypeVideo, true);
     }
   };
-
   const handleDeclineCall = async () => {
     Vibration.cancel();
-    setCallStatus('ended');
+    if (isMounted.current) {
+      setCallStatus('ended');
+    }
     if (activeCallUuid) {
       callKeepManager.endCall(activeCallUuid);
-      setActiveCallUuid(null);
+      if (isMounted.current) {
+        setActiveCallUuid(null);
+      }
     }
     await agoraManager.destroy();
-    setRemoteUid(null);
-    setCallModalVisible(false);
+    if (isMounted.current) {
+      setRemoteUid(null);
+      setCallModalVisible(false);
+    }
     await StorageService.sendCallSignal(friendId, '[CALL_SIGNAL:DECLINE_CALL]');
 
     const callLogText = callTypeVideo ? '[CALL_LOG:MISSED_VIDEO]' : '[CALL_LOG:MISSED_AUDIO]';
     try {
       const logMsg = await StorageService.sendCallLogMessage(friendId, callLogText);
-      setMessages(prev => {
-        if (prev.find(m => m.id === logMsg.id)) return prev;
-        return [...prev, logMsg];
-      });
-      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 150);
+      if (isMounted.current) {
+        setMessages(prev => {
+          if (prev.find(m => m.id === logMsg.id)) return prev;
+          return [...prev, logMsg];
+        });
+        setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 150);
+      }
     } catch (e) {
       console.error("Failed to save call log:", e);
     }
@@ -456,17 +528,24 @@ export default function ChatScreen() {
   const handleEndCall = async () => {
     Vibration.cancel();
     const finalStatus = callStatus;
-    setCallStatus('ended');
+    if (isMounted.current) {
+      setCallStatus('ended');
+    }
     if (activeCallUuid) {
       callKeepManager.endCall(activeCallUuid);
-      setActiveCallUuid(null);
+      if (isMounted.current) {
+        setActiveCallUuid(null);
+      }
     }
     await agoraManager.destroy();
-    setRemoteUid(null);
-
-    setTimeout(() => {
-      setCallModalVisible(false);
-    }, 500);
+    if (isMounted.current) {
+      setRemoteUid(null);
+      setTimeout(() => {
+        if (isMounted.current) {
+          setCallModalVisible(false);
+        }
+      }, 500);
+    }
 
     await StorageService.sendCallSignal(friendId, '[CALL_SIGNAL:END_CALL]');
 
@@ -479,15 +558,20 @@ export default function ChatScreen() {
 
     try {
       const logMsg = await StorageService.sendCallLogMessage(friendId, callLogText);
-      setMessages(prev => {
-        if (prev.find(m => m.id === logMsg.id)) return prev;
-        return [...prev, logMsg];
-      });
-      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 150);
+      if (isMounted.current) {
+        setMessages(prev => {
+          if (prev.find(m => m.id === logMsg.id)) return prev;
+          return [...prev, logMsg];
+        });
+        setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 150);
+      }
     } catch (e) {
       console.error("Failed to save call log:", e);
     }
   };
+
+  handleDeclineCallRef.current = handleDeclineCall;
+  handleEndCallRef.current = handleEndCall;
 
   const toggleMute = () => {
     const nextMuted = !isMuted;
@@ -848,12 +932,16 @@ export default function ChatScreen() {
                   <TouchableOpacity 
                     style={[
                       styles.callMuteBtn,
-                      styles.videoCallControlBtn,
+                      callTypeVideo && callStatus === 'connected' && remoteUid !== null && styles.videoCallControlBtn,
                       { width: s(56), height: s(56), borderRadius: s(28) }
                     ]} 
                     onPress={switchCamera}
                   >
-                    <Ionicons name="camera-reverse" size={s(24)} color="#FFFFFF" />
+                    <Ionicons 
+                      name="camera-reverse" 
+                      size={s(24)} 
+                      color={callTypeVideo && callStatus === 'connected' && remoteUid !== null ? '#FFFFFF' : '#4E342E'} 
+                    />
                   </TouchableOpacity>
                 ) : (
                   <TouchableOpacity 
