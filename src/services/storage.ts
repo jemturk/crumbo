@@ -174,7 +174,7 @@ export const StorageService = {
     // 1. Load cached messages for instant display
     const cachedData = await AsyncStorage.getItem(`${KEYS.MESSAGES_PREFIX}${friendId}`);
     let messages: Message[] = cachedData ? JSON.parse(cachedData) : [];
-    messages = messages.filter(m => m.text && !m.text.startsWith('[CALL_SIGNAL:'));
+    messages = messages.filter(m => m.text && !this.isCallSignalText(m.text));
 
     // 2. Fetch fresh history from Supabase to sync
     try {
@@ -191,7 +191,7 @@ export const StorageService = {
 
         if (!error && dbMsgs) {
           const fetchedMessages: Message[] = dbMsgs
-            .filter(msg => msg.text && !msg.text.startsWith('[CALL_SIGNAL:'))
+            .filter(msg => msg.text && !this.isCallSignalText(msg.text))
             .map(msg => ({
               id: msg.id,
               text: msg.text,
@@ -223,7 +223,7 @@ export const StorageService = {
 
       if (!error && dbMsgs) {
         return dbMsgs
-          .filter(msg => msg.text && !msg.text.startsWith('[CALL_SIGNAL:'))
+          .filter(msg => msg.text && !this.isCallSignalText(msg.text))
           .map(msg => ({
             id: msg.id,
             text: msg.text,
@@ -276,28 +276,6 @@ export const StorageService = {
     return newMsg;
   },
 
-  async sendCallSignal(friendId: string, text: string): Promise<void> {
-    try {
-      const profile = await this.getKidProfile();
-      const friends = await this.getFriends();
-      const friend = friends.find(f => f.id === friendId);
-      if (profile && friend) {
-        const signalId = Math.random().toString(36).substring(2, 9);
-        await supabase
-          .from('messages')
-          .insert({
-            id: signalId,
-            sender_code: profile.cookieCode,
-            receiver_code: friend.cookieCode,
-            text: text,
-            created_at: new Date().toISOString()
-          });
-      }
-    } catch (e) {
-      console.error("Error sending call signal to Supabase", e);
-    }
-  },
-
   async receiveMockMessage(friendId: string, text: string): Promise<Message> {
     const messages = await this.getMessages(friendId);
     
@@ -311,6 +289,38 @@ export const StorageService = {
     const updated = [...messages, newMsg];
     await AsyncStorage.setItem(`${KEYS.MESSAGES_PREFIX}${friendId}`, JSON.stringify(updated));
     return newMsg;
+  },
+
+  isCallSignalText(value: unknown): boolean {
+    if (!value) return false;
+
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+        try {
+          const parsed = JSON.parse(trimmed);
+          if (parsed && typeof parsed === 'object') {
+            return (
+              typeof (parsed as any).type === 'string' ||
+              typeof (parsed as any).callSignal === 'string'
+            );
+          }
+          return false;
+        } catch {
+          return false;
+        }
+      }
+      return false;
+    }
+
+    if (typeof value === 'object' && value !== null) {
+      return (
+        typeof (value as any).type === 'string' ||
+        typeof (value as any).callSignal === 'string'
+      );
+    }
+
+    return false;
   },
 
   async registerPushToken(token: string | null): Promise<void> {
@@ -330,60 +340,53 @@ export const StorageService = {
     }
   },
 
-  // Realtime subscription helper
+  // Realtime subscription helper — plain chat messages only. Call signaling lives on its
+  // own channel (see src/services/callSignaling.ts).
   subscribeToMessages(onNewMessage: (msg: Message, friendId: string) => void): () => void {
     const channelId = Math.random().toString(36).substring(2, 9);
-    const channel = supabase
+    const dbChannel = supabase
       .channel(`public:messages:${channelId}`)
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'messages' },
         async (payload) => {
           const newRow = payload.new;
+          if (this.isCallSignalText(newRow.text)) return; // defensive: ignore legacy signal rows
+
           const profile = await this.getKidProfile();
           if (!profile) return;
 
           const isSentByMe = newRow.sender_code === profile.cookieCode;
           const isReceivedByMe = newRow.receiver_code === profile.cookieCode;
+          if (!isSentByMe && !isReceivedByMe) return;
 
-          if (isSentByMe || isReceivedByMe) {
-            const friends = await this.getFriends();
-            const correspondingFriend = friends.find(f => 
-              f.cookieCode === (isSentByMe ? newRow.receiver_code : newRow.sender_code)
-            );
+          const friends = await this.getFriends();
+          const correspondingFriend = friends.find(f =>
+            f.cookieCode === (isSentByMe ? newRow.receiver_code : newRow.sender_code)
+          );
+          if (!correspondingFriend) return;
 
-            if (correspondingFriend) {
-              const localMsg: Message = {
-                id: newRow.id,
-                text: newRow.text,
-                timestamp: newRow.created_at,
-                sender: isSentByMe ? 'me' : 'them',
-              };
+          const localMsg: Message = {
+            id: newRow.id,
+            text: newRow.text,
+            timestamp: newRow.created_at,
+            sender: isSentByMe ? 'me' : 'them',
+          };
 
-              const isCallSignal = newRow.text && newRow.text.startsWith('[CALL_SIGNAL:');
+          // Read AsyncStorage directly to de-dupe and avoid redundant API requests.
+          const data = await AsyncStorage.getItem(`${KEYS.MESSAGES_PREFIX}${correspondingFriend.id}`);
+          const cachedMessages: Message[] = data ? JSON.parse(data) : [];
+          if (cachedMessages.find(m => m.id === localMsg.id)) return;
 
-              if (isCallSignal) {
-                // Do not cache call signals in AsyncStorage. Just forward to listener
-                onNewMessage(localMsg, correspondingFriend.id);
-              } else {
-                // Read AsyncStorage directly to check duplicates and avoid redundant API requests
-                const data = await AsyncStorage.getItem(`${KEYS.MESSAGES_PREFIX}${correspondingFriend.id}`);
-                const cachedMessages: Message[] = data ? JSON.parse(data) : [];
-
-                if (!cachedMessages.find(m => m.id === localMsg.id)) {
-                  const updated = [...cachedMessages, localMsg];
-                  await AsyncStorage.setItem(`${KEYS.MESSAGES_PREFIX}${correspondingFriend.id}`, JSON.stringify(updated));
-                  onNewMessage(localMsg, correspondingFriend.id);
-                }
-              }
-            }
-          }
+          const updated = [...cachedMessages, localMsg];
+          await AsyncStorage.setItem(`${KEYS.MESSAGES_PREFIX}${correspondingFriend.id}`, JSON.stringify(updated));
+          onNewMessage(localMsg, correspondingFriend.id);
         }
       )
       .subscribe();
 
     return () => {
-      supabase.removeChannel(channel);
+      supabase.removeChannel(dbChannel);
     };
   },
 

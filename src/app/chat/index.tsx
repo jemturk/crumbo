@@ -1,13 +1,14 @@
-import React, { useState, useCallback } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity, Modal, TextInput, SafeAreaView, Platform } from 'react-native';
-import { useRouter, useFocusEffect } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
-import { StorageService, Friend, KidProfile, Message } from '@/services/storage';
-import { registerForPushNotificationsAsync } from '@/services/notifications';
-import CustomAlertModal, { AlertButton } from '@/components/CustomAlertModal';
 import AppSettingsModal from '@/components/AppSettingsModal';
-import { useDisplayScale } from '@/hooks/use-display-scale';
+import CustomAlertModal, { AlertButton } from '@/components/CustomAlertModal';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import { useDisplayScale } from '@/hooks/use-display-scale';
+import { callKeepManager } from '@/services/callkeep';
+import { registerForPushNotificationsAsync } from '@/services/notifications';
+import { Friend, KidProfile, Message, StorageService } from '@/services/storage';
+import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect, useRouter } from 'expo-router';
+import { useCallback, useState } from 'react';
+import { FlatList, Platform, SafeAreaView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -44,11 +45,9 @@ export default function ChatDashboard() {
     useCallback(() => {
       loadDashboardData();
 
-      const unsubscribe = StorageService.subscribeToMessages((newMsg, friendId) => {
-        if (newMsg.text && newMsg.text.startsWith('[CALL_SIGNAL:START_') && newMsg.sender === 'them') {
-          // Handled globally in _layout.tsx
-          return;
-        }
+      // Chat messages only now (call signals travel on their own channel), so any new
+      // message just refreshes the dashboard previews.
+      const unsubscribe = StorageService.subscribeToMessages(() => {
         loadDashboardData();
       });
 
@@ -80,6 +79,10 @@ export default function ChatDashboard() {
         console.error("Push registration failed, syncing profile without push notifications", err);
         await StorageService.registerPushToken(null);
       });
+
+      // One-time-per-launch nudge toward the OS settings that make incoming calls reliable
+      // (full-screen lock-screen bypass, battery-optimization exemption).
+      callKeepManager.promptForReliableCallsIfNeeded();
 
       // 2. Load friends
       const friendsList = await StorageService.getFriends();

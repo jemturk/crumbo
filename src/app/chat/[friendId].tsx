@@ -1,93 +1,61 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { 
-  View, 
-  Text, 
-  StyleSheet, 
-  FlatList, 
-  TextInput, 
-  TouchableOpacity, 
-  SafeAreaView, 
-  KeyboardAvoidingView, 
-  Platform, 
-  ActivityIndicator,
-  Keyboard,
-  Modal,
-  Vibration,
-  Animated,
-  PanResponder
-} from 'react-native';
-import { useLocalSearchParams, useRouter, useFocusEffect } from 'expo-router';
-import { Ionicons } from '@expo/vector-icons';
-import { StorageService, Message, Friend, KidProfile, triggerMockReply } from '@/services/storage';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import CustomAlertModal, { AlertButton } from '@/components/CustomAlertModal';
-import { Camera } from 'expo-camera';
-import { RtcSurfaceView } from 'react-native-agora';
-import { agoraManager, hashCode, fetchAgoraToken } from '@/services/agora';
-import { callKeepManager } from '@/services/callkeep';
-import { useDisplayScale } from '@/hooks/use-display-scale';
 import { useAppTheme } from '@/hooks/use-app-theme';
-import { soundManager } from '@/services/sound';
-
-function generateUUID() {
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-    const r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
-    return v.toString(16);
-  });
-}
+import { useCall } from '@/hooks/use-call';
+import { useDisplayScale } from '@/hooks/use-display-scale';
+import { Friend, KidProfile, Message, StorageService } from '@/services/storage';
+import { Ionicons } from '@expo/vector-icons';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+    ActivityIndicator,
+    Animated,
+    FlatList,
+    Keyboard,
+    KeyboardAvoidingView,
+    Modal,
+    PanResponder,
+    Platform,
+    SafeAreaView,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View
+} from 'react-native';
+import { RtcSurfaceView } from 'react-native-agora';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export default function ChatScreen() {
   const router = useRouter();
   const { s } = useDisplayScale();
-  const { theme, colors, isDark } = useAppTheme();
-  const { friendId, incomingCall, callType, roomName, friendName } = useLocalSearchParams<{ 
+  const { colors, isDark } = useAppTheme();
+  const { friendId, incomingCall, callType, roomName, friendName, acceptCallImmediately, callUUID, declineCall: declineCallParam } = useLocalSearchParams<{
     friendId: string;
     incomingCall?: string;
     callType?: string;
     roomName?: string;
     friendName?: string;
+    acceptCallImmediately?: string;
+    callUUID?: string;
+    declineCall?: string;
   }>();
   const insets = useSafeAreaInsets();
 
-  const isMounted = useRef(true);
-  const callStatusRef = useRef<string>('ringing');
-  const handleEndCallRef = useRef<(() => Promise<void>) | null>(null);
-  const handleDeclineCallRef = useRef<(() => Promise<void>) | null>(null);
-  const callDirectionRef = useRef<'incoming' | 'outgoing'>('outgoing');
-
-  useEffect(() => {
-    isMounted.current = true;
-    return () => {
-      isMounted.current = false;
-    };
-  }, []);
-
-
-  useEffect(() => {
-    return () => {
-      if (callStatusRef.current === 'ringing' || callStatusRef.current === 'connected') {
-        console.log('[ChatScreen] Unmounting while call is active. Auto-ending call.');
-        if (callStatusRef.current === 'ringing' && callDirectionRef.current === 'incoming') {
-          if (handleDeclineCallRef.current) {
-            handleDeclineCallRef.current();
-          }
-        } else {
-          if (handleEndCallRef.current) {
-            handleEndCallRef.current();
-          }
-        }
-      }
-    };
-  }, []);
-
-  // State
+  // Chat state
   const [friend, setFriend] = useState<Friend | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
   const [loading, setLoading] = useState(true);
-  const [isTyping, setIsTyping] = useState(false);
+  const [isTyping] = useState(false);
   const [keyboardVisible, setKeyboardVisible] = useState(false);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
+
+  // Parental locks + pairing
+  const [profile, setProfile] = useState<KidProfile | null>(null);
+  const [chatDisabled, setChatDisabled] = useState(false);
+  const [callingDisabled, setCallingDisabled] = useState(false);
+  const [videoCallingDisabled, setVideoCallingDisabled] = useState(false);
+  const [pairingStatus, setPairingStatus] = useState<'paired' | 'pending'>('paired');
 
   // Custom Alert State
   const [alertConfig, setAlertConfig] = useState<{
@@ -97,60 +65,71 @@ export default function ChatScreen() {
     buttons?: AlertButton[];
   }>({ visible: false, title: '', message: '' });
 
-  const showAlert = (
-    title: string,
-    message: string,
-    buttons?: AlertButton[]
-  ) => {
+  const showAlert = useCallback((title: string, message: string, buttons?: AlertButton[]) => {
     setAlertConfig({ visible: true, title, message, buttons });
-  };
+  }, []);
 
-  // Parental Locks State
-  const [profile, setProfile] = useState<KidProfile | null>(null);
-  const [chatDisabled, setChatDisabled] = useState(false);
-  const [callingDisabled, setCallingDisabled] = useState(false);
-  const [videoCallingDisabled, setVideoCallingDisabled] = useState(false);
-  const [pairingStatus, setPairingStatus] = useState<'paired' | 'pending'>('paired');
+  const flatListRef = useRef<FlatList>(null);
 
-  // Calling states
-  const [callModalVisible, setCallModalVisible] = useState(false);
-  const [callTypeVideo, setCallTypeVideo] = useState(false);
-  const [callStatus, setCallStatus] = useState<'ringing' | 'connected' | 'ended'>('ringing');
-  const [callDuration, setCallDuration] = useState(0);
-  const [callDirection, setCallDirection] = useState<'incoming' | 'outgoing'>('outgoing');
-  const [callRoom, setCallRoom] = useState<string>('');
-  const [remoteUid, setRemoteUid] = useState<number | null>(null);
-  const [isMuted, setIsMuted] = useState(false);
-  const [isVideoMuted, setIsVideoMuted] = useState(false);
-  const [activeCallUuid, setActiveCallUuid] = useState<string | null>(null);
-
-  useEffect(() => {
-    callStatusRef.current = callStatus;
-  }, [callStatus]);
-
-  useEffect(() => {
-    callDirectionRef.current = callDirection;
-  }, [callDirection]);
-
-  // Draggable local video view setup
+  // Draggable local video view
   const pan = useRef(new Animated.ValueXY()).current;
   const panResponder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
       onMoveShouldSetPanResponder: () => true,
-      onPanResponderGrant: () => {
-        pan.extractOffset();
-      },
-      onPanResponderMove: Animated.event(
-        [null, { dx: pan.x, dy: pan.y }],
-        { useNativeDriver: false }
-      ),
-      onPanResponderRelease: () => {
-        pan.flattenOffset();
-      }
+      onPanResponderGrant: () => pan.extractOffset(),
+      onPanResponderMove: Animated.event([null, { dx: pan.x, dy: pan.y }], { useNativeDriver: false }),
+      onPanResponderRelease: () => pan.flattenOffset(),
     })
   ).current;
 
+  // Append a call-log message emitted by the call hook.
+  const handleCallLog = useCallback((logMsg: Message) => {
+    setMessages(prev => (prev.find(m => m.id === logMsg.id) ? prev : [...prev, logMsg]));
+    setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 150);
+  }, []);
+
+  const clearIncomingParams = useCallback(() => {
+    router.setParams({
+      incomingCall: undefined,
+      callType: undefined,
+      roomName: undefined,
+      friendName: undefined,
+      acceptCallImmediately: undefined,
+      callUUID: undefined,
+      declineCall: undefined,
+    });
+  }, [router]);
+
+  // All call state + Agora/CallKeep/sound lifecycle lives in the hook.
+  const {
+    callModalVisible,
+    callTypeVideo,
+    callStatus,
+    callDuration,
+    callDirection,
+    remoteUid,
+    isMuted,
+    isVideoMuted,
+    startCall,
+    acceptCall,
+    declineCall,
+    endCall,
+    toggleMute,
+    switchCamera,
+    toggleSpeakerMock,
+    formatDuration,
+  } = useCall({
+    friendId,
+    friend,
+    profile,
+    incomingParams: { incomingCall, callType, roomName, friendName, acceptCallImmediately, callUUID, declineCall: declineCallParam },
+    clearIncomingParams,
+    onCallLog: handleCallLog,
+    showAlert,
+  });
+
+  // Reset the draggable local-video position whenever the call modal closes.
   useEffect(() => {
     if (!callModalVisible) {
       pan.setValue({ x: 0, y: 0 });
@@ -158,77 +137,27 @@ export default function ChatScreen() {
     }
   }, [callModalVisible]);
 
-  // CallKeep callbacks hook
+  // Keyboard tracking
   useEffect(() => {
-    callKeepManager.registerCallbacks(
-      () => {
-        handleAcceptCall();
-      },
-      () => {
-        if (callStatus === 'ringing') {
-          if (callDirection === 'incoming') {
-            handleDeclineCall();
-          } else {
-            handleEndCall();
-          }
-        } else if (callStatus === 'connected') {
-          handleEndCall();
-        }
-      }
-    );
-    return () => {
-      callKeepManager.clearCallbacks();
-    };
-  }, [callStatus, callDirection, callRoom, callTypeVideo, friendId]);
-
-  useEffect(() => {
-    const showSubscription = Keyboard.addListener(
+    const showSub = Keyboard.addListener(
       Platform.OS === 'android' ? 'keyboardDidShow' : 'keyboardWillShow',
       (e) => {
         setKeyboardVisible(true);
         setKeyboardHeight(e.endCoordinates.height);
       }
     );
-    const hideSubscription = Keyboard.addListener(
+    const hideSub = Keyboard.addListener(
       Platform.OS === 'android' ? 'keyboardDidHide' : 'keyboardWillHide',
       () => {
         setKeyboardVisible(false);
         setKeyboardHeight(0);
       }
     );
-
     return () => {
-      showSubscription.remove();
-      hideSubscription.remove();
+      showSub.remove();
+      hideSub.remove();
     };
   }, []);
-
-  const flatListRef = useRef<FlatList>(null);
-  const initialCallHandled = useRef(false);
-
-  useEffect(() => {
-    initialCallHandled.current = false;
-  }, [friendId]);
-
-  useEffect(() => {
-    if (incomingCall === 'true') {
-      // Immediately clear the incomingCall params so they don't trigger the call again on remount
-      router.setParams({ incomingCall: undefined, callType: undefined, roomName: undefined, friendName: undefined });
-
-      const isVideo = callType === 'video';
-      setCallTypeVideo(isVideo);
-      setCallDirection('incoming');
-      setCallStatus('ringing');
-      setCallRoom(roomName || '');
-      setCallModalVisible(true);
-      Vibration.vibrate([1000, 1000], true);
-
-      const uuid = generateUUID();
-      setActiveCallUuid(uuid);
-      const displayName = friendName || friend?.name || 'Crumbo Friend';
-      callKeepManager.displayIncomingCall(uuid, displayName, displayName);
-    }
-  }, [incomingCall, callType, roomName, friendName, friend]);
 
   useFocusEffect(
     useCallback(() => {
@@ -236,69 +165,14 @@ export default function ChatScreen() {
     }, [friendId])
   );
 
-  // Call duration timer
+  // Realtime chat messages for this conversation (call signals travel elsewhere).
   useEffect(() => {
-    let timer: any;
-    if (callStatus === 'connected') {
-      timer = setInterval(() => {
-        setCallDuration(prev => prev + 1);
-      }, 1000);
-    } else {
-      setCallDuration(0);
-    }
-    return () => clearInterval(timer);
-  }, [callStatus]);
-
-  // Call sound playback management
-  useEffect(() => {
-    if (callStatus === 'ringing') {
-      if (callDirection === 'incoming') {
-        soundManager.playRingtone();
-      }
-    } else {
-      soundManager.stopAll();
-      agoraManager.stopCallingSound().catch(err => console.warn(err));
-    }
-
-    return () => {
-      soundManager.stopAll();
-      agoraManager.stopCallingSound().catch(err => console.warn(err));
-    };
-  }, [callStatus, callDirection]);
-
-  const callRoomRef = useRef<string>('');
-  useEffect(() => {
-    callRoomRef.current = callRoom;
-  }, [callRoom]);
-
-  useEffect(() => {
-    // Subscribe to realtime database updates
     const unsubscribe = StorageService.subscribeToMessages((newMsg, msgFriendId) => {
-      if (newMsg.text && newMsg.text.startsWith('[CALL_SIGNAL:')) {
-        if (newMsg.text.startsWith('[CALL_SIGNAL:START_') && newMsg.sender === 'them' && msgFriendId !== friendId) {
-          // Handled globally in _layout.tsx
-          return;
-        } else if (msgFriendId === friendId) {
-          // Call signal for the current friend's conversation
-          handleIncomingCallSignal(newMsg);
-        }
-        return;
-      }
-
-      if (msgFriendId === friendId) {
-        setMessages(prev => {
-          if (prev.find(m => m.id === newMsg.id)) return prev;
-          return [...prev, newMsg];
-        });
-        setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
-      }
+      if (msgFriendId !== friendId) return;
+      setMessages(prev => (prev.find(m => m.id === newMsg.id) ? prev : [...prev, newMsg]));
+      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
     });
-
-    return () => {
-      Vibration.cancel();
-      agoraManager.destroy();
-      unsubscribe();
-    };
+    return () => unsubscribe();
   }, [friendId]);
 
   const loadChat = async () => {
@@ -309,7 +183,6 @@ export default function ChatScreen() {
       const currentFriend = friends.find(f => f.id === friendId) || null;
       setFriend(currentFriend);
 
-      // Load kid profile to get parental locks
       const kidProf = await StorageService.getKidProfile();
       setProfile(kidProf);
       if (kidProf) {
@@ -321,305 +194,30 @@ export default function ChatScreen() {
       if (currentFriend) {
         const msgs = await StorageService.getMessages(currentFriend.id);
         setMessages(msgs);
-        
+
         if (kidProf) {
           const status = await StorageService.checkFriendPairingStatus(kidProf.cookieCode, currentFriend.cookieCode);
           setPairingStatus(status);
         }
       }
     } catch (e) {
-      console.error("Error loading chat", e);
+      console.error('Error loading chat', e);
     } finally {
       setLoading(false);
-      // Scroll to bottom after load
       setTimeout(() => flatListRef.current?.scrollToEnd({ animated: false }), 100);
     }
   };
 
-  const startAgoraCall = async (channelName: string, isVideo: boolean, isIncoming: boolean) => {
-    if (!profile) return;
-
-    if (isVideo) {
-      const cameraStatus = await Camera.requestCameraPermissionsAsync();
-      if (!cameraStatus.granted) {
-        showAlert("Permission Required", "Camera permission is required for video calls.");
-        return;
-      }
-    }
-    const micStatus = await Camera.requestMicrophonePermissionsAsync();
-    if (!micStatus.granted) {
-      showAlert("Permission Required", "Microphone permission is required for voice calls.");
-      return;
-    }
-
-    const appID = process.env.EXPO_PUBLIC_AGORA_APP_ID || '';
-    if (!appID) {
-      console.warn("Agora APP ID is missing. Voice/video streaming will not work.");
-    }
-
-    try {
-      await agoraManager.init(
-        appID,
-        (uid) => {
-          setRemoteUid(uid);
-          setCallStatus('connected');
-        },
-        (uid) => {
-          setRemoteUid(null);
-          handleEndCall();
-        },
-        (err) => {
-          console.error("Agora engine error:", err);
-        }
-      );
-
-      const localUid = hashCode(profile.cookieCode);
-      let token = '';
-      try {
-        token = await fetchAgoraToken(channelName, localUid);
-      } catch (tokenErr) {
-        console.warn("[Agora] Failed to fetch token, falling back to tokenless join. If your Agora project requires tokens, this call will fail.", tokenErr);
-      }
-      await agoraManager.join(token, channelName, localUid, isVideo);
-
-      setIsMuted(false);
-      setIsVideoMuted(false);
-
-      if (!isIncoming) {
-        setCallStatus('ringing');
-        try {
-          const { Asset } = require('expo-asset');
-          const callingAsset = Asset.fromModule(require('../../assets/sounds/calling.mp3'));
-          await callingAsset.downloadAsync();
-          if (callingAsset.localUri) {
-            await agoraManager.startCallingSound(callingAsset.localUri);
-          }
-        } catch (soundErr) {
-          console.error("Failed to play calling sound via Agora:", soundErr);
-        }
-      } else {
-        setCallStatus('connected');
-      }
-    } catch (e) {
-      console.error("Failed to start Agora call:", e);
-      showAlert("Call Error", "Could not establish connection.");
-      handleEndCall();
-    }
-  };
-
-  const handleIncomingCallSignal = async (msg: Message) => {
-    const isThem = msg.sender === 'them';
-
-    if (msg.text.startsWith('[CALL_SIGNAL:START_')) {
-      if (isThem) {
-        const isVideo = msg.text.includes('START_VIDEO_CALL');
-        const parts = msg.text.split(':');
-        const roomName = parts[parts.length - 1];
-
-        const uuid = generateUUID();
-        setActiveCallUuid(uuid);
-        callKeepManager.displayIncomingCall(uuid, friend?.name || 'Friend', friend?.name || 'Friend');
-
-        setCallTypeVideo(isVideo);
-        setCallDirection('incoming');
-        setCallStatus('ringing');
-        setCallRoom(roomName);
-        setCallModalVisible(true);
-        Vibration.vibrate([1000, 1000], true);
-      }
-    } else if (msg.text === '[CALL_SIGNAL:ACCEPT_CALL]') {
-      if (isThem) {
-        Vibration.cancel();
-        setCallStatus('connected');
-      }
-    } else if (msg.text === '[CALL_SIGNAL:DECLINE_CALL]') {
-      if (isThem) {
-        Vibration.cancel();
-        setCallStatus('ended');
-        if (activeCallUuid) {
-          callKeepManager.endCall(activeCallUuid);
-          setActiveCallUuid(null);
-        }
-        showAlert("Call Busy", `${friend?.name || 'Friend'} is busy right now.`);
-        await agoraManager.destroy();
-        setRemoteUid(null);
-        setTimeout(() => {
-          setCallModalVisible(false);
-        }, 1500);
-      }
-    } else if (msg.text === '[CALL_SIGNAL:END_CALL]') {
-      if (isThem) {
-        Vibration.cancel();
-        setCallStatus('ended');
-        if (activeCallUuid) {
-          callKeepManager.endCall(activeCallUuid);
-          setActiveCallUuid(null);
-        }
-        await agoraManager.destroy();
-        setRemoteUid(null);
-        setTimeout(() => {
-          setCallModalVisible(false);
-        }, 1500);
-      }
-    }
-  };
-
-  const handleStartCall = async (isVideo: boolean) => {
-    if (!profile || !friend) return;
-
-    const roomName = `CrumboCall_${profile.cookieCode}_${friend.cookieCode}`.replace(/-/g, '_');
-    setCallRoom(roomName);
-    setCallTypeVideo(isVideo);
-    setCallDirection('outgoing');
-    setCallStatus('ringing');
-    setCallModalVisible(true);
-
-    const uuid = generateUUID();
-    setActiveCallUuid(uuid);
-    callKeepManager.startCall(uuid, friend.name, friend.name);
-
-    const signalText = `[CALL_SIGNAL:START_${isVideo ? 'VIDEO' : 'AUDIO'}_CALL]:${roomName}`;
-    await StorageService.sendCallSignal(friendId, signalText);
-
-    await startAgoraCall(roomName, isVideo, false);
-  };
-
-  const handleAcceptCall = async () => {
-    Vibration.cancel();
-    setCallStatus('connected');
-    await StorageService.sendCallSignal(friendId, '[CALL_SIGNAL:ACCEPT_CALL]');
-    if (callRoom) {
-      await startAgoraCall(callRoom, callTypeVideo, true);
-    }
-  };
-  const handleDeclineCall = async () => {
-    Vibration.cancel();
-    if (isMounted.current) {
-      setCallStatus('ended');
-    }
-    if (activeCallUuid) {
-      callKeepManager.endCall(activeCallUuid);
-      if (isMounted.current) {
-        setActiveCallUuid(null);
-      }
-    }
-    await agoraManager.destroy();
-    if (isMounted.current) {
-      setRemoteUid(null);
-      setCallModalVisible(false);
-    }
-    await StorageService.sendCallSignal(friendId, '[CALL_SIGNAL:DECLINE_CALL]');
-
-    const callLogText = callTypeVideo ? '[CALL_LOG:MISSED_VIDEO]' : '[CALL_LOG:MISSED_AUDIO]';
-    try {
-      const logMsg = await StorageService.sendCallLogMessage(friendId, callLogText);
-      if (isMounted.current) {
-        setMessages(prev => {
-          if (prev.find(m => m.id === logMsg.id)) return prev;
-          return [...prev, logMsg];
-        });
-        setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 150);
-      }
-    } catch (e) {
-      console.error("Failed to save call log:", e);
-    }
-  };
-
-  const handleEndCall = async () => {
-    Vibration.cancel();
-    const finalStatus = callStatus;
-    if (isMounted.current) {
-      setCallStatus('ended');
-    }
-    if (activeCallUuid) {
-      callKeepManager.endCall(activeCallUuid);
-      if (isMounted.current) {
-        setActiveCallUuid(null);
-      }
-    }
-    await agoraManager.destroy();
-    if (isMounted.current) {
-      setRemoteUid(null);
-      setTimeout(() => {
-        if (isMounted.current) {
-          setCallModalVisible(false);
-        }
-      }, 500);
-    }
-
-    await StorageService.sendCallSignal(friendId, '[CALL_SIGNAL:END_CALL]');
-
-    let callLogText = '';
-    if (finalStatus === 'ringing') {
-      callLogText = callTypeVideo ? '[CALL_LOG:MISSED_VIDEO]' : '[CALL_LOG:MISSED_AUDIO]';
-    } else {
-      callLogText = callTypeVideo ? '[CALL_LOG:ENDED_VIDEO]' : '[CALL_LOG:ENDED_AUDIO]';
-    }
-
-    try {
-      const logMsg = await StorageService.sendCallLogMessage(friendId, callLogText);
-      if (isMounted.current) {
-        setMessages(prev => {
-          if (prev.find(m => m.id === logMsg.id)) return prev;
-          return [...prev, logMsg];
-        });
-        setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 150);
-      }
-    } catch (e) {
-      console.error("Failed to save call log:", e);
-    }
-  };
-
-  handleDeclineCallRef.current = handleDeclineCall;
-  handleEndCallRef.current = handleEndCall;
-
-  const toggleMute = () => {
-    const nextMuted = !isMuted;
-    setIsMuted(nextMuted);
-    agoraManager.muteAudio(nextMuted);
-  };
-
-  const switchCamera = () => {
-    agoraManager.switchCamera();
-  };
-
-  const toggleSpeakerMock = () => {
-    setIsVideoMuted(prev => !prev);
-  };
-
-  const formatDuration = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-  };
-
   const handleSend = async () => {
     if (!inputText.trim() || !friend) return;
-
     const textToSend = inputText.trim();
     setInputText('');
-
     try {
-      // 1. Save and show local message (optimistic UI update)
       const savedMsg = await StorageService.sendMessage(friendId, textToSend);
-      setMessages(prev => {
-        if (prev.find(m => m.id === savedMsg.id)) return prev;
-        return [...prev, savedMsg];
-      });
+      setMessages(prev => (prev.find(m => m.id === savedMsg.id) ? prev : [...prev, savedMsg]));
       setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
-
-      // 2. Mock replies disabled for live multi-device chat testing.
-      // Uncomment this block if you want to chat with simulated friends local-only.
-      /*
-      setIsTyping(true);
-      triggerMockReply(friend, textToSend, (replyMsg) => {
-        setIsTyping(false);
-        setMessages(prev => [...prev, replyMsg]);
-        setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
-      });
-      */
     } catch (e) {
-      console.error("Error sending message", e);
+      console.error('Error sending message', e);
     }
   };
 
@@ -665,8 +263,8 @@ export default function ChatScreen() {
 
       return (
         <View style={styles.callLogWrapper}>
-          <View style={[styles.callLogContainer, { 
-            backgroundColor: isMissed 
+          <View style={[styles.callLogContainer, {
+            backgroundColor: isMissed
               ? (isDark ? '#4C1E20' : '#FFEBEE')
               : (isDark ? '#2C1E15' : '#F5F5F5'),
             borderColor: isMissed
@@ -688,7 +286,7 @@ export default function ChatScreen() {
       <View style={[styles.messageRow, isMe ? styles.myRow : styles.theirRow]}>
         <View style={[
           styles.bubble,
-          isMe ? [styles.myBubble, { backgroundColor: colors.primaryBtn, borderBottomRightRadius: 4 }] 
+          isMe ? [styles.myBubble, { backgroundColor: colors.primaryBtn, borderBottomRightRadius: 4 }]
                : [styles.theirBubble, { backgroundColor: isDark ? '#3D2A1D' : '#FFFEC6', borderColor: isDark ? '#4E342E' : '#FFF9C4', borderBottomLeftRadius: 4 }],
           { paddingHorizontal: s(16), paddingVertical: s(10), borderRadius: s(20) }
         ]}>
@@ -711,25 +309,24 @@ export default function ChatScreen() {
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
-      {/* Header matching requested visual specs */}
+      {/* Header */}
       <View style={[styles.header, { backgroundColor: colors.cardBg, borderColor: colors.border, paddingTop: Platform.OS === 'android' ? (insets.top > 0 ? insets.top + s(8) : s(44)) : s(14), paddingHorizontal: s(20), paddingVertical: s(14) }]}>
         <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
           <Ionicons name="arrow-back" size={s(26)} color={colors.text} />
         </TouchableOpacity>
-        
+
         <View style={styles.headerInfo}>
           <Text style={[styles.headerName, { fontSize: s(20), color: colors.text }]}>{friend?.name}</Text>
-          {/* CRITICAL: Active now / Active X mins ago is excluded as requested */}
         </View>
 
         <View style={styles.headerRight}>
           {!callingDisabled && pairingStatus === 'paired' && (
-            <TouchableOpacity style={[styles.headerCallBtn, { backgroundColor: colors.actionBtnSecondaryBg, borderColor: colors.borderStrong }]} onPress={() => handleStartCall(false)}>
+            <TouchableOpacity style={[styles.headerCallBtn, { backgroundColor: colors.actionBtnSecondaryBg, borderColor: colors.borderStrong }]} onPress={() => startCall(false)}>
               <Ionicons name="call" size={s(20)} color={colors.actionBtnSecondaryText} />
             </TouchableOpacity>
           )}
           {!videoCallingDisabled && pairingStatus === 'paired' && (
-            <TouchableOpacity style={[styles.headerCallBtn, { backgroundColor: colors.actionBtnSecondaryBg, borderColor: colors.borderStrong }]} onPress={() => handleStartCall(true)}>
+            <TouchableOpacity style={[styles.headerCallBtn, { backgroundColor: colors.actionBtnSecondaryBg, borderColor: colors.borderStrong }]} onPress={() => startCall(true)}>
               <Ionicons name="videocam" size={s(20)} color={colors.actionBtnSecondaryText} />
             </TouchableOpacity>
           )}
@@ -740,7 +337,7 @@ export default function ChatScreen() {
       </View>
 
       {/* Keyboard Avoiding Container */}
-      <KeyboardAvoidingView 
+      <KeyboardAvoidingView
         style={[styles.keyboardContainer, Platform.OS === 'android' && { paddingBottom: keyboardHeight > 0 ? keyboardHeight + s(24) : 0 }]}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
@@ -790,8 +387,8 @@ export default function ChatScreen() {
                 multiline={false}
               />
             </View>
-            <TouchableOpacity 
-              style={[styles.sendButton, { backgroundColor: colors.primaryBtn }, !inputText.trim() && styles.sendButtonDisabled, { width: s(48), height: s(48), borderRadius: s(24) }]} 
+            <TouchableOpacity
+              style={[styles.sendButton, { backgroundColor: colors.primaryBtn }, !inputText.trim() && styles.sendButtonDisabled, { width: s(48), height: s(48), borderRadius: s(24) }]}
               onPress={handleSend}
               disabled={!inputText.trim()}
             >
@@ -806,7 +403,7 @@ export default function ChatScreen() {
         animationType="fade"
         transparent={false}
         visible={callModalVisible}
-        onRequestClose={handleEndCall}
+        onRequestClose={endCall}
       >
         <View style={[styles.callModalContainer, callTypeVideo ? styles.callVideoBg : styles.callAudioBg]}>
           {/* Video Views if connected/video call */}
@@ -815,7 +412,7 @@ export default function ChatScreen() {
               {remoteUid !== null ? (
                 <>
                   <RtcSurfaceView style={styles.remoteVideo} canvas={{ uid: remoteUid }} />
-                  
+
                   <Animated.View
                     {...panResponder.panHandlers}
                     style={[
@@ -842,23 +439,23 @@ export default function ChatScreen() {
             callTypeVideo && callStatus === 'connected' && remoteUid !== null && styles.callHeaderVideoConnected
           ]}>
             <Text style={[
-              styles.callLabel, 
+              styles.callLabel,
               { fontSize: s(11) },
               callTypeVideo && callStatus === 'connected' && remoteUid !== null ? styles.textShadowLightBlue : styles.callLabelText
             ]}>
               {callTypeVideo ? '📹 VIDEO CALL' : '📞 CRUMBO VOICE CALL'}
             </Text>
-            
+
             <Text style={[
-              styles.callFriendName, 
+              styles.callFriendName,
               { fontSize: s(28) },
               callTypeVideo && callStatus === 'connected' && remoteUid !== null ? [styles.callFriendNameVideo, styles.textShadow] : styles.callFriendNameAudio
             ]}>
-              {friend?.name}
+              {friend?.name || friendName || 'Crumbo Friend'}
             </Text>
-            
+
             <Text style={[
-              styles.callStatusText, 
+              styles.callStatusText,
               { fontSize: s(15) },
               callTypeVideo && callStatus === 'connected' && remoteUid !== null ? [styles.callStatusTextVideo, styles.textShadow] : styles.callStatusTextAudio
             ]}>
@@ -872,14 +469,14 @@ export default function ChatScreen() {
           {(!callTypeVideo || callStatus !== 'connected' || remoteUid === null) && (
             <View style={styles.callMiddleContainer}>
               <View style={[
-                styles.avatarContainerLarge, 
+                styles.avatarContainerLarge,
                 { width: s(130), height: s(130), borderRadius: s(65) }
               ]}>
                 <Text style={[styles.avatarEmojiLarge, { fontSize: s(64) }]}>{friend?.avatarEmoji || '🍪'}</Text>
               </View>
             </View>
           )}
-          
+
           {/* Empty spacer to push controls to bottom when active video is showing */}
           {callTypeVideo && callStatus === 'connected' && remoteUid !== null && (
             <View style={{ flex: 1 }} />
@@ -893,10 +490,10 @@ export default function ChatScreen() {
               { paddingBottom: insets.bottom > 0 ? insets.bottom + s(20) : s(30) }
             ]}>
               <View style={styles.callControlsRowIncoming}>
-                <TouchableOpacity style={[styles.callControlBtn, styles.declineBtn, { width: s(64), height: s(64), borderRadius: s(32) }]} onPress={handleDeclineCall}>
+                <TouchableOpacity style={[styles.callControlBtn, styles.declineBtn, { width: s(64), height: s(64), borderRadius: s(32) }]} onPress={declineCall}>
                   <Ionicons name="close" size={s(32)} color="#FFFFFF" />
                 </TouchableOpacity>
-                <TouchableOpacity style={[styles.callControlBtn, styles.acceptBtn, { width: s(64), height: s(64), borderRadius: s(32) }]} onPress={handleAcceptCall}>
+                <TouchableOpacity style={[styles.callControlBtn, styles.acceptBtn, { width: s(64), height: s(64), borderRadius: s(32) }]} onPress={acceptCall}>
                   <Ionicons name="checkmark" size={s(32)} color="#FFFFFF" />
                 </TouchableOpacity>
               </View>
@@ -908,54 +505,54 @@ export default function ChatScreen() {
               { paddingBottom: insets.bottom > 0 ? insets.bottom + s(20) : s(30) }
             ]}>
               <View style={styles.callControlsRow}>
-                <TouchableOpacity 
+                <TouchableOpacity
                   style={[
-                    styles.callMuteBtn, 
+                    styles.callMuteBtn,
                     isMuted && (callTypeVideo && callStatus === 'connected' && remoteUid !== null ? styles.activeMuteBtnVideo : styles.activeMuteBtn),
                     callTypeVideo && callStatus === 'connected' && remoteUid !== null && styles.videoCallControlBtn,
                     { width: s(56), height: s(56), borderRadius: s(28) }
-                  ]} 
+                  ]}
                   onPress={toggleMute}
                 >
-                  <Ionicons 
-                    name={isMuted ? "mic-off" : "mic"} 
-                    size={s(24)} 
-                    color={isMuted ? "#FFFFFF" : (callTypeVideo && callStatus === 'connected' && remoteUid !== null ? '#FFFFFF' : '#4E342E')} 
+                  <Ionicons
+                    name={isMuted ? "mic-off" : "mic"}
+                    size={s(24)}
+                    color={isMuted ? "#FFFFFF" : (callTypeVideo && callStatus === 'connected' && remoteUid !== null ? '#FFFFFF' : '#4E342E')}
                   />
                 </TouchableOpacity>
-                
-                <TouchableOpacity style={[styles.callEndBtn, { width: s(72), height: s(72), borderRadius: s(36) }]} onPress={handleEndCall}>
+
+                <TouchableOpacity style={[styles.callEndBtn, { width: s(72), height: s(72), borderRadius: s(36) }]} onPress={endCall}>
                   <Ionicons name="close" size={s(32)} color="#FFFFFF" />
                 </TouchableOpacity>
 
                 {callTypeVideo ? (
-                  <TouchableOpacity 
+                  <TouchableOpacity
                     style={[
                       styles.callMuteBtn,
                       callTypeVideo && callStatus === 'connected' && remoteUid !== null && styles.videoCallControlBtn,
                       { width: s(56), height: s(56), borderRadius: s(28) }
-                    ]} 
+                    ]}
                     onPress={switchCamera}
                   >
-                    <Ionicons 
-                      name="camera-reverse" 
-                      size={s(24)} 
-                      color={callTypeVideo && callStatus === 'connected' && remoteUid !== null ? '#FFFFFF' : '#4E342E'} 
+                    <Ionicons
+                      name="camera-reverse"
+                      size={s(24)}
+                      color={callTypeVideo && callStatus === 'connected' && remoteUid !== null ? '#FFFFFF' : '#4E342E'}
                     />
                   </TouchableOpacity>
                 ) : (
-                  <TouchableOpacity 
+                  <TouchableOpacity
                     style={[
-                      styles.callMuteBtn, 
+                      styles.callMuteBtn,
                       isVideoMuted && styles.activeMuteBtn,
                       { width: s(56), height: s(56), borderRadius: s(28) }
-                    ]} 
+                    ]}
                     onPress={toggleSpeakerMock}
                   >
-                    <Ionicons 
-                      name="volume-high" 
-                      size={s(24)} 
-                      color={isVideoMuted ? '#BDBDBD' : '#4E342E'} 
+                    <Ionicons
+                      name="volume-high"
+                      size={s(24)}
+                      color={isVideoMuted ? '#BDBDBD' : '#4E342E'}
                     />
                   </TouchableOpacity>
                 )}

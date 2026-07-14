@@ -2,7 +2,7 @@
   "expo": {
     "name": "Crumbo",
     "slug": "Crumbo",
-    "version": "1.0.0",
+    "version": "1.0.2",
     "orientation": "portrait",
     "icon": "./assets/images/logo.png",
     "scheme": "crumbo",
@@ -23,8 +23,12 @@
       "permissions": [
         "android.permission.BIND_TELECOM_CONNECTION_SERVICE",
         "android.permission.MANAGE_OWN_CALLS",
-        "android.permission.READ_PHONE_STATE",
-        "android.permission.CALL_PHONE"
+        "android.permission.READ_CALL_LOG",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_PHONE_CALL",
+        "android.permission.USE_FULL_SCREEN_INTENT",
+        "android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
+        "android.permission.POST_NOTIFICATIONS"
       ]
     },
     "web": {
@@ -50,6 +54,7 @@
         }
       ],
       "@config-plugins/react-native-callkeep",
+      "./plugins/withCallkeepSelfManagedPermissions.js",
       "expo-audio"
     ],
     "experiments": {

@@ -1,17 +1,26 @@
-import { Stack, useRouter, useSegments, useGlobalSearchParams } from 'expo-router';
-import { StatusBar } from 'expo-status-bar';
-import { useEffect } from 'react';
-import { callKeepManager } from '@/services/callkeep';
 import { SettingsProvider, useSettings } from '@/context/settings-context';
+import { isStartSignal, subscribeToCallSignals } from '@/services/callSignaling';
+import { callKeepManager } from '@/services/callkeep';
 import { StorageService } from '@/services/storage';
+import { Stack, useGlobalSearchParams, useRouter, useSegments } from 'expo-router';
+import { StatusBar } from 'expo-status-bar';
+import { useEffect, useRef } from 'react';
 
-import { StatusBar as RNStatusBar, Platform } from 'react-native';
+import { Platform, StatusBar as RNStatusBar } from 'react-native';
 
 function NavigationLayout() {
   const { theme, colors } = useSettings();
   const router = useRouter();
   const segments = useSegments();
   const globalParams = useGlobalSearchParams<{ friendId?: string }>();
+
+  const segmentsRef = useRef(segments);
+  const globalParamsRef = useRef(globalParams);
+
+  useEffect(() => {
+    segmentsRef.current = segments;
+    globalParamsRef.current = globalParams;
+  }, [segments, globalParams]);
 
   useEffect(() => {
     RNStatusBar.setBarStyle(theme === 'dark' ? 'light-content' : 'dark-content', true);
@@ -21,50 +30,59 @@ function NavigationLayout() {
     }
   }, [theme]);
 
+  // Global incoming-call listener. call_signals is filtered per-receiver, so we (re)subscribe
+  // with the active kid's cookie code and refresh it whenever the logged-in kid changes.
+  const callSubRef = useRef<() => void>(() => {});
+  const subscribedCodeRef = useRef<string | null>(null);
+
   useEffect(() => {
-    const unsubscribe = StorageService.subscribeToMessages((newMsg, msgFriendId) => {
-      if (newMsg.text && newMsg.text.startsWith('[CALL_SIGNAL:START_') && newMsg.sender === 'them') {
-        const isVideo = newMsg.text.includes('START_VIDEO_CALL');
-        const parts = newMsg.text.split(':');
-        const roomName = parts[parts.length - 1];
+    let cancelled = false;
+    (async () => {
+      const profile = await StorageService.getKidProfile();
+      const code = profile?.cookieCode ?? null;
+      if (cancelled || code === subscribedCodeRef.current) return;
 
-        // Check if we are already in the chat screen with this specific friend
-        const isCurrentlyInChatWithFriend = 
-          segments[0] === 'chat' && 
-          (segments as string[])[1] === '[friendId]' && 
-          globalParams.friendId === msgFriendId;
-
-        if (!isCurrentlyInChatWithFriend) {
-          console.log(`[GlobalCallListener] Incoming call signal from friend ${msgFriendId}. Redirecting...`);
-          StorageService.getFriends().then(friendsList => {
-            const friendObj = friendsList.find(f => f.id === msgFriendId);
-            const friendName = friendObj ? friendObj.name : 'Friend';
-            router.push({
-              pathname: `/chat/${msgFriendId}`,
-              params: {
-                incomingCall: 'true',
-                callType: isVideo ? 'video' : 'audio',
-                roomName,
-                friendName
-              }
-            });
-          }).catch(err => {
-            console.error('[GlobalCallListener] Failed to fetch friends:', err);
-            router.push({
-              pathname: `/chat/${msgFriendId}`,
-              params: {
-                incomingCall: 'true',
-                callType: isVideo ? 'video' : 'audio',
-                roomName
-              }
-            });
-          });
-        }
+      callSubRef.current(); // tear down previous subscription
+      subscribedCodeRef.current = code;
+      if (!code) {
+        callSubRef.current = () => {};
+        return;
       }
-    });
 
-    return () => unsubscribe();
-  }, [segments, globalParams]);
+      callSubRef.current = subscribeToCallSignals(code, (payload, friendId) => {
+        if (!isStartSignal(payload.type) || !friendId) return;
+
+        const currentSegments = segmentsRef.current as string[];
+        const currentParams = globalParamsRef.current;
+        const isCurrentlyInChatWithFriend =
+          Array.isArray(currentSegments) &&
+          currentSegments.length >= 2 &&
+          currentSegments[0] === 'chat' &&
+          currentSegments[1] === friendId &&
+          currentParams.friendId === friendId;
+
+        if (isCurrentlyInChatWithFriend) return; // the chat screen's own hook handles it
+
+        console.log(`[GlobalCallListener] Incoming call from friend ${friendId}. Redirecting...`);
+        router.push({
+          pathname: `/chat/${friendId}`,
+          params: {
+            incomingCall: 'true',
+            callType: payload.type === 'START_VIDEO_CALL' ? 'video' : 'audio',
+            roomName: payload.roomName || '',
+            friendName: payload.callerName || payload.friendName || 'Friend',
+            callUUID: payload.callUUID || '',
+          },
+        });
+      });
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [segments]);
+
+  useEffect(() => () => callSubRef.current(), []);
 
   return (
     <>

@@ -1,0 +1,8 @@
+{
+  "name": "incoming-call",
+  "version": "1.0.0",
+  "description": "Local Expo module: full-screen, lock-screen-bypassing incoming call notifications on Android.",
+  "main": "index.ts",
+  "types": "index.ts",
+  "private": true
+}
