@@ -17,6 +17,8 @@ import androidx.core.app.Person
 import expo.modules.kotlin.exception.Exceptions
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import expo.modules.kotlin.records.Field
+import expo.modules.kotlin.records.Record
 
 private const val LEGACY_CHANNEL_ID = "calling" // Created by expo-notifications in callkeep.ts's setup().
 
@@ -27,6 +29,27 @@ private const val RING_CHANNEL_ID = "incoming_calls_v1"
 
 private const val SCHEME = "crumbo" // app.json "scheme" — must stay in sync.
 private const val HOST = "chat" // expo-router route: app/chat/[friendId].tsx
+
+// Mirrors ShowFullScreenIncomingCallParams (modules/incoming-call/index.ts) — JS calls this
+// function with a single params object, so the Kotlin side must accept a matching Record
+// rather than positional args, or the bridge throws "Cannot convert '[object Object]' to a
+// Kotlin type" on every call.
+class ShowFullScreenIncomingCallParams : Record {
+  @Field
+  var callUUID: String = ""
+
+  @Field
+  var callerName: String = ""
+
+  @Field
+  var isVideo: Boolean = false
+
+  @Field
+  var friendId: String = ""
+
+  @Field
+  var roomName: String = ""
+}
 
 /**
  * Posts a genuinely WhatsApp-style incoming-call notification on Android: `setFullScreenIntent`
@@ -45,9 +68,9 @@ class IncomingCallModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("IncomingCall")
 
-    Function("showFullScreenIncomingCall") { callUUID: String, callerName: String, isVideo: Boolean, friendId: String, roomName: String ->
+    Function("showFullScreenIncomingCall") { params: ShowFullScreenIncomingCallParams ->
       if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return@Function
-      showNotification(callUUID, callerName, isVideo, friendId, roomName)
+      showNotification(params.callUUID, params.callerName, params.isVideo, params.friendId, params.roomName)
     }
 
     Function("dismiss") { callUUID: String ->
