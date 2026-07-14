@@ -2,7 +2,7 @@
   "expo": {
     "name": "Crumbo",
     "slug": "Crumbo",
-    "version": "1.0.2",
+    "version": "1.0.3",
     "orientation": "portrait",
     "icon": "./assets/images/logo.png",
     "scheme": "crumbo",
@@ -55,7 +55,8 @@
       ],
       "@config-plugins/react-native-callkeep",
       "./plugins/withCallkeepSelfManagedPermissions.js",
-      "expo-audio"
+      "expo-audio",
+      "expo-asset"
     ],
     "experiments": {
       "typedRoutes": true,

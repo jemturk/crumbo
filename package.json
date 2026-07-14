@@ -6,9 +6,10 @@
     "@config-plugins/react-native-callkeep": "^14.0.1",
     "@expo/ui": "~56.0.18",
     "@expo/vector-icons": "^15.1.1",
-    "@react-native-async-storage/async-storage": "^3.1.1",
+    "@react-native-async-storage/async-storage": "2.2.0",
     "@supabase/supabase-js": "^2.108.2",
     "expo": "~56.0.12",
+    "expo-asset": "~56.0.19",
     "expo-audio": "~56.0.12",
     "expo-camera": "~56.0.8",
     "expo-constants": "~56.0.18",
@@ -51,5 +52,13 @@
     "lint": "expo lint",
     "postinstall": "node ./scripts/postinstall-patches.js"
   },
-  "private": true
+  "private": true,
+  "expo": {
+    "doctor": {
+      "reactNativeDirectoryCheck": {
+        "listUnknownPackages": false,
+        "exclude": ["react-native-callkeep"]
+      }
+    }
+  }
 }
