@@ -40,7 +40,7 @@
       [
         "expo-splash-screen",
         {
-          "backgroundColor": "#FFC93C",
+          "backgroundColor": "#FFFDF3",
           "image": "./assets/images/logo.png",
           "imageWidth": 150
         }
@@ -56,7 +56,15 @@
       "@config-plugins/react-native-callkeep",
       "./plugins/withCallkeepSelfManagedPermissions.js",
       "expo-audio",
-      "expo-asset"
+      "expo-asset",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "buildArchs": ["arm64-v8a"]
+          }
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

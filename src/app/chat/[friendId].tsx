@@ -5,7 +5,7 @@ import { useDisplayScale } from '@/hooks/use-display-scale';
 import { Friend, KidProfile, Message, StorageService } from '@/services/storage';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
     ActivityIndicator,
     Animated,
@@ -70,6 +70,7 @@ export default function ChatScreen() {
   }, []);
 
   const flatListRef = useRef<FlatList>(null);
+  const invertedMessages = useMemo(() => [...messages].reverse(), [messages]);
 
   // Draggable local video view
   const pan = useRef(new Animated.ValueXY()).current;
@@ -86,7 +87,6 @@ export default function ChatScreen() {
   // Append a call-log message emitted by the call hook.
   const handleCallLog = useCallback((logMsg: Message) => {
     setMessages(prev => (prev.find(m => m.id === logMsg.id) ? prev : [...prev, logMsg]));
-    setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 150);
   }, []);
 
   const clearIncomingParams = useCallback(() => {
@@ -170,7 +170,6 @@ export default function ChatScreen() {
     const unsubscribe = StorageService.subscribeToMessages((newMsg, msgFriendId) => {
       if (msgFriendId !== friendId) return;
       setMessages(prev => (prev.find(m => m.id === newMsg.id) ? prev : [...prev, newMsg]));
-      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
     });
     return () => unsubscribe();
   }, [friendId]);
@@ -204,7 +203,6 @@ export default function ChatScreen() {
       console.error('Error loading chat', e);
     } finally {
       setLoading(false);
-      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: false }), 100);
     }
   };
 
@@ -215,7 +213,6 @@ export default function ChatScreen() {
     try {
       const savedMsg = await StorageService.sendMessage(friendId, textToSend);
       setMessages(prev => (prev.find(m => m.id === savedMsg.id) ? prev : [...prev, savedMsg]));
-      setTimeout(() => flatListRef.current?.scrollToEnd({ animated: true }), 100);
     } catch (e) {
       console.error('Error sending message', e);
     }
@@ -311,7 +308,7 @@ export default function ChatScreen() {
     <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
       {/* Header */}
       <View style={[styles.header, { backgroundColor: colors.cardBg, borderColor: colors.border, paddingTop: Platform.OS === 'android' ? (insets.top > 0 ? insets.top + s(8) : s(44)) : s(14), paddingHorizontal: s(20), paddingVertical: s(14) }]}>
-        <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
+        <TouchableOpacity style={styles.backButton} onPress={() => router.replace('/chat')}>
           <Ionicons name="arrow-back" size={s(26)} color={colors.text} />
         </TouchableOpacity>
 
@@ -345,13 +342,12 @@ export default function ChatScreen() {
         {/* Messages list */}
         <FlatList
           ref={flatListRef}
-          data={messages}
+          inverted
+          data={invertedMessages}
           keyExtractor={(item) => item.id}
           renderItem={renderMessageItem}
           style={{ flex: 1 }}
           contentContainerStyle={[styles.messagesList, { padding: s(16), gap: s(12) }]}
-          onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
-          onLayout={() => flatListRef.current?.scrollToEnd({ animated: true })}
         />
 
         {/* Typing indicator */}

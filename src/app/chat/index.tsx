@@ -197,18 +197,18 @@ export default function ChatDashboard() {
         </View>
 
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: s(12) }}>
-          <TouchableOpacity 
-            style={styles.logoutButton}
-            onPress={handleLogout}
-          >
-            <Ionicons name="log-out-outline" size={s(24)} color="#D32F2F" />
-          </TouchableOpacity>
-
-          <TouchableOpacity 
+          <TouchableOpacity
             style={styles.settingsButton}
             onPress={() => setSettingsVisible(true)}
           >
             <Ionicons name="settings" size={s(24)} color={colors.textSecondary} />
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.logoutButton}
+            onPress={handleLogout}
+          >
+            <Ionicons name="log-out-outline" size={s(24)} color="#D32F2F" />
           </TouchableOpacity>
         </View>
       </View>

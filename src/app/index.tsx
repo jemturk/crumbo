@@ -91,6 +91,25 @@ export default function WelcomeScreen() {
     }
   };
 
+  const handleLogout = () => {
+    showAlert(
+      "Log Out?",
+      "Are you sure you want to log out of your Cookie Jar?",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Log Out",
+          style: "destructive",
+          onPress: async () => {
+            await StorageService.logoutKid();
+            setProfile(null);
+            setSubscribed(false);
+          }
+        }
+      ]
+    );
+  };
+
   if (loading) {
     return (
       <View style={[styles.loadingContainer, { backgroundColor: colors.bg }]}>
@@ -132,6 +151,14 @@ export default function WelcomeScreen() {
 
           {/* Dynamic Action Card */}
           <View style={[styles.card, { backgroundColor: colors.cardBg, borderColor: colors.border, shadowColor: colors.textSecondary }]}>
+            {profile && (
+              <TouchableOpacity
+                style={{ position: 'absolute', top: s(12), right: s(12), padding: s(4), zIndex: 10 }}
+                onPress={handleLogout}
+              >
+                <Ionicons name="log-out-outline" size={s(20)} color="#D32F2F" />
+              </TouchableOpacity>
+            )}
             {profile ? (
               <View style={styles.cardContent}>
                 <Text style={[styles.cardEmoji, { fontSize: s(48) }]}>🍪</Text>

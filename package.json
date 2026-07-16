@@ -11,6 +11,7 @@
     "expo": "~56.0.12",
     "expo-asset": "~56.0.19",
     "expo-audio": "~56.0.12",
+    "expo-build-properties": "~56.0.23",
     "expo-camera": "~56.0.8",
     "expo-constants": "~56.0.18",
     "expo-device": "~56.0.4",
@@ -57,7 +58,9 @@
     "doctor": {
       "reactNativeDirectoryCheck": {
         "listUnknownPackages": false,
-        "exclude": ["react-native-callkeep"]
+        "exclude": [
+          "react-native-callkeep"
+        ]
       }
     }
   }

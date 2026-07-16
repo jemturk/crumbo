@@ -470,12 +470,11 @@ export default function ParentDashboard() {
     <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
       {/* Header matching exact layout specs */}
       <View style={[styles.header, { borderBottomColor: colors.border, backgroundColor: colors.cardBg, paddingTop: Platform.OS === 'android' ? (insets.top > 0 ? insets.top + s(8) : s(44)) : s(16), paddingHorizontal: s(16), borderBottomWidth: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }]}>
+        <Text style={[styles.headerTitle, { color: colors.text, fontSize: s(18) }]}>Parent Area</Text>
+
         <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
           <Ionicons name="log-out-outline" size={s(22)} color="#D32F2F" />
-          <Text style={[styles.logoutButtonText, { fontSize: s(14) }]}>Log Out</Text>
         </TouchableOpacity>
-        
-        <Text style={[styles.headerTitle, { color: colors.text, fontSize: s(18) }]}>Parent Area</Text>
       </View>
 
       <ScrollView contentContainerStyle={[styles.scrollContent, { padding: s(16), gap: s(16) }]}>
@@ -1143,12 +1142,6 @@ const styles = StyleSheet.create({
   logoutButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
-  },
-  logoutButtonText: {
-    fontSize: 14,
-    fontWeight: '800',
-    color: '#D32F2F',
   },
   headerTitle: {
     fontSize: 18,
