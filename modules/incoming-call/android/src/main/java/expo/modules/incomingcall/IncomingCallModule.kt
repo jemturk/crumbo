@@ -62,11 +62,51 @@ class ShowFullScreenIncomingCallParams : Record {
  * routing logic needed on the RN side (see src/hooks/use-call.ts's incoming-params handling).
  */
 class IncomingCallModule : Module() {
+  companion object {
+    // Set/cleared via OnCreate/OnDestroy below. IncomingCallActionReceiver isn't a Module
+    // itself (it can't be — PendingIntent.getBroadcast needs a manifest-declared receiver
+    // class, not a DSL-defined one), so this is how it reaches back into JS: call straight
+    // into the live module instance rather than trying to go through the module registry.
+    @Volatile
+    private var activeInstance: IncomingCallModule? = null
+
+    private fun callInfo(callUUID: String, friendId: String, roomName: String, isVideo: Boolean, callerName: String) = mapOf(
+      "callUUID" to callUUID,
+      "friendId" to friendId,
+      "roomName" to roomName,
+      "isVideo" to isVideo,
+      "callerName" to callerName
+    )
+
+    fun notifyAnswered(callUUID: String, friendId: String, roomName: String, isVideo: Boolean, callerName: String) {
+      activeInstance?.sendEvent("onAnswerFromNotification", callInfo(callUUID, friendId, roomName, isVideo, callerName))
+    }
+
+    fun notifyDeclined(callUUID: String, friendId: String, roomName: String, isVideo: Boolean, callerName: String) {
+      activeInstance?.sendEvent("onDeclineFromNotification", callInfo(callUUID, friendId, roomName, isVideo, callerName))
+    }
+  }
+
   private val context: Context
     get() = appContext.reactContext ?: throw Exceptions.ReactContextLost()
 
   override fun definition() = ModuleDefinition {
     Name("IncomingCall")
+
+    // Fired by IncomingCallActionReceiver the instant Answer/Decline is tapped on the
+    // notification — see its class doc for why this replaces relying on the deep-link query
+    // params (acceptCallImmediately/declineCall) reaching JS via expo-router.
+    Events("onAnswerFromNotification", "onDeclineFromNotification")
+
+    OnCreate {
+      activeInstance = this@IncomingCallModule
+    }
+
+    OnDestroy {
+      if (activeInstance === this@IncomingCallModule) {
+        activeInstance = null
+      }
+    }
 
     Function("showFullScreenIncomingCall") { params: ShowFullScreenIncomingCallParams ->
       if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return@Function
@@ -214,6 +254,32 @@ class IncomingCallModule : Module() {
   }
 
   /**
+   * Answer/Decline go through IncomingCallActionReceiver instead of straight to an Activity —
+   * see that class's doc for why (resolving Telecom + notifying JS directly, rather than
+   * waiting on the app to open and expo-router to notice a query param).
+   */
+  private fun actionBroadcastPendingIntent(
+    action: String,
+    callUUID: String,
+    friendId: String,
+    roomName: String,
+    isVideo: Boolean,
+    callerName: String,
+    requestCode: Int
+  ): PendingIntent {
+    val intent = Intent(context, IncomingCallActionReceiver::class.java).apply {
+      this.action = action
+      putExtra(EXTRA_CALL_UUID, callUUID)
+      putExtra(EXTRA_FRIEND_ID, friendId)
+      putExtra(EXTRA_ROOM_NAME, roomName)
+      putExtra(EXTRA_IS_VIDEO, isVideo)
+      putExtra(EXTRA_CALLER_NAME, callerName)
+    }
+    val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+    return PendingIntent.getBroadcast(context, requestCode, intent, flags)
+  }
+
+  /**
    * expo-notifications' own bundled FCM handling (FirebaseMessagingDelegate.onMessageReceived)
    * unconditionally routes every incoming push — including this module's data-only
    * call-signal pushes — through its own auto-presentation pipeline. Its suppression logic
@@ -270,12 +336,9 @@ class IncomingCallModule : Module() {
     val id = notificationId(callUUID)
 
     val tapUri = buildDeepLink(friendId, callUUID, isVideo, roomName, callerName, null, null)
-    val answerUri = buildDeepLink(friendId, callUUID, isVideo, roomName, callerName, "acceptCallImmediately", "true")
-    val declineUri = buildDeepLink(friendId, callUUID, isVideo, roomName, callerName, "declineCall", "true")
-
     val tapPendingIntent = activityPendingIntent(tapUri, id)
-    val answerPendingIntent = activityPendingIntent(answerUri, id + 1)
-    val declinePendingIntent = activityPendingIntent(declineUri, id + 2)
+    val answerPendingIntent = actionBroadcastPendingIntent(ACTION_ANSWER_CALL, callUUID, friendId, roomName, isVideo, callerName, id + 1)
+    val declinePendingIntent = actionBroadcastPendingIntent(ACTION_DECLINE_CALL, callUUID, friendId, roomName, isVideo, callerName, id + 2)
 
     val caller = Person.Builder()
       .setName(callerName)

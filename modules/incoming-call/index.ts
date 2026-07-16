@@ -8,6 +8,22 @@ export interface ShowFullScreenIncomingCallParams {
   roomName: string;
 }
 
+/** Payload for onAnswerFromNotification / onDeclineFromNotification — see IncomingCallActionReceiver.kt. */
+export interface NotificationCallActionEvent {
+  callUUID: string;
+  friendId: string;
+  roomName: string;
+  isVideo: boolean;
+  callerName: string;
+}
+
+interface IncomingCallNativeModuleEvents {
+  /** Fired the instant Answer is tapped on the notification — resolves before the app even opens. */
+  onAnswerFromNotification(event: NotificationCallActionEvent): void;
+  /** Fired the instant Decline is tapped on the notification — resolves before the app even opens. */
+  onDeclineFromNotification(event: NotificationCallActionEvent): void;
+}
+
 interface IncomingCallNativeModule {
   /**
    * Posts a native CallStyle notification with `setFullScreenIntent` — Android's dedicated
@@ -41,6 +57,11 @@ interface IncomingCallNativeModule {
 
   /** Shows the native system dialog to request the exemption above. */
   requestIgnoreBatteryOptimizations(): void;
+
+  addListener<EventName extends keyof IncomingCallNativeModuleEvents>(
+    eventName: EventName,
+    listener: IncomingCallNativeModuleEvents[EventName]
+  ): { remove(): void };
 }
 
 // Android-only module: requireOptionalNativeModule returns null (instead of throwing)

@@ -1,3 +1,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+  <application>
+    <receiver
+      android:name="expo.modules.incomingcall.IncomingCallActionReceiver"
+      android:exported="false" />
+  </application>
+
 </manifest>

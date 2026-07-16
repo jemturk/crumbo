@@ -123,7 +123,10 @@ export default function ChatScreen() {
     friendId,
     friend,
     profile,
-    incomingParams: { incomingCall, callType, roomName, friendName, acceptCallImmediately, callUUID, declineCall: declineCallParam },
+    incomingParams: useMemo(
+      () => ({ incomingCall, callType, roomName, friendName, acceptCallImmediately, callUUID, declineCall: declineCallParam }),
+      [incomingCall, callType, roomName, friendName, acceptCallImmediately, callUUID, declineCallParam]
+    ),
     clearIncomingParams,
     onCallLog: handleCallLog,
     showAlert,

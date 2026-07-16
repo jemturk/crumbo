@@ -10,6 +10,7 @@ import { Friend, KidProfile, Message, StorageService } from '@/services/storage'
 import { Camera } from 'expo-camera';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState, Vibration } from 'react-native';
+import IncomingCall from '../../modules/incoming-call';
 
 export type CallStatus = 'ringing' | 'connected' | 'ended';
 export type CallDirection = 'incoming' | 'outgoing';
@@ -468,6 +469,10 @@ export function useCall({
     declineParamHandled.current = true;
 
     const isVideo = incomingParams.callType === 'video';
+    // Mark this call resolved so a START signal arriving after the fact (e.g. redelivered when
+    // the realtime socket reconnects on foreground) can't re-open the ringing modal — mirrors
+    // the accept path above.
+    if (incomingParams.callUUID) handledStartUuids.current.add(incomingParams.callUUID);
     // Silence the (insistently ringing) CallStyle notification and clean up Telecom state.
     if (incomingParams.callUUID) {
       callKeepManager.endCall(incomingParams.callUUID);
@@ -512,6 +517,30 @@ export function useCall({
     );
     return () => callKeepManager.clearCallbacks();
   }, [acceptCall, declineCall, endCall]);
+
+  // --- Direct answer/decline from the notification (see IncomingCallActionReceiver.kt) -----
+  // Fired natively the instant Answer/Decline is tapped, independent of whether the deep-link
+  // query params (acceptCallImmediately/declineCall, handled below) actually make it through —
+  // this is the primary path now; that remains only as a fallback for a very cold start.
+  // Matching on friendId (not just callUUID) guards against a previous chat screen still
+  // mounted in the navigation stack also reacting to the same event.
+  useEffect(() => {
+    if (!IncomingCall) return;
+
+    const answerSub = IncomingCall.addListener('onAnswerFromNotification', (event) => {
+      if (event.friendId !== friendId) return;
+      acceptCall();
+    });
+    const declineSub = IncomingCall.addListener('onDeclineFromNotification', (event) => {
+      if (event.friendId !== friendId) return;
+      declineCall();
+    });
+
+    return () => {
+      answerSub.remove();
+      declineSub.remove();
+    };
+  }, [friendId, acceptCall, declineCall]);
 
   // --- Duration timer --------------------------------------------------------
   useEffect(() => {
