@@ -55,8 +55,6 @@
       ],
       "@config-plugins/react-native-callkeep",
       "./plugins/withCallkeepSelfManagedPermissions.js",
-      "expo-audio",
-      "expo-asset",
       [
         "expo-build-properties",
         {

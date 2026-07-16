@@ -258,9 +258,9 @@ class CallKeepManager {
     RNCallKeep.addEventListener('showIncomingCallUi', ({ callUUID }) => {
       console.log(`[CallKeep] showIncomingCallUi fired for ${callUUID}`);
 
-      // Foregrounded app = the in-app ringing modal (use-call.ts) is already taking over,
-      // ringtone included. Posting the CallStyle notification too would double-ring —
-      // WhatsApp likewise shows no notification when you're in the app.
+      // Foregrounded app = the in-app ringing modal (use-call.ts) is already taking over
+      // (vibration only, no sound). Posting the CallStyle notification too would still be a
+      // confusing double call-UI — WhatsApp likewise shows no notification when you're in the app.
       if (AppState.currentState === 'active') {
         console.log('[CallKeep] App is foregrounded — in-app call UI handles this, skipping notification.');
         return;

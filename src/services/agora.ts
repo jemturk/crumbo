@@ -141,39 +141,6 @@ class AgoraManager {
     }
   }
 
-  async startCallingSound(localUri: string): Promise<void> {
-    if (this.engine) {
-      try {
-        console.log('[Agora] Starting calling/ringback sound via Agora engine:', localUri);
-        // Use ID 1 for calling sound
-        this.engine.preloadEffect(1, localUri);
-        this.engine.playEffect(
-          1,         // soundId
-          localUri,  // filePath
-          -1,        // loopCount (-1 means loop infinitely)
-          1.0,       // pitch
-          0.0,       // pan (center)
-          100.0,     // gain (volume)
-          false      // publish (do NOT publish calling sound to remote user!)
-        );
-      } catch (e) {
-        console.error('[Agora] Failed to play calling sound via Agora:', e);
-      }
-    }
-  }
-
-  async stopCallingSound(): Promise<void> {
-    if (this.engine) {
-      try {
-        console.log('[Agora] Stopping calling sound');
-        this.engine.stopEffect(1);
-        this.engine.unloadEffect(1);
-      } catch (e) {
-        console.error('[Agora] Failed to stop calling sound via Agora:', e);
-      }
-    }
-  }
-
   async destroy(): Promise<void> {
     if (this.engine) {
       try {

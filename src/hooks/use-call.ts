@@ -6,7 +6,6 @@ import {
   sendCallSignal,
   subscribeToCallSignals,
 } from '@/services/callSignaling';
-import { soundManager } from '@/services/sound';
 import { Friend, KidProfile, Message, StorageService } from '@/services/storage';
 import { Camera } from 'expo-camera';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -163,16 +162,6 @@ export function useCall({
 
         if (!isIncoming) {
           setCallStatus('ringing');
-          try {
-            const { Asset } = require('expo-asset');
-            const callingAsset = Asset.fromModule(require('../../assets/sounds/calling.mp3'));
-            await callingAsset.downloadAsync();
-            if (callingAsset.localUri) {
-              await agoraManager.startCallingSound(callingAsset.localUri);
-            }
-          } catch (soundErr) {
-            console.error('Failed to play calling sound via Agora:', soundErr);
-          }
         } else {
           setCallStatus('connected');
         }
@@ -336,8 +325,9 @@ export function useCall({
         setCallRoom(payload.roomName || '');
         setCallModalVisible(true);
 
-        // Foregrounded: this modal + soundManager ring. Backgrounded: displayIncomingCall
-        // below leads to the native CallStyle notification, whose channel does the ringing.
+        // Foregrounded: this modal + vibration only. Backgrounded: displayIncomingCall
+        // below leads to the native CallStyle notification, whose channel rings with the
+        // device's default ringtone.
         ringHandledByNotification.current = AppState.currentState !== 'active';
 
         const callerName = payload.callerName || friend?.name || 'Friend';
@@ -534,23 +524,12 @@ export function useCall({
     return () => clearInterval(timer);
   }, [callStatus]);
 
-  // --- Ringtone / ringback ---------------------------------------------------
+  // Reset the notification-ring flag once the ring phase ends, so the next incoming call
+  // determines vibration behavior fresh.
   useEffect(() => {
-    if (callStatus === 'ringing' && callDirection === 'incoming') {
-      // When the native CallStyle notification is showing, its channel plays the looping
-      // device ringtone — playing ours too would double-ring.
-      if (!ringHandledByNotification.current) {
-        soundManager.playRingtone();
-      }
-    } else {
-      ringHandledByNotification.current = false; // ring phase over; reset for the next call
-      soundManager.stopAll();
-      agoraManager.stopCallingSound().catch((err) => console.warn(err));
+    if (!(callStatus === 'ringing' && callDirection === 'incoming')) {
+      ringHandledByNotification.current = false;
     }
-    return () => {
-      soundManager.stopAll();
-      agoraManager.stopCallingSound().catch((err) => console.warn(err));
-    };
   }, [callStatus, callDirection]);
 
   // --- Ring timeout: auto-end an unanswered call after RING_TIMEOUT_MS -------
