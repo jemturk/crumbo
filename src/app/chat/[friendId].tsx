@@ -234,7 +234,9 @@ export default function ChatScreen() {
     const isCallLog = item.text.startsWith('[CALL_LOG:');
 
     if (isCallLog) {
-      const logType = item.text.replace('[CALL_LOG:', '').replace(']', '');
+      // Direction suffix (INCOMING/OUTGOING) is who initiated the call — added after this log
+      // format shipped, so older stored entries won't have one; those fall back to centered.
+      const [logType, direction] = item.text.replace('[CALL_LOG:', '').replace(']', '').split(':');
       let logTitle = '';
       let logIcon: keyof typeof Ionicons.glyphMap = 'call';
       let isMissed = false;
@@ -261,8 +263,19 @@ export default function ChatScreen() {
           break;
       }
 
+      // The direction suffix is relative to whoever WROTE the log row, and rows sync to both
+      // devices through the shared messages table. On the writer's device sender is 'me'; on
+      // the other kid's device the same row arrives with sender 'them' and the meaning flips
+      // (their OUTGOING = my incoming). XOR the two to get "did I initiate this call".
+      const initiatedByMe = (item.sender === 'me') === (direction === 'OUTGOING');
+      const callLogAlignStyle = !direction
+        ? styles.callLogCentered // legacy rows written before the direction suffix existed
+        : initiatedByMe
+        ? styles.myRow
+        : styles.theirRow;
+
       return (
-        <View style={styles.callLogWrapper}>
+        <View style={[styles.callLogWrapper, callLogAlignStyle]}>
           <View style={[styles.callLogContainer, {
             backgroundColor: isMissed
               ? (isDark ? '#4C1E20' : '#FFEBEE')
@@ -887,9 +900,11 @@ const styles = StyleSheet.create({
     borderColor: '#FFFFFF',
   },
   callLogWrapper: {
-    alignSelf: 'center',
     marginVertical: 4,
     maxWidth: '85%',
+  },
+  callLogCentered: {
+    alignSelf: 'center',
   },
   callLogContainer: {
     flexDirection: 'row',

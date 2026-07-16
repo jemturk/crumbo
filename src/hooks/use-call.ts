@@ -275,7 +275,8 @@ export function useCall({
   );
 
   const declineCall = useCallback(async () => {
-    const logText = callTypeVideo ? '[CALL_LOG:MISSED_VIDEO]' : '[CALL_LOG:MISSED_AUDIO]';
+    // Declining only ever happens on an incoming (friend-initiated) call.
+    const logText = callTypeVideo ? '[CALL_LOG:MISSED_VIDEO:INCOMING]' : '[CALL_LOG:MISSED_AUDIO:INCOMING]';
     await teardown('DECLINE_CALL', logText);
     if (isMounted.current) setCallModalVisible(false);
   }, [callTypeVideo, teardown]);
@@ -284,20 +285,23 @@ export function useCall({
   // CANCEL_CALL rather than DECLINE_CALL so the caller sees a silent "no answer" end instead
   // of the "Call Busy" alert reserved for an active decline — matching WhatsApp's behavior.
   const missCall = useCallback(async () => {
-    const logText = callTypeVideo ? '[CALL_LOG:MISSED_VIDEO]' : '[CALL_LOG:MISSED_AUDIO]';
+    const logText = callTypeVideo ? '[CALL_LOG:MISSED_VIDEO:INCOMING]' : '[CALL_LOG:MISSED_AUDIO:INCOMING]';
     await teardown('CANCEL_CALL', logText);
     if (isMounted.current) setCallModalVisible(false);
   }, [callTypeVideo, teardown]);
 
   const endCall = useCallback(async () => {
     const wasRinging = callStatusRef.current === 'ringing';
+    // Direction reflects who placed the original call, not who happened to hang up — an
+    // unanswered outgoing call ending here is "I called, no answer", not a missed call of mine.
+    const direction = callDirectionRef.current === 'incoming' ? 'INCOMING' : 'OUTGOING';
     const logText = wasRinging
       ? callTypeVideo
-        ? '[CALL_LOG:MISSED_VIDEO]'
-        : '[CALL_LOG:MISSED_AUDIO]'
+        ? `[CALL_LOG:MISSED_VIDEO:${direction}]`
+        : `[CALL_LOG:MISSED_AUDIO:${direction}]`
       : callTypeVideo
-      ? '[CALL_LOG:ENDED_VIDEO]'
-      : '[CALL_LOG:ENDED_AUDIO]';
+      ? `[CALL_LOG:ENDED_VIDEO:${direction}]`
+      : `[CALL_LOG:ENDED_AUDIO:${direction}]`;
     await teardown('END_CALL', logText);
     if (isMounted.current) {
       setTimeout(() => {
@@ -489,7 +493,8 @@ export function useCall({
         roomName: incomingParams.roomName,
         isVideo,
       });
-      await writeCallLog(isVideo ? '[CALL_LOG:MISSED_VIDEO]' : '[CALL_LOG:MISSED_AUDIO]');
+      // Quick-decline is always for an incoming (friend-initiated) call.
+      await writeCallLog(isVideo ? '[CALL_LOG:MISSED_VIDEO:INCOMING]' : '[CALL_LOG:MISSED_AUDIO:INCOMING]');
     })().catch((err) => {
       console.error('[useCall] Failed to process quick decline:', err);
     });

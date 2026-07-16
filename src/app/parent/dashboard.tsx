@@ -437,7 +437,6 @@ export default function ParentDashboard() {
   const copyToClipboard = (code: string) => {
     try {
       Clipboard.setString(code);
-      showAlert("Copied! 📋", "Pairing code copied to clipboard.");
     } catch (e) {
       showAlert("Pairing Code", code);
     }
@@ -797,7 +796,8 @@ export default function ParentDashboard() {
                         const isCallLog = msg.text.startsWith('[CALL_LOG:');
 
                         if (isCallLog) {
-                          const logType = msg.text.replace('[CALL_LOG:', '').replace(']', '');
+                          // Newer rows carry a :INCOMING/:OUTGOING direction suffix — strip it here.
+                          const logType = msg.text.replace('[CALL_LOG:', '').replace(']', '').split(':')[0];
                           let logTitle = '';
                           let logIcon: keyof typeof Ionicons.glyphMap = 'call';
                           let isMissed = false;

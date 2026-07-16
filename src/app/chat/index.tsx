@@ -137,7 +137,8 @@ export default function ChatDashboard() {
       if (!lastMsg) return 'Tap to start chatting! 🍪';
       
       if (lastMsg.text.startsWith('[CALL_LOG:')) {
-        const logType = lastMsg.text.replace('[CALL_LOG:', '').replace(']', '');
+        // Newer rows carry a :INCOMING/:OUTGOING direction suffix — strip it for the preview.
+        const logType = lastMsg.text.replace('[CALL_LOG:', '').replace(']', '').split(':')[0];
         switch (logType) {
           case 'MISSED_VIDEO':
             return '📹 Missed Video Call';
