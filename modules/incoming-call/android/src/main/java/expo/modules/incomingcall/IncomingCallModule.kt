@@ -117,6 +117,11 @@ class IncomingCallModule : Module() {
       NotificationManagerCompat.from(context).cancel(notificationId(callUUID))
     }
 
+    // Called by JS once a call has ended — see clearLockScreenFlags() doc comment below.
+    Function("clearLockScreenFlags") {
+      clearLockScreenFlags()
+    }
+
     Function("isShowing") { callUUID: String ->
       if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return@Function false
       val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
@@ -389,5 +394,18 @@ class IncomingCallModule : Module() {
       uri.getQueryParameter("incomingCall") == "true"
     activity.setShowWhenLocked(isIncomingCall)
     activity.setTurnScreenOn(isIncomingCall)
+  }
+
+  /**
+   * applyLockScreenFlags() above only ever sets showWhenLocked/turnScreenOn to true (when an
+   * incoming-call deep link opens the app) — nothing previously reset them to false once the
+   * call ended, so the app kept floating over the lock screen for a while after hangup. JS
+   * calls this right after tearing a call down to clear that state immediately.
+   */
+  private fun clearLockScreenFlags() {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O_MR1) return
+    val activity = appContext.currentActivity ?: return
+    activity.setShowWhenLocked(false)
+    activity.setTurnScreenOn(false)
   }
 }

@@ -254,6 +254,11 @@ export function useCall({
         callKeepManager.endCall(uuid);
         if (isMounted.current) setActiveCallUuid(null);
       }
+      // The lock-screen bypass from an incoming call (see IncomingCallModule.applyLockScreenFlags)
+      // only ever gets turned on, never back off — without this the app keeps floating over the
+      // lock screen for a while after hangup. One-second delay so it doesn't cut the "Call
+      // Ended" state off mid-transition.
+      setTimeout(() => IncomingCall?.clearLockScreenFlags(), 500);
       await agoraManager.destroy();
       if (isMounted.current) setRemoteUid(null);
 

@@ -136,3 +136,215 @@ if (fs.existsSync(voiceConnService)) {
 } else {
   console.log('[patch] VoiceConnectionService.java not found, skipping');
 }
+
+// --- Patch 5: Hold a wake lock while running the background remote-notification task ---
+// executeTask() calls task.execute(bundle, null) with no wake lock and no protection
+// against the process being suspended mid-flight. Verified on-device via adb logcat: a
+// killed/backgrounded incoming-call push wakes the process just long enough to start
+// ("ActivityManager: sync unfroze <pid> com.jemturk.crumbo for 3", followed by a large
+// Choreographer frame-skip — real work happening) but the JS engine never finishes
+// bootstrapping before the OS re-freezes the process, so callkeep.ts's background task
+// handler (and displayIncomingCall) never runs — no ring, no banner, nothing. A
+// PARTIAL_WAKE_LOCK held for the duration of task execution (with its own timeout as a
+// safety net, so a crash/exception in the JS task can't leak it) fixes this the same way
+// the now-deprecated WakefulBroadcastReceiver did for this exact scenario.
+const bgTaskConsumer = path.join(
+  __dirname,
+  '../node_modules/expo-notifications/android/src/main/java/expo/modules/notifications/notifications/background/BackgroundRemoteNotificationTaskConsumer.kt'
+);
+
+if (fs.existsSync(bgTaskConsumer)) {
+  let src = fs.readFileSync(bgTaskConsumer, 'utf8');
+
+  const originalImport = 'import android.os.Bundle';
+  const patchedImport = 'import android.os.Bundle\nimport android.os.PowerManager';
+
+  const originalExecuteTask = `  fun executeTask(bundle: Bundle) {
+    requireNotNull(task) { "executeTask called but no task is registered" }.execute(bundle, null)
+  }`;
+
+  const patchedExecuteTask = `  fun executeTask(bundle: Bundle) {
+    val task = requireNotNull(task) { "executeTask called but no task is registered" }
+
+    val powerManager = getContext()?.getSystemService(Context.POWER_SERVICE) as? PowerManager
+    val wakeLock = powerManager?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "crumbo:BackgroundRemoteNotificationTask")
+    wakeLock?.acquire(20000L)
+
+    fun releaseWakeLock() {
+      if (wakeLock?.isHeld == true) {
+        try {
+          wakeLock.release()
+        } catch (e: Exception) {
+          // Already released by its own 20s timeout — nothing more to do.
+        }
+      }
+    }
+
+    try {
+      task.execute(bundle, null) { releaseWakeLock() }
+    } catch (e: Exception) {
+      releaseWakeLock()
+      throw e
+    }
+  }`;
+
+  if (src.includes(originalExecuteTask)) {
+    src = src.replace(originalImport, patchedImport);
+    src = src.replace(originalExecuteTask, patchedExecuteTask);
+    fs.writeFileSync(bgTaskConsumer, src, 'utf8');
+    console.log('[patch] BackgroundRemoteNotificationTaskConsumer: added wake lock around executeTask()');
+  } else {
+    console.log('[patch] BackgroundRemoteNotificationTaskConsumer: already patched or pattern not found');
+  }
+} else {
+  console.log('[patch] BackgroundRemoteNotificationTaskConsumer.kt not found, skipping');
+}
+
+// --- Patch 6: TEMPORARY diagnostic logging for the killed/backgrounded call-push pipeline ---
+// Patch 5's wake lock didn't fix the no-ring bug — on-device testing (adb logcat) showed the
+// process actually gets a full ~30s wake window either way, so JS-bootstrap timing wasn't the
+// bottleneck. These are unconditional Log.i calls (not gated by BuildConfig.DEBUG, unlike this
+// library's own DebugLogging helper, which no-ops in release builds) at every step from FCM
+// delivery through task dispatch, tagged CRUMBO_DIAG so `adb logcat -s CRUMBO_DIAG` isolates
+// them. Remove this patch once the real break point is found and permanently fixed.
+if (fs.existsSync(bgTaskConsumer)) {
+  let src = fs.readFileSync(bgTaskConsumer, 'utf8');
+
+  const wakeLockExecuteTask = `  fun executeTask(bundle: Bundle) {
+    val task = requireNotNull(task) { "executeTask called but no task is registered" }
+
+    val powerManager = getContext()?.getSystemService(Context.POWER_SERVICE) as? PowerManager
+    val wakeLock = powerManager?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "crumbo:BackgroundRemoteNotificationTask")
+    wakeLock?.acquire(20000L)
+
+    fun releaseWakeLock() {
+      if (wakeLock?.isHeld == true) {
+        try {
+          wakeLock.release()
+        } catch (e: Exception) {
+          // Already released by its own 20s timeout — nothing more to do.
+        }
+      }
+    }
+
+    try {
+      task.execute(bundle, null) { releaseWakeLock() }
+    } catch (e: Exception) {
+      releaseWakeLock()
+      throw e
+    }
+  }`;
+
+  const diagExecuteTask = `  fun executeTask(bundle: Bundle) {
+    android.util.Log.i("CRUMBO_DIAG", "executeTask ENTER, task registered=" + (task != null))
+    val task = requireNotNull(task) { "executeTask called but no task is registered" }
+
+    val powerManager = getContext()?.getSystemService(Context.POWER_SERVICE) as? PowerManager
+    val wakeLock = powerManager?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "crumbo:BackgroundRemoteNotificationTask")
+    wakeLock?.acquire(20000L)
+    android.util.Log.i("CRUMBO_DIAG", "executeTask wakeLock held=" + (wakeLock?.isHeld))
+
+    fun releaseWakeLock() {
+      if (wakeLock?.isHeld == true) {
+        try {
+          wakeLock.release()
+        } catch (e: Exception) {
+          // Already released by its own 20s timeout — nothing more to do.
+        }
+      }
+    }
+
+    try {
+      task.execute(bundle, null) {
+        android.util.Log.i("CRUMBO_DIAG", "executeTask JS onFinished callback fired")
+        releaseWakeLock()
+      }
+      android.util.Log.i("CRUMBO_DIAG", "executeTask task.execute() dispatched")
+    } catch (e: Exception) {
+      android.util.Log.e("CRUMBO_DIAG", "executeTask EXCEPTION: " + e)
+      releaseWakeLock()
+      throw e
+    }
+  }`;
+
+  if (src.includes(wakeLockExecuteTask)) {
+    src = src.replace(wakeLockExecuteTask, diagExecuteTask);
+    fs.writeFileSync(bgTaskConsumer, src, 'utf8');
+    console.log('[patch] BackgroundRemoteNotificationTaskConsumer: added CRUMBO_DIAG logging to executeTask()');
+  } else {
+    console.log('[patch] BackgroundRemoteNotificationTaskConsumer diag logging: already patched or pattern not found');
+  }
+} else {
+  console.log('[patch] BackgroundRemoteNotificationTaskConsumer.kt not found, skipping diag logging');
+}
+
+const firebaseMessagingDelegate = path.join(
+  __dirname,
+  '../node_modules/expo-notifications/android/src/main/java/expo/modules/notifications/service/delegates/FirebaseMessagingDelegate.kt'
+);
+
+if (fs.existsSync(firebaseMessagingDelegate)) {
+  let src = fs.readFileSync(firebaseMessagingDelegate, 'utf8');
+  let patched = false;
+
+  const originalRunTasks = `    fun runTaskManagerTasks(applicationContext: Context, bundle: Bundle) {
+      // getTaskServiceImpl() has a side effect:
+      // the TaskService constructor calls restoreTasks which then constructs a BackgroundRemoteNotificationTaskConsumer,
+      // and the getBackgroundTasks() call below doesn't return an empty collection.
+      TaskServiceProviderHelper.getTaskServiceImpl(applicationContext)
+      getBackgroundTasks().forEach {
+        it.executeTask(bundle)
+      }
+    }`;
+
+  const diagRunTasks = `    fun runTaskManagerTasks(applicationContext: Context, bundle: Bundle) {
+      // getTaskServiceImpl() has a side effect:
+      // the TaskService constructor calls restoreTasks which then constructs a BackgroundRemoteNotificationTaskConsumer,
+      // and the getBackgroundTasks() call below doesn't return an empty collection.
+      TaskServiceProviderHelper.getTaskServiceImpl(applicationContext)
+      val consumers = getBackgroundTasks()
+      android.util.Log.i("CRUMBO_DIAG", "runTaskManagerTasks consumers=" + consumers.size)
+      consumers.forEach {
+        it.executeTask(bundle)
+      }
+    }`;
+
+  if (src.includes(originalRunTasks)) {
+    src = src.replace(originalRunTasks, diagRunTasks);
+    patched = true;
+  }
+
+  const originalOnMessageReceived = `  override fun onMessageReceived(remoteMessage: RemoteMessage) {
+    // the entry point for notifications. For its behavior, see table at https://firebase.google.com/docs/cloud-messaging/android/receive
+    DebugLogging.logRemoteMessage("FirebaseMessagingDelegate.onMessageReceived: message", remoteMessage)
+    val notification = createNotification(remoteMessage)
+    DebugLogging.logNotification("FirebaseMessagingDelegate.onMessageReceived: notification", notification)
+    NotificationsService.receive(context, notification)
+    runTaskManagerTasks(context.applicationContext, RemoteMessageSerializer.toBundle(remoteMessage))
+  }`;
+
+  const diagOnMessageReceived = `  override fun onMessageReceived(remoteMessage: RemoteMessage) {
+    // the entry point for notifications. For its behavior, see table at https://firebase.google.com/docs/cloud-messaging/android/receive
+    android.util.Log.i("CRUMBO_DIAG", "onMessageReceived ENTER data=" + remoteMessage.data)
+    DebugLogging.logRemoteMessage("FirebaseMessagingDelegate.onMessageReceived: message", remoteMessage)
+    val notification = createNotification(remoteMessage)
+    DebugLogging.logNotification("FirebaseMessagingDelegate.onMessageReceived: notification", notification)
+    NotificationsService.receive(context, notification)
+    runTaskManagerTasks(context.applicationContext, RemoteMessageSerializer.toBundle(remoteMessage))
+    android.util.Log.i("CRUMBO_DIAG", "onMessageReceived DONE")
+  }`;
+
+  if (src.includes(originalOnMessageReceived)) {
+    src = src.replace(originalOnMessageReceived, diagOnMessageReceived);
+    patched = true;
+  }
+
+  if (patched) {
+    fs.writeFileSync(firebaseMessagingDelegate, src, 'utf8');
+    console.log('[patch] FirebaseMessagingDelegate: added CRUMBO_DIAG logging');
+  } else {
+    console.log('[patch] FirebaseMessagingDelegate diag logging: already patched or pattern not found');
+  }
+} else {
+  console.log('[patch] FirebaseMessagingDelegate.kt not found, skipping diag logging');
+}

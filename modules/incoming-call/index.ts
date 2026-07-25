@@ -37,6 +37,14 @@ interface IncomingCallNativeModule {
   dismiss(callUUID: string): void;
 
   /**
+   * Resets the showWhenLocked/turnScreenOn flags that showFullScreenIncomingCall's lock-screen
+   * bypass sets — those only ever get set to true, never back to false, so without this call
+   * the app keeps floating over the lock screen for a while after a call ends. Call once a
+   * call has torn down.
+   */
+  clearLockScreenFlags(): void;
+
+  /**
    * Whether the incoming-call notification for this callUUID is currently displayed.
    * Queries the system notification manager, so it stays correct across process restarts.
    */

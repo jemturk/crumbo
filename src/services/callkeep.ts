@@ -177,8 +177,10 @@ class CallKeepManager {
     roomName?: string,
     isVideo?: boolean
   ) {
+    console.log('[CRUMBO_DIAG] displayIncomingCall ENTER uuid=', uuid);
     if (Platform.OS !== 'android') return;
     await this.setup();
+    console.log('[CRUMBO_DIAG] displayIncomingCall setup() done, initialized=', this.initialized);
 
     // Self-managed mode's displayIncomingCall doesn't show anything on its own — it just
     // registers the call with Telecom and fires `showIncomingCallUi`, which we handle
@@ -472,7 +474,14 @@ class CallKeepManager {
 
 export const callKeepManager = new CallKeepManager();
 
+// TEMPORARY diagnostic: confirms this module (and therefore defineTask below) actually
+// evaluates in whatever JS context is running, including a headless background bootstrap.
+// Remove alongside the other CRUMBO_DIAG logging once the no-ring bug is found and fixed.
+console.log('[CRUMBO_DIAG] callkeep.ts module evaluated, registering background task');
+
 TaskManager.defineTask(BACKGROUND_NOTIFICATION_TASK, async ({ data, error }) => {
+  console.log('[CRUMBO_DIAG] background task INVOKED, data=', JSON.stringify(data), 'error=', error);
+
   if (error) {
     console.error('[CallKeep Background Task] error:', error);
     return;
@@ -493,6 +502,7 @@ TaskManager.defineTask(BACKGROUND_NOTIFICATION_TASK, async ({ data, error }) => 
   const raw = data as any;
   const notification = raw?.notification;
   const payload = notification ? getCallSignalPayload(notification) : parseCallSignalText(raw?.data);
+  console.log('[CRUMBO_DIAG] background task parsed payload=', JSON.stringify(payload));
   if (!payload) return;
 
   if (notification) {

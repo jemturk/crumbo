@@ -28,7 +28,8 @@
         "android.permission.FOREGROUND_SERVICE_PHONE_CALL",
         "android.permission.USE_FULL_SCREEN_INTENT",
         "android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
-        "android.permission.POST_NOTIFICATIONS"
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.WAKE_LOCK"
       ]
     },
     "web": {
