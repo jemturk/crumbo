@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Crypto from 'expo-crypto';
 import { supabase } from './supabase';
 
 // Interfaces
@@ -43,6 +44,33 @@ const DEFAULT_EMOJIS = ['🍪', '🧁', '🍩', '🍫', '🍧', '🍰', '🍭', 
 // fixed marker just distinguishes a parent account row at a glance. Kept as a constant so
 // syncParentData and createParentAccount can't drift apart.
 const PARENT_ROW_NAME_MARKER = "6a09e667bb67ae853c6ef372a54ff53a510e527f9b05688c1f83d9ab5be0cd19";
+
+// getMessages, sendMessage, sendCallLogMessage, receiveMockMessage and the realtime subscriber
+// (subscribeToMessages) all read-modify-write the same crumbo_messages_<friendId> AsyncStorage
+// key independently. Without serialization, two of these interleaving (e.g. a send racing an
+// incoming realtime message) can each read the same "before" array and write back their own
+// version, silently dropping whichever wrote first. This chains all such operations for the
+// same friendId onto one promise queue so they run one at a time instead of overlapping;
+// different friendIds still run fully in parallel.
+const messageWriteQueues = new Map<string, Promise<unknown>>();
+
+function withMessagesLock<T>(friendId: string, fn: () => Promise<T>): Promise<T> {
+  const previous = messageWriteQueues.get(friendId) || Promise.resolve();
+  const run = previous.then(fn, fn);
+  // Swallow so one failed op doesn't wedge the queue for this friendId forever; the real
+  // rejection still propagates to whoever awaited `run` below.
+  messageWriteQueues.set(friendId, run.catch(() => {}));
+  return run;
+}
+
+// Raw read (no Supabase sync) for callers that only need "whatever's currently cached" to
+// append onto inside a withMessagesLock section — going through getMessages() there would both
+// re-trigger a server round-trip and re-enter the very lock it's called under.
+async function readCachedMessages(friendId: string): Promise<Message[]> {
+  const cachedData = await AsyncStorage.getItem(`${KEYS.MESSAGES_PREFIX}${friendId}`);
+  const messages: Message[] = cachedData ? JSON.parse(cachedData) : [];
+  return messages.filter(m => m.text && !StorageService.isCallSignalText(m.text));
+}
 
 export const StorageService = {
   // Parent Subscription
@@ -156,7 +184,7 @@ export const StorageService = {
 
     const randomEmoji = DEFAULT_EMOJIS[Math.floor(Math.random() * DEFAULT_EMOJIS.length)];
     const newFriend: Friend = {
-      id: Math.random().toString(36).substring(2, 9),
+      id: Crypto.randomUUID(),
       name,
       cookieCode,
       avatarEmoji: randomEmoji,
@@ -191,41 +219,47 @@ export const StorageService = {
     let messages: Message[] = cachedData ? JSON.parse(cachedData) : [];
     messages = messages.filter(m => m.text && !this.isCallSignalText(m.text));
 
-    // 2. Fetch fresh history from Supabase to sync
-    try {
-      const profile = await this.getKidProfile();
-      const friends = await this.getFriends();
-      const friend = friends.find(f => f.id === friendId);
+    // 2. Fetch fresh history from Supabase to sync. The overwrite below is serialized per-friend
+    // (see withMessagesLock) so it can't race sendMessage/sendCallLogMessage/receiveMockMessage/
+    // the realtime subscriber appending to the same local cache at the same time and silently
+    // dropping whichever wrote first.
+    const fetchedMessages = await withMessagesLock(friendId, async (): Promise<Message[] | null> => {
+      try {
+        const profile = await this.getKidProfile();
+        const friends = await this.getFriends();
+        const friend = friends.find(f => f.id === friendId);
 
-      if (profile && friend) {
-        const { data: dbMsgs, error } = await supabase
-          .from('messages')
-          .select('*')
-          .or(`and(sender_code.eq.${profile.cookieCode},receiver_code.eq.${friend.cookieCode}),and(sender_code.eq.${friend.cookieCode},receiver_code.eq.${profile.cookieCode})`)
-          .order('created_at', { ascending: true });
+        if (profile && friend) {
+          const { data: dbMsgs, error } = await supabase
+            .from('messages')
+            .select('*')
+            .or(`and(sender_code.eq.${profile.cookieCode},receiver_code.eq.${friend.cookieCode}),and(sender_code.eq.${friend.cookieCode},receiver_code.eq.${profile.cookieCode})`)
+            .order('created_at', { ascending: true });
 
-        if (!error && dbMsgs) {
-          const fetchedMessages: Message[] = dbMsgs
-            .filter(msg => msg.text && !this.isCallSignalText(msg.text))
-            .map(msg => ({
-              id: msg.id,
-              text: msg.text,
-              timestamp: msg.created_at,
-              sender: msg.sender_code === profile.cookieCode ? 'me' : 'them',
-            }));
+          if (!error && dbMsgs) {
+            const fetched: Message[] = dbMsgs
+              .filter(msg => msg.text && !this.isCallSignalText(msg.text))
+              .map(msg => ({
+                id: msg.id,
+                text: msg.text,
+                timestamp: msg.created_at,
+                sender: msg.sender_code === profile.cookieCode ? 'me' : 'them',
+              }));
 
-          // Overwrite local storage cache with latest data
-          await AsyncStorage.setItem(`${KEYS.MESSAGES_PREFIX}${friendId}`, JSON.stringify(fetchedMessages));
-          return fetchedMessages;
-        } else if (error) {
-          console.error("Error fetching messages from Supabase:", error);
+            // Overwrite local storage cache with latest data
+            await AsyncStorage.setItem(`${KEYS.MESSAGES_PREFIX}${friendId}`, JSON.stringify(fetched));
+            return fetched;
+          } else if (error) {
+            console.error("Error fetching messages from Supabase:", error);
+          }
         }
+      } catch (e) {
+        console.error("Failed to sync messages with Supabase:", e);
       }
-    } catch (e) {
-      console.error("Failed to sync messages with Supabase:", e);
-    }
+      return null;
+    });
 
-    return messages;
+    return fetchedMessages ?? messages;
   },
 
   async getChatLogsForParent(kidCookieCode: string, friendCookieCode: string): Promise<Message[]> {
@@ -255,9 +289,8 @@ export const StorageService = {
   },
 
   async sendMessage(friendId: string, text: string): Promise<Message> {
-    const messages = await this.getMessages(friendId);
-    const newMsgId = Math.random().toString(36).substring(2, 9);
-    
+    const newMsgId = Crypto.randomUUID();
+
     const newMsg: Message = {
       id: newMsgId,
       text,
@@ -265,8 +298,11 @@ export const StorageService = {
       sender: 'me',
     };
 
-    const updated = [...messages, newMsg];
-    await AsyncStorage.setItem(`${KEYS.MESSAGES_PREFIX}${friendId}`, JSON.stringify(updated));
+    await withMessagesLock(friendId, async () => {
+      const messages = await readCachedMessages(friendId);
+      const updated = [...messages, newMsg];
+      await AsyncStorage.setItem(`${KEYS.MESSAGES_PREFIX}${friendId}`, JSON.stringify(updated));
+    });
 
     // Async write to Supabase
     try {
@@ -292,17 +328,18 @@ export const StorageService = {
   },
 
   async receiveMockMessage(friendId: string, text: string): Promise<Message> {
-    const messages = await this.getMessages(friendId);
-    
     const newMsg: Message = {
-      id: Math.random().toString(36).substring(2, 9),
+      id: Crypto.randomUUID(),
       text,
       timestamp: new Date().toISOString(),
       sender: 'them',
     };
 
-    const updated = [...messages, newMsg];
-    await AsyncStorage.setItem(`${KEYS.MESSAGES_PREFIX}${friendId}`, JSON.stringify(updated));
+    await withMessagesLock(friendId, async () => {
+      const messages = await readCachedMessages(friendId);
+      const updated = [...messages, newMsg];
+      await AsyncStorage.setItem(`${KEYS.MESSAGES_PREFIX}${friendId}`, JSON.stringify(updated));
+    });
     return newMsg;
   },
 
@@ -388,14 +425,20 @@ export const StorageService = {
             sender: isSentByMe ? 'me' : 'them',
           };
 
-          // Read AsyncStorage directly to de-dupe and avoid redundant API requests.
-          const data = await AsyncStorage.getItem(`${KEYS.MESSAGES_PREFIX}${correspondingFriend.id}`);
-          const cachedMessages: Message[] = data ? JSON.parse(data) : [];
-          if (cachedMessages.find(m => m.id === localMsg.id)) return;
+          // Read AsyncStorage directly to de-dupe and avoid redundant API requests. Serialized
+          // per-friend (see withMessagesLock) so this can't race a local sendMessage/
+          // sendCallLogMessage/receiveMockMessage/getMessages sync writing the same key at the
+          // same time and silently dropping whichever wrote first.
+          const wasNew = await withMessagesLock(correspondingFriend.id, async () => {
+            const data = await AsyncStorage.getItem(`${KEYS.MESSAGES_PREFIX}${correspondingFriend.id}`);
+            const cachedMessages: Message[] = data ? JSON.parse(data) : [];
+            if (cachedMessages.find(m => m.id === localMsg.id)) return false;
 
-          const updated = [...cachedMessages, localMsg];
-          await AsyncStorage.setItem(`${KEYS.MESSAGES_PREFIX}${correspondingFriend.id}`, JSON.stringify(updated));
-          onNewMessage(localMsg, correspondingFriend.id);
+            const updated = [...cachedMessages, localMsg];
+            await AsyncStorage.setItem(`${KEYS.MESSAGES_PREFIX}${correspondingFriend.id}`, JSON.stringify(updated));
+            return true;
+          });
+          if (wasNew) onNewMessage(localMsg, correspondingFriend.id);
         }
       )
       .subscribe();
@@ -564,9 +607,8 @@ export const StorageService = {
   },
 
   async sendCallLogMessage(friendId: string, text: string): Promise<Message> {
-    const messages = await this.getMessages(friendId);
-    const newMsgId = Math.random().toString(36).substring(2, 9);
-    
+    const newMsgId = Crypto.randomUUID();
+
     const newMsg: Message = {
       id: newMsgId,
       text,
@@ -574,8 +616,11 @@ export const StorageService = {
       sender: 'me',
     };
 
-    const updated = [...messages, newMsg];
-    await AsyncStorage.setItem(`${KEYS.MESSAGES_PREFIX}${friendId}`, JSON.stringify(updated));
+    await withMessagesLock(friendId, async () => {
+      const messages = await readCachedMessages(friendId);
+      const updated = [...messages, newMsg];
+      await AsyncStorage.setItem(`${KEYS.MESSAGES_PREFIX}${friendId}`, JSON.stringify(updated));
+    });
 
     try {
       const profile = await this.getKidProfile();
@@ -733,7 +778,18 @@ export const StorageService = {
   async logoutKid(): Promise<void> {
     await AsyncStorage.removeItem(KEYS.KID_PROFILE);
     await AsyncStorage.removeItem(KEYS.FRIENDS);
-    await AsyncStorage.removeItem(KEYS.IS_SUBSCRIBED);
+
+    // IS_SUBSCRIBED doubles as the parent dashboard's own "is my account active" flag (see
+    // isSubscribed/setSubscribed, read by dashboard.tsx to decide whether to show "Subscribe
+    // Now" or "Active Subscription"). On a shared device that also has a parent account
+    // registered locally, clearing it here would make the dashboard falsely claim the parent
+    // isn't subscribed anymore, even though nothing about their actual subscription changed.
+    // Only reset it on a kid-only device (no local parent email), where it really was just
+    // this kid session's flag.
+    const parentEmail = await this.getParentEmail();
+    if (!parentEmail) {
+      await AsyncStorage.removeItem(KEYS.IS_SUBSCRIBED);
+    }
   },
 
   async syncKidProfileAndFriends(): Promise<KidProfile | null> {
@@ -789,7 +845,7 @@ export const StorageService = {
   async addFriendToKidProfile(kidCookieCode: string, friendName: string, friendCookieCode: string): Promise<Friend> {
     const randomEmoji = DEFAULT_EMOJIS[Math.floor(Math.random() * DEFAULT_EMOJIS.length)];
     const newFriend: Friend = {
-      id: Math.random().toString(36).substring(2, 9),
+      id: Crypto.randomUUID(),
       name: friendName,
       cookieCode: friendCookieCode,
       avatarEmoji: randomEmoji
@@ -840,41 +896,48 @@ export const StorageService = {
     }
   },
 
+  /**
+   * Throws on a network/query failure instead of swallowing it to 'pending' — a failed lookup
+   * is not evidence the pairing was ever revoked, and returning 'pending' for it demotes an
+   * already-paired friend (locking their chat input) on every transient network hiccup. Callers
+   * should catch this and keep showing the friend's last known status rather than treat a throw
+   * as 'pending'.
+   */
   async checkFriendPairingStatus(kidCookieCode: string, friendCookieCode: string): Promise<'paired' | 'pending'> {
-    try {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('*')
-        .like('cookie_code', 'PARENT:%')
-        .like('push_token', `%"cookieCode":"${friendCookieCode}"%`);
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('*')
+      .like('cookie_code', 'PARENT:%')
+      .like('push_token', `%"cookieCode":"${friendCookieCode}"%`);
 
-      if (error || !data || data.length === 0) {
-        return 'pending';
-      }
+    if (error) {
+      throw error;
+    }
 
-      // Find the parent profile that actually OWNS the friend (not just a parent who has added the friend as a buddy)
-      let friendProfileInDb = null;
-      for (const parentProfile of data) {
-        try {
-          const payload = JSON.parse(parentProfile.push_token);
-          if (payload && payload.kids) {
-            const found = payload.kids.find((k: any) => k.cookieCode === friendCookieCode);
-            if (found) {
-              friendProfileInDb = found;
-              break;
-            }
+    if (!data || data.length === 0) {
+      return 'pending';
+    }
+
+    // Find the parent profile that actually OWNS the friend (not just a parent who has added the friend as a buddy)
+    let friendProfileInDb = null;
+    for (const parentProfile of data) {
+      try {
+        const payload = JSON.parse(parentProfile.push_token);
+        if (payload && payload.kids) {
+          const found = payload.kids.find((k: any) => k.cookieCode === friendCookieCode);
+          if (found) {
+            friendProfileInDb = found;
+            break;
           }
-        } catch {}
-      }
-
-      if (friendProfileInDb && friendProfileInDb.friends) {
-        const isPaired = friendProfileInDb.friends.some((f: any) => f.cookieCode === kidCookieCode);
-        if (isPaired) {
-          return 'paired';
         }
+      } catch {}
+    }
+
+    if (friendProfileInDb && friendProfileInDb.friends) {
+      const isPaired = friendProfileInDb.friends.some((f: any) => f.cookieCode === kidCookieCode);
+      if (isPaired) {
+        return 'paired';
       }
-    } catch (e) {
-      console.error("Error checking pairing status:", e);
     }
     return 'pending';
   },
@@ -915,7 +978,7 @@ export const StorageService = {
       // 2. Add Kid A (the scanner) to Kid B's (the scannee) friends list in their parent's profile
       const kidAEmoji = DEFAULT_EMOJIS[Math.floor(Math.random() * DEFAULT_EMOJIS.length)];
       const newFriendForB = {
-        id: Math.random().toString(36).substring(2, 9),
+        id: Crypto.randomUUID(),
         name: kidName,
         cookieCode: kidCookieCode,
         avatarEmoji: kidAEmoji

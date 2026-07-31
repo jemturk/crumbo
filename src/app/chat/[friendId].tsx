@@ -217,8 +217,15 @@ export default function ChatScreen() {
         setMessages(msgs);
 
         if (kidProf) {
-          const status = await StorageService.checkFriendPairingStatus(kidProf.cookieCode, currentFriend.cookieCode);
-          setPairingStatus(status);
+          try {
+            const status = await StorageService.checkFriendPairingStatus(kidProf.cookieCode, currentFriend.cookieCode);
+            setPairingStatus(status);
+          } catch (e) {
+            // A failed check is not evidence the pairing was revoked — keep showing whatever
+            // pairingStatus was last known to be instead of demoting to 'pending' and locking
+            // the chat input over a transient network error.
+            console.error('Error checking pairing status', e);
+          }
         }
       }
     } catch (e) {

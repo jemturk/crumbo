@@ -7,7 +7,7 @@ import { registerForPushNotificationsAsync } from '@/services/notifications';
 import { Friend, KidProfile, Message, StorageService } from '@/services/storage';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { FlatList, Platform, SafeAreaView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -24,6 +24,15 @@ export default function ChatDashboard() {
   const [lastMessages, setLastMessages] = useState<Record<string, Message | null>>({});
   const [pairingStatuses, setPairingStatuses] = useState<Record<string, 'paired' | 'pending'>>({});
   const [settingsVisible, setSettingsVisible] = useState(false);
+
+  // loadDashboardData is called from a useFocusEffect(useCallback(..., [])) below, which
+  // freezes its closure at mount — reading `pairingStatuses` state directly there would always
+  // see the initial {}, never a later update. Mirror it into a ref so the "preserve last known
+  // status on a failed re-check" logic below actually sees the latest values.
+  const pairingStatusesRef = useRef<Record<string, 'paired' | 'pending'>>({});
+  useEffect(() => {
+    pairingStatusesRef.current = pairingStatuses;
+  }, [pairingStatuses]);
 
   // Custom Alert State
   const [alertConfig, setAlertConfig] = useState<{
@@ -88,18 +97,35 @@ export default function ChatDashboard() {
       const friendsList = await StorageService.getFriends();
       setFriends(friendsList);
 
-      // 3. Load last messages for previews
-      const previews: Record<string, Message | null> = {};
-      const statuses: Record<string, 'paired' | 'pending'> = {};
-      for (const friend of friendsList) {
-        const msgs = await StorageService.getMessages(friend.id);
-        previews[friend.id] = msgs.length > 0 ? msgs[msgs.length - 1] : null;
+      // 3. Load last messages + pairing status per friend. Both do a Supabase round-trip
+      // (getMessages syncs from the server; checkFriendPairingStatus queries it directly) — run
+      // them for all friends concurrently rather than one friend at a time.
+      const kp = syncedProf || kidProf;
+      const perFriend = await Promise.all(
+        friendsList.map(async (friend) => {
+          const msgs = await StorageService.getMessages(friend.id);
+          const lastMsg = msgs.length > 0 ? msgs[msgs.length - 1] : null;
 
-        if (syncedProf || kidProf) {
-          const kp = syncedProf || kidProf;
-          const status = await StorageService.checkFriendPairingStatus(kp.cookieCode, friend.cookieCode);
-          statuses[friend.id] = status;
-        }
+          let status: 'paired' | 'pending' | undefined;
+          if (kp) {
+            try {
+              status = await StorageService.checkFriendPairingStatus(kp.cookieCode, friend.cookieCode);
+            } catch (e) {
+              console.error('Error checking pairing status for', friend.id, e);
+            }
+          }
+          return { friendId: friend.id, lastMsg, status };
+        })
+      );
+
+      const previews: Record<string, Message | null> = {};
+      // Seeded from the last known statuses (not a fresh {}) so a friend whose check failed above
+      // keeps showing their last known status instead of being demoted to "pending" — a network
+      // hiccup on this poll shouldn't lock the chat of an already-paired friend.
+      const statuses: Record<string, 'paired' | 'pending'> = { ...pairingStatusesRef.current };
+      for (const { friendId, lastMsg, status } of perFriend) {
+        previews[friendId] = lastMsg;
+        if (status) statuses[friendId] = status;
       }
       setLastMessages(previews);
       setPairingStatuses(statuses);

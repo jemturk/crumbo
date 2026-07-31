@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -10,7 +10,6 @@ import {
   Platform,
   Modal,
   ActivityIndicator,
-  Image,
   KeyboardAvoidingView
 } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
@@ -20,6 +19,7 @@ import { StorageService, KidProfile } from '@/services/storage';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import CustomAlertModal, { AlertButton } from '@/components/CustomAlertModal';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import QRCode from 'react-native-qrcode-svg';
 import { useDisplayScale } from '@/hooks/use-display-scale';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { useSettings } from '@/context/settings-context';
@@ -74,6 +74,12 @@ export default function ParentDashboard() {
   const [permission, requestPermission] = useCameraPermissions();
   const [qrScannerVisible, setQrScannerVisible] = useState(false);
   const [qrCodeVisible, setQrCodeVisible] = useState(false);
+  // onBarcodeScanned fires once per detected frame, and `if (!qrScannerVisible) return` inside
+  // that closure reads a stale value captured at render time — several frames' worth of scans
+  // can pass the guard before the setQrScannerVisible(false) re-render actually lands, firing
+  // pairKidsViaQRCode (and its alert) multiple times for one scan. A ref is read synchronously
+  // on every call, so latching on it (instead of the stale state) actually stops duplicates.
+  const qrScanHandledRef = useRef(false);
 
   const handleStartQRScan = async () => {
     if (!permission?.granted) {
@@ -83,6 +89,7 @@ export default function ParentDashboard() {
         return;
       }
     }
+    qrScanHandledRef.current = false;
     setQrScannerVisible(true);
   };
 
@@ -980,10 +987,17 @@ export default function ParentDashboard() {
             <Text style={styles.qrCodeSubtitle}>Let another parent scan this to pair immediately!</Text>
             
             {selectedKidForLogs && (
-              <Image 
-                source={{ uri: `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(JSON.stringify({ crumType: 'buddy_qr', cookieCode: selectedKidForLogs.cookieCode, name: selectedKidForLogs.name }))}` }}
-                style={styles.qrCodeImage}
-              />
+              // Rendered locally (react-native-qrcode-svg) rather than fetched from a third-party
+              // QR image service — that previously sent the kid's name and cookie code out over
+              // the network to api.qrserver.com, contradicting the app's "no child data is ever
+              // collected" promise, and needed network access just to show a pairing code.
+              <View style={styles.qrCodeImage}>
+                <QRCode
+                  value={JSON.stringify({ crumType: 'buddy_qr', cookieCode: selectedKidForLogs.cookieCode, name: selectedKidForLogs.name })}
+                  size={200}
+                  backgroundColor="transparent"
+                />
+              </View>
             )}
 
             <Text style={styles.qrCodeText}>{selectedKidForLogs?.cookieCode}</Text>
@@ -1015,7 +1029,8 @@ export default function ParentDashboard() {
             <CameraView
               style={StyleSheet.absoluteFill}
               onBarcodeScanned={async ({ data }) => {
-                if (!qrScannerVisible) return;
+                if (qrScanHandledRef.current) return;
+                qrScanHandledRef.current = true;
                 setQrScannerVisible(false);
                 
                 try {
