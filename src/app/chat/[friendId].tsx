@@ -240,8 +240,14 @@ export default function ChatScreen() {
 
         if (kidProf) {
           try {
-            const status = await StorageService.checkFriendPairingStatus(kidProf.cookieCode, currentFriend.cookieCode);
-            setPairingStatus(status);
+            const result = await StorageService.checkFriendPairingStatus(kidProf.cookieCode, currentFriend.cookieCode);
+            setPairingStatus(result.status);
+            // Live avatar — comes along for free on the pairing check above (no extra
+            // round-trip). Reflect it immediately and persist it so it's there instantly next load.
+            if (result.avatarEmoji && result.avatarEmoji !== currentFriend.avatarEmoji) {
+              setFriend({ ...currentFriend, avatarEmoji: result.avatarEmoji });
+              StorageService.updateFriendAvatar(currentFriend.id, result.avatarEmoji);
+            }
           } catch (e) {
             // A failed check is not evidence the pairing was revoked — keep showing whatever
             // pairingStatus was last known to be instead of demoting to 'pending' and locking
@@ -275,8 +281,12 @@ export default function ChatScreen() {
       const currentFriend = friendRef.current;
       if (kidProf && currentFriend) {
         try {
-          const status = await StorageService.checkFriendPairingStatus(kidProf.cookieCode, currentFriend.cookieCode);
-          setPairingStatus(status);
+          const result = await StorageService.checkFriendPairingStatus(kidProf.cookieCode, currentFriend.cookieCode);
+          setPairingStatus(result.status);
+          if (result.avatarEmoji && result.avatarEmoji !== currentFriend.avatarEmoji) {
+            setFriend({ ...currentFriend, avatarEmoji: result.avatarEmoji });
+            StorageService.updateFriendAvatar(currentFriend.id, result.avatarEmoji);
+          }
         } catch (e) {
           console.error('Error checking pairing status', e);
         }

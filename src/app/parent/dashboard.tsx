@@ -132,8 +132,16 @@ export default function ParentDashboard() {
     if (!kid || !kid.friends) return;
     const statuses: Record<string, 'paired' | 'pending'> = {};
     for (const friend of kid.friends) {
-      const status = await StorageService.checkFriendPairingStatus(kid.cookieCode, friend.cookieCode);
-      statuses[friend.cookieCode] = status;
+      try {
+        // checkFriendPairingStatus also returns the friend's current avatarEmoji, but this is a
+        // multi-kid parent device (no single "active" KID_PROFILE the way updateFriendAvatar
+        // assumes) — not worth a bespoke cache-write path just for this management view; it'll
+        // still pick up the latest avatar next time this kid's profile syncs.
+        const result = await StorageService.checkFriendPairingStatus(kid.cookieCode, friend.cookieCode);
+        statuses[friend.cookieCode] = result.status;
+      } catch (e) {
+        console.error('Error checking pairing status for', friend.cookieCode, e);
+      }
     }
     setPairingStatuses(statuses);
   };

@@ -31,6 +31,7 @@ export interface Friend {
 export interface KidProfile {
   name: string;
   cookieCode: string;
+  avatarEmoji?: string;
   chatDisabled?: boolean;
   callingDisabled?: boolean;
   videoCallingDisabled?: boolean;
@@ -49,8 +50,12 @@ const KEYS = {
   KIDS_LIST: 'crumbo_parent_kids_list',
 };
 
-// Default setup
-const DEFAULT_EMOJIS = ['🍪', '🧁', '🍩', '🍫', '🍧', '🍰', '🍭', '🍓', '🍒', '🦕', '🐱', '🐼', '🐨', '🦊', '🦁'];
+// Default setup — also the pool the avatar picker UI offers (see AvatarPickerModal).
+export const DEFAULT_EMOJIS = ['🍪', '🧁', '🍩', '🍫', '🍧', '🍰', '🍭', '🍓', '🍒', '🦕', '🐱', '🐼', '🐨', '🦊', '🦁'];
+
+function randomAvatarEmoji(): string {
+  return DEFAULT_EMOJIS[Math.floor(Math.random() * DEFAULT_EMOJIS.length)];
+}
 
 // `profiles.name` isn't used for parent rows (kid rows store the kid's real name there) — this
 // fixed marker just distinguishes a parent account row at a glance. Kept as a constant so
@@ -258,9 +263,10 @@ export const StorageService = {
 
     const initialFriends: Friend[] = [];
 
-    const profile: KidProfile = { 
-      name, 
+    const profile: KidProfile = {
+      name,
       cookieCode,
+      avatarEmoji: randomAvatarEmoji(),
       chatDisabled: false,
       callingDisabled: false,
       videoCallingDisabled: false,
@@ -302,7 +308,7 @@ export const StorageService = {
     const existing = friends.find(f => f.cookieCode === cookieCode);
     if (existing) return existing;
 
-    const randomEmoji = DEFAULT_EMOJIS[Math.floor(Math.random() * DEFAULT_EMOJIS.length)];
+    const randomEmoji = randomAvatarEmoji();
     const newFriend: Friend = {
       id: Crypto.randomUUID(),
       name,
@@ -915,6 +921,7 @@ export const StorageService = {
         const kidProfile: KidProfile = {
           name: targetKid.name,
           cookieCode: targetKid.cookieCode,
+          avatarEmoji: targetKid.avatarEmoji,
           chatDisabled: !!targetKid.chatDisabled,
           callingDisabled: !!targetKid.callingDisabled,
           videoCallingDisabled: !!targetKid.videoCallingDisabled
@@ -987,6 +994,7 @@ export const StorageService = {
           const updatedProfile: KidProfile = {
             name: targetKid.name,
             cookieCode: targetKid.cookieCode,
+            avatarEmoji: targetKid.avatarEmoji,
             chatDisabled: !!targetKid.chatDisabled,
             callingDisabled: !!targetKid.callingDisabled,
             videoCallingDisabled: !!targetKid.videoCallingDisabled
@@ -1015,8 +1023,60 @@ export const StorageService = {
     return null;
   },
 
+  /**
+   * Lets a kid change their own avatar. Updates this device's cache immediately, then pushes
+   * the change to the owning parent's row. A kid's device doesn't necessarily have the parent's
+   * email/password cached locally (syncParentData() would just no-op without an email) — so,
+   * like pairKidsViaQRCode's cross-family write, this looks up the owning PARENT: row directly
+   * and upserts the modified payload back, rather than requiring local parent credentials.
+   */
+  async setKidAvatar(avatarEmoji: string): Promise<boolean> {
+    const active = await this.getKidProfile();
+    if (!active) return false;
+
+    const updated: KidProfile = { ...active, avatarEmoji };
+    await AsyncStorage.setItem(KEYS.KID_PROFILE, JSON.stringify(updated));
+    const kids = await this.getKidsList();
+    if (kids.some(k => k.cookieCode === active.cookieCode)) {
+      await this.saveKidsList(kids.map(k => (k.cookieCode === active.cookieCode ? { ...k, avatarEmoji } : k)));
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .like('cookie_code', 'PARENT:%')
+        .like('push_token', `%"cookieCode":"${active.cookieCode}"%`);
+
+      if (error || !data) return false;
+
+      for (const parentRow of data) {
+        try {
+          const payload = JSON.parse(parentRow.push_token);
+          if (!payload?.kids) continue;
+          const kidIndex = payload.kids.findIndex((k: any) => k.cookieCode === active.cookieCode);
+          if (kidIndex === -1) continue;
+
+          payload.kids[kidIndex] = { ...payload.kids[kidIndex], avatarEmoji };
+          const { error: upsertError } = await supabase
+            .from('profiles')
+            .upsert({
+              cookie_code: parentRow.cookie_code,
+              push_token: JSON.stringify(payload),
+              name: parentRow.name
+            });
+          return !upsertError;
+        } catch {}
+      }
+      return false;
+    } catch (e) {
+      console.error("Error syncing avatar to server:", e);
+      return false;
+    }
+  },
+
   async addFriendToKidProfile(kidCookieCode: string, friendName: string, friendCookieCode: string): Promise<Friend> {
-    const randomEmoji = DEFAULT_EMOJIS[Math.floor(Math.random() * DEFAULT_EMOJIS.length)];
+    const randomEmoji = randomAvatarEmoji();
     const newFriend: Friend = {
       id: Crypto.randomUUID(),
       name: friendName,
@@ -1075,8 +1135,17 @@ export const StorageService = {
    * already-paired friend (locking their chat input) on every transient network hiccup. Callers
    * should catch this and keep showing the friend's last known status rather than treat a throw
    * as 'pending'.
+   *
+   * Also returns the friend's current avatarEmoji straight from their own profile — this same
+   * per-friend lookup already runs on every chat-list load, so piggybacking the live avatar onto
+   * it (rather than a separate query) is how a kid's avatar change shows up for friends without
+   * any extra network round-trips. Callers should merge a defined avatarEmoji into their cached
+   * Friend record (see updateFriendAvatar) when present.
    */
-  async checkFriendPairingStatus(kidCookieCode: string, friendCookieCode: string): Promise<'paired' | 'pending'> {
+  async checkFriendPairingStatus(
+    kidCookieCode: string,
+    friendCookieCode: string
+  ): Promise<{ status: 'paired' | 'pending'; avatarEmoji?: string }> {
     const { data, error } = await supabase
       .from('profiles')
       .select('*')
@@ -1088,7 +1157,7 @@ export const StorageService = {
     }
 
     if (!data || data.length === 0) {
-      return 'pending';
+      return { status: 'pending' };
     }
 
     // Find the parent profile that actually OWNS the friend (not just a parent who has added the friend as a buddy)
@@ -1106,13 +1175,32 @@ export const StorageService = {
       } catch {}
     }
 
+    const avatarEmoji: string | undefined = friendProfileInDb?.avatarEmoji;
+
     if (friendProfileInDb && friendProfileInDb.friends) {
       const isPaired = friendProfileInDb.friends.some((f: any) => f.cookieCode === kidCookieCode);
       if (isPaired) {
-        return 'paired';
+        return { status: 'paired', avatarEmoji };
       }
     }
-    return 'pending';
+    return { status: 'pending', avatarEmoji };
+  },
+
+  /** Updates one friend's cached avatarEmoji in both FRIENDS and the active kid's KIDS_LIST entry. */
+  async updateFriendAvatar(friendId: string, avatarEmoji: string): Promise<void> {
+    const friends = await this.getFriends();
+    const friend = friends.find(f => f.id === friendId);
+    if (!friend || friend.avatarEmoji === avatarEmoji) return;
+
+    const updatedFriends = friends.map(f => (f.id === friendId ? { ...f, avatarEmoji } : f));
+    await AsyncStorage.setItem(KEYS.FRIENDS, JSON.stringify(updatedFriends));
+
+    const active = await this.getKidProfile();
+    if (active) {
+      const kids = await this.getKidsList();
+      const updatedKids = kids.map(k => (k.cookieCode === active.cookieCode ? { ...k, friends: updatedFriends } : k));
+      await this.saveKidsList(updatedKids);
+    }
   },
 
   async pairKidsViaQRCode(kidCookieCode: string, kidName: string, friendCookieCode: string, friendName: string): Promise<boolean> {
@@ -1149,7 +1237,7 @@ export const StorageService = {
       }
 
       // 2. Add Kid A (the scanner) to Kid B's (the scannee) friends list in their parent's profile
-      const kidAEmoji = DEFAULT_EMOJIS[Math.floor(Math.random() * DEFAULT_EMOJIS.length)];
+      const kidAEmoji = randomAvatarEmoji();
       const newFriendForB = {
         id: Crypto.randomUUID(),
         name: kidName,

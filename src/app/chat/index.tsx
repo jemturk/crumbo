@@ -1,4 +1,5 @@
 import AppSettingsModal from '@/components/AppSettingsModal';
+import AvatarPickerModal from '@/components/AvatarPickerModal';
 import CustomAlertModal, { AlertButton } from '@/components/CustomAlertModal';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { useDisplayScale } from '@/hooks/use-display-scale';
@@ -24,6 +25,7 @@ export default function ChatDashboard() {
   const [lastMessages, setLastMessages] = useState<Record<string, Message | null>>({});
   const [pairingStatuses, setPairingStatuses] = useState<Record<string, 'paired' | 'pending'>>({});
   const [settingsVisible, setSettingsVisible] = useState(false);
+  const [avatarPickerVisible, setAvatarPickerVisible] = useState(false);
 
   // loadDashboardData is called from a useFocusEffect(useCallback(..., [])) below, which
   // freezes its closure at mount — reading `pairingStatuses` state directly there would always
@@ -117,14 +119,17 @@ export default function ChatDashboard() {
           const lastMsg = msgs.length > 0 ? msgs[msgs.length - 1] : null;
 
           let status: 'paired' | 'pending' | undefined;
+          let avatarEmoji: string | undefined;
           if (kp) {
             try {
-              status = await StorageService.checkFriendPairingStatus(kp.cookieCode, friend.cookieCode);
+              const result = await StorageService.checkFriendPairingStatus(kp.cookieCode, friend.cookieCode);
+              status = result.status;
+              avatarEmoji = result.avatarEmoji;
             } catch (e) {
               console.error('Error checking pairing status for', friend.id, e);
             }
           }
-          return { friendId: friend.id, lastMsg, status };
+          return { friendId: friend.id, lastMsg, status, avatarEmoji };
         })
       );
 
@@ -133,16 +138,42 @@ export default function ChatDashboard() {
       // keeps showing their last known status instead of being demoted to "pending" — a network
       // hiccup on this poll shouldn't lock the chat of an already-paired friend.
       const statuses: Record<string, 'paired' | 'pending'> = { ...pairingStatusesRef.current };
-      for (const { friendId, lastMsg, status } of perFriend) {
+      const avatarUpdates: { friendId: string; avatarEmoji: string }[] = [];
+      for (const { friendId, lastMsg, status, avatarEmoji } of perFriend) {
         previews[friendId] = lastMsg;
         if (status) statuses[friendId] = status;
+        if (avatarEmoji) avatarUpdates.push({ friendId, avatarEmoji });
       }
       setLastMessages(previews);
       setPairingStatuses(statuses);
 
+      // Live avatars: a friend's current emoji comes along for free on the pairing check above
+      // (no extra round-trip) — reflect it immediately and persist it to the cache so it's there
+      // instantly on the next load too.
+      if (avatarUpdates.length > 0) {
+        setFriends(prev =>
+          prev.map(f => {
+            const update = avatarUpdates.find(u => u.friendId === f.id);
+            return update && update.avatarEmoji !== f.avatarEmoji ? { ...f, avatarEmoji: update.avatarEmoji } : f;
+          })
+        );
+        await Promise.all(avatarUpdates.map(u => StorageService.updateFriendAvatar(u.friendId, u.avatarEmoji)));
+      }
+
     } catch (e) {
       console.error("Error loading chat dashboard", e);
     }
+  };
+
+  const handleAvatarSelect = (emoji: string) => {
+    setAvatarPickerVisible(false);
+    // Optimistic: update immediately rather than waiting on the network round-trip.
+    setProfile(prev => (prev ? { ...prev, avatarEmoji: emoji } : prev));
+    StorageService.setKidAvatar(emoji).then((success) => {
+      if (!success) {
+        showAlert("Connection Error", "Could not save your new avatar. Please check your network and try again.");
+      }
+    });
   };
 
   const handleLogout = () => {
@@ -226,7 +257,9 @@ export default function ChatDashboard() {
       {/* Custom Header */}
       <View style={[styles.header, { backgroundColor: colors.cardBg, borderColor: colors.border, paddingTop: Platform.OS === 'android' ? (insets.top > 0 ? insets.top + s(8) : s(44)) : s(14), paddingHorizontal: s(20), paddingVertical: s(14), borderBottomWidth: 2 }]}>
         <View style={styles.headerLeft}>
-          <Text style={[styles.headerAvatar, { fontSize: s(32) }]}>🍪</Text>
+          <TouchableOpacity onPress={() => setAvatarPickerVisible(true)}>
+            <Text style={[styles.headerAvatar, { fontSize: s(32) }]}>{profile?.avatarEmoji || '🍪'}</Text>
+          </TouchableOpacity>
           <View>
             <Text style={[styles.headerSub, { fontSize: s(12), color: colors.textSecondary }]}>{profile?.name}'s</Text>
             <Text style={[styles.headerTitle, { fontSize: s(20), color: colors.text }]}>Cookie Jar</Text>
@@ -279,6 +312,12 @@ export default function ChatDashboard() {
         onClose={() => setSettingsVisible(false)}
         showParentControlsOption={true}
         onParentControlsPress={() => router.push('/parent/gate')}
+      />
+      <AvatarPickerModal
+        visible={avatarPickerVisible}
+        currentEmoji={profile?.avatarEmoji}
+        onClose={() => setAvatarPickerVisible(false)}
+        onSelect={handleAvatarSelect}
       />
     </SafeAreaView>
   );
