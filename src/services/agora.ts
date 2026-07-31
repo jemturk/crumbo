@@ -19,6 +19,18 @@ export function hashCode(str: string): number {
   return Math.abs(hash) || 1;
 }
 
+/**
+ * Resolves the Agora UID for one side of a 1:1 call. hashCode() alone can theoretically
+ * collide between the two participants, which makes Agora treat the second joiner as a
+ * reconnect of the first and kick them. Both sides compute this independently but agree on
+ * the same tie-break (ordering by cookie code), so a collision still yields distinct UIDs.
+ */
+export function resolveCallUid(selfCode: string, otherCode: string): number {
+  const selfHash = hashCode(selfCode);
+  if (selfHash !== hashCode(otherCode)) return selfHash;
+  return selfCode < otherCode ? selfHash : selfHash + 1;
+}
+
 class AgoraManager {
   private engine: IRtcEngine | null = null;
   private isInitialized = false;

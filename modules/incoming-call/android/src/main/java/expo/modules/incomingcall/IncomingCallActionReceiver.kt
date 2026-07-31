@@ -9,6 +9,9 @@ import io.wazo.callkeep.VoiceConnectionService
 
 const val ACTION_ANSWER_CALL = "expo.modules.incomingcall.ACTION_ANSWER_CALL"
 const val ACTION_DECLINE_CALL = "expo.modules.incomingcall.ACTION_DECLINE_CALL"
+// Fired by the AlarmManager backstop scheduled in IncomingCallModule.scheduleRingTimeout —
+// see that function's doc for why this exists (killed-app / dropped-CANCEL-push ring-forever).
+const val ACTION_RING_TIMEOUT = "expo.modules.incomingcall.ACTION_RING_TIMEOUT"
 const val EXTRA_CALL_UUID = "callUUID"
 const val EXTRA_FRIEND_ID = "friendId"
 const val EXTRA_ROOM_NAME = "roomName"
@@ -38,6 +41,11 @@ private const val HOST = "chat" // expo-router route: app/chat/[friendId].tsx
  * Still launches the app afterward, same as before, so the user sees the live/ended call screen
  * and so the existing deep-link based accept/decline handling in use-call.ts keeps working as a
  * fallback if this event somehow doesn't reach JS in time (e.g. a very cold start).
+ *
+ * Also handles ACTION_RING_TIMEOUT, fired by the AlarmManager backstop IncomingCallModule
+ * schedules alongside every notification — unlike Answer/Decline this isn't a user action, so
+ * it only silences the ring/Telecom state and notifies JS if alive; it deliberately does not
+ * force-launch the app (see the branch below).
  */
 class IncomingCallActionReceiver : BroadcastReceiver() {
   override fun onReceive(context: Context, intent: Intent) {
@@ -47,8 +55,12 @@ class IncomingCallActionReceiver : BroadcastReceiver() {
     val isVideo = intent.getBooleanExtra(EXTRA_IS_VIDEO, false)
     val callerName = intent.getStringExtra(EXTRA_CALLER_NAME) ?: ""
     val accept = intent.action == ACTION_ANSWER_CALL
+    val isRingTimeout = intent.action == ACTION_RING_TIMEOUT
 
     NotificationManagerCompat.from(context).cancel(callUUID.hashCode())
+    // Whichever of answer/decline/timeout fires first wins — defuse the other two so they
+    // can't also fire later (the notification tap/buttons and the alarm race independently).
+    IncomingCallModule.cancelRingTimeout(context, callUUID)
 
     try {
       val connection = VoiceConnectionService.getConnection(callUUID)
@@ -56,6 +68,17 @@ class IncomingCallActionReceiver : BroadcastReceiver() {
     } catch (e: Throwable) {
       // Best-effort: react-native-callkeep may not have this connection for some reason (e.g.
       // it already ended). The app-level accept/decline launched below still runs regardless.
+    }
+
+    if (isRingTimeout) {
+      // Nobody answered or declined in time. Unlike Answer/Decline this wasn't a user action,
+      // so don't force the app to the foreground over whatever the user is currently doing —
+      // just silence the ring (done above) and best-effort tell JS if it's still alive, so an
+      // already-open chat screen can log the miss and let the caller know. If the process is
+      // fully dead, the caller's own symmetric ring-timeout (use-call.ts) still resolves their
+      // side; the notification no longer rings forever either way, which is the actual bug.
+      IncomingCallModule.notifyMissed(callUUID, friendId, roomName, isVideo, callerName)
+      return
     }
 
     if (accept) {

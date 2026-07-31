@@ -46,7 +46,13 @@
           "imageWidth": 150
         }
       ],
-      "expo-notifications",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/notification-icon.png",
+          "color": "#FFC93C"
+        }
+      ],
       [
         "expo-camera",
         {

@@ -7,11 +7,13 @@ import CustomAlertModal, { AlertButton } from '@/components/CustomAlertModal';
 import AppSettingsModal from '@/components/AppSettingsModal';
 import { useDisplayScale } from '@/hooks/use-display-scale';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export default function WelcomeScreen() {
   const router = useRouter();
   const { s } = useDisplayScale();
   const { theme, colors, isDark } = useAppTheme();
+  const insets = useSafeAreaInsets();
   const [loading, setLoading] = useState(true);
   const [subscribed, setSubscribed] = useState(false);
   const [profile, setProfile] = useState<KidProfile | null>(null);
@@ -121,7 +123,7 @@ export default function WelcomeScreen() {
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
       {/* Top right settings button */}
-      <View style={{ position: 'absolute', top: Platform.OS === 'ios' ? s(4) : s(16), right: s(16), zIndex: 10 }}>
+      <View style={{ position: 'absolute', top: insets.top + s(4), right: s(16), zIndex: 10 }}>
         <TouchableOpacity 
           style={{ padding: s(8) }}
           onPress={() => setSettingsVisible(true)}

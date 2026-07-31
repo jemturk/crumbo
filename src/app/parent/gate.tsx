@@ -146,7 +146,9 @@ export default function ParentGate() {
     setError(false);
 
     try {
-      // Check if email already exists in Supabase
+      // Fast-path UX only — two devices can both pass this check before either has written.
+      // createParentAccount's INSERT below (backed by a unique constraint on cookie_code) is
+      // the actual guard against a concurrent registration for the same email.
       const { data, error: checkError } = await supabase
         .from('profiles')
         .select('cookie_code')
@@ -167,13 +169,24 @@ export default function ParentGate() {
         return;
       }
 
-      // Save credentials locally
+      // Save credentials locally — needed so buildParentPushTokenPayload (read by
+      // createParentAccount) has a password to serialize into the account row.
       await StorageService.saveParentEmail(email);
       await StorageService.saveParentPassword(pwd);
-      await StorageService.setSubscribed(true); // Default active status on register
 
-      // Sync settings to Supabase
-      await StorageService.syncParentData();
+      const result = await StorageService.createParentAccount(email);
+      if (result === 'exists') {
+        // Lost the race: another device won concurrently. Undo the local save above — leaving
+        // it would cache someone else's email as if it were this device's own account.
+        await StorageService.clearParentCredentials();
+        setLoading(false);
+        showAlert("Account Exists", "An account with this email already exists. Please sign in.", [
+          { text: "OK", onPress: () => setMode('signin') }
+        ]);
+        return;
+      }
+
+      await StorageService.setSubscribed(true); // Default active status on register
 
       setLoading(false);
       showAlert("Registration Complete! 🔒", "Your parent account and subscription are now active.", [

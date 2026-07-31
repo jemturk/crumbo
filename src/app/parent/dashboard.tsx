@@ -1,19 +1,19 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  View, 
-  Text, 
-  StyleSheet, 
-  TextInput, 
-  TouchableOpacity, 
-  SafeAreaView, 
-  ScrollView, 
-  Platform, 
-  Modal, 
-  Clipboard,
+import {
+  View,
+  Text,
+  StyleSheet,
+  TextInput,
+  TouchableOpacity,
+  SafeAreaView,
+  ScrollView,
+  Platform,
+  Modal,
   ActivityIndicator,
   Image,
   KeyboardAvoidingView
 } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { StorageService, KidProfile } from '@/services/storage';
@@ -434,9 +434,9 @@ export default function ParentDashboard() {
     await loadSettings();
   };
 
-  const copyToClipboard = (code: string) => {
+  const copyToClipboard = async (code: string) => {
     try {
-      Clipboard.setString(code);
+      await Clipboard.setStringAsync(code);
     } catch (e) {
       showAlert("Pairing Code", code);
     }

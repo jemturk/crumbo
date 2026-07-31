@@ -25,6 +25,25 @@ import {
 import { RtcSurfaceView } from 'react-native-agora';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+// Per-type color so a missed voice call, a missed video call, a finished voice call and a
+// finished video call are each visually distinct at a glance instead of collapsing to a single
+// "red = missed, gray = ended" state. Missed voice stays red (alert); missed video is purple —
+// far enough around the wheel from red to actually read as different, rather than rose/red
+// which are too close together at this chip's size. Ended calls use the calmer teal/blue
+// family — voice vs. video each get their own hue within that family.
+const CALL_LOG_COLORS: Record<string, { fg: string; fgDark: string; bg: string; bgDark: string; border: string; borderDark: string }> = {
+  MISSED_AUDIO: { fg: '#D32F2F', fgDark: '#FF8A80', bg: '#FFEBEE', bgDark: '#4C1E20', border: '#FFCDD2', borderDark: '#5C2E30' },
+  MISSED_VIDEO: { fg: '#7B1FA2', fgDark: '#CE93D8', bg: '#F3E5F5', bgDark: '#3B1F47', border: '#E1BEE7', borderDark: '#4A2B58' },
+  ENDED_AUDIO: { fg: '#00796B', fgDark: '#4DB6AC', bg: '#E0F2F1', bgDark: '#123330', border: '#B2DFDB', borderDark: '#1F4A45' },
+  ENDED_VIDEO: { fg: '#1976D2', fgDark: '#64B5F6', bg: '#E3F2FD', bgDark: '#12293D', border: '#BBDEFB', borderDark: '#1E3A5A' },
+};
+
+const formatCallDuration = (totalSeconds: number) => {
+  const mins = Math.floor(totalSeconds / 60);
+  const secs = totalSeconds % 60;
+  return `${mins}:${secs.toString().padStart(2, '0')}`;
+};
+
 export default function ChatScreen() {
   const router = useRouter();
   const { s } = useDisplayScale();
@@ -234,9 +253,10 @@ export default function ChatScreen() {
     const isCallLog = item.text.startsWith('[CALL_LOG:');
 
     if (isCallLog) {
-      // Direction suffix (INCOMING/OUTGOING) is who initiated the call — added after this log
-      // format shipped, so older stored entries won't have one; those fall back to centered.
-      const [logType, direction] = item.text.replace('[CALL_LOG:', '').replace(']', '').split(':');
+      // Direction suffix (INCOMING/OUTGOING) is who initiated the call, and a completed
+      // (non-missed) call also carries a trailing duration-in-seconds field — both added after
+      // this log format first shipped, so older stored entries may be missing either or both.
+      const [logType, direction, durationStr] = item.text.replace('[CALL_LOG:', '').replace(']', '').split(':');
       let logTitle = '';
       let logIcon: keyof typeof Ionicons.glyphMap = 'call';
       let isMissed = false;
@@ -263,6 +283,14 @@ export default function ChatScreen() {
           break;
       }
 
+      const durationSeconds = !isMissed && durationStr ? parseInt(durationStr, 10) : NaN;
+      if (!isNaN(durationSeconds)) {
+        logTitle = `${logTitle} · ${formatCallDuration(durationSeconds)}`;
+      }
+
+      const logColors = CALL_LOG_COLORS[logType] || CALL_LOG_COLORS.ENDED_AUDIO;
+      const logColor = isDark ? logColors.fgDark : logColors.fg;
+
       // The direction suffix is relative to whoever WROTE the log row, and rows sync to both
       // devices through the shared messages table. On the writer's device sender is 'me'; on
       // the other kid's device the same row arrives with sender 'them' and the meaning flips
@@ -277,15 +305,21 @@ export default function ChatScreen() {
       return (
         <View style={[styles.callLogWrapper, callLogAlignStyle]}>
           <View style={[styles.callLogContainer, {
-            backgroundColor: isMissed
-              ? (isDark ? '#4C1E20' : '#FFEBEE')
-              : (isDark ? '#2C1E15' : '#F5F5F5'),
-            borderColor: isMissed
-              ? (isDark ? '#5C2E30' : '#FFCDD2')
-              : (isDark ? '#3D2A1D' : '#E0E0E0')
+            backgroundColor: isDark ? logColors.bgDark : logColors.bg,
+            borderColor: isDark ? logColors.borderDark : logColors.border
           }, { paddingHorizontal: s(12), paddingVertical: s(6), gap: s(6) }]}>
-            <Ionicons name={logIcon} size={s(16)} color={isMissed ? (isDark ? '#FF8A80' : '#D32F2F') : colors.textSecondary} style={styles.callLogIcon} />
-            <Text style={[styles.callLogText, { color: isMissed ? (isDark ? '#FF8A80' : '#D32F2F') : colors.text }, { fontSize: s(12) }]}>
+            {direction && (
+              // Diagonal arrow, like a phone app's call log: ↗ this device called out,
+              // ↙ this device was called (red when that incoming call went unanswered).
+              <Ionicons
+                name="arrow-up-outline"
+                size={s(12)}
+                color={logColor}
+                style={{ transform: [{ rotate: initiatedByMe ? '45deg' : '225deg' }] }}
+              />
+            )}
+            <Ionicons name={logIcon} size={s(16)} color={logColor} style={styles.callLogIcon} />
+            <Text style={[styles.callLogText, { color: logColor }, { fontSize: s(12) }]}>
               {logTitle}
             </Text>
             <Text style={[styles.callLogTime, { color: colors.textSecondary }, { fontSize: s(10) }]}>{formatTime(item.timestamp)}</Text>

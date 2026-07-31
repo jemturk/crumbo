@@ -1,5 +1,6 @@
 package expo.modules.incomingcall
 
+import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -26,6 +27,10 @@ private const val LEGACY_CHANNEL_ID = "calling" // Created by expo-notifications
 // which is what makes an incoming call sound like a call. Channels are immutable once created,
 // so this must be a NEW id — the legacy 'calling' channel is stuck with default notification sound.
 private const val RING_CHANNEL_ID = "incoming_calls_v1"
+
+// Local backstop matching use-call.ts's own RING_TIMEOUT_MS — see scheduleRingTimeout()'s doc.
+// Keep both in sync if either changes.
+private const val RING_TIMEOUT_MS = 45_000L
 
 private const val SCHEME = "crumbo" // app.json "scheme" — must stay in sync.
 private const val HOST = "chat" // expo-router route: app/chat/[friendId].tsx
@@ -85,6 +90,29 @@ class IncomingCallModule : Module() {
     fun notifyDeclined(callUUID: String, friendId: String, roomName: String, isVideo: Boolean, callerName: String) {
       activeInstance?.sendEvent("onDeclineFromNotification", callInfo(callUUID, friendId, roomName, isVideo, callerName))
     }
+
+    fun notifyMissed(callUUID: String, friendId: String, roomName: String, isVideo: Boolean, callerName: String) {
+      activeInstance?.sendEvent("onMissFromNotification", callInfo(callUUID, friendId, roomName, isVideo, callerName))
+    }
+
+    /**
+     * Cancels the AlarmManager backstop scheduled by scheduleRingTimeout() below, if still
+     * pending. Called from IncomingCallActionReceiver the instant Answer/Decline/timeout fires
+     * for a callUUID, and from Function("dismiss") when JS tears a call down normally — whichever
+     * of those happens first must defuse the alarm so it can't also fire later for a call that's
+     * already resolved. A PendingIntent's identity for cancellation purposes is just its action +
+     * component + requestCode (extras aren't compared), so only callUUID is needed here.
+     */
+    fun cancelRingTimeout(context: Context, callUUID: String) {
+      val intent = Intent(context, IncomingCallActionReceiver::class.java).apply {
+        action = ACTION_RING_TIMEOUT
+      }
+      val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_NO_CREATE
+      val pendingIntent = PendingIntent.getBroadcast(context, callUUID.hashCode() + 3, intent, flags) ?: return
+      val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager
+      alarmManager?.cancel(pendingIntent)
+      pendingIntent.cancel()
+    }
   }
 
   private val context: Context
@@ -96,7 +124,7 @@ class IncomingCallModule : Module() {
     // Fired by IncomingCallActionReceiver the instant Answer/Decline is tapped on the
     // notification — see its class doc for why this replaces relying on the deep-link query
     // params (acceptCallImmediately/declineCall) reaching JS via expo-router.
-    Events("onAnswerFromNotification", "onDeclineFromNotification")
+    Events("onAnswerFromNotification", "onDeclineFromNotification", "onMissFromNotification")
 
     OnCreate {
       activeInstance = this@IncomingCallModule
@@ -115,6 +143,7 @@ class IncomingCallModule : Module() {
 
     Function("dismiss") { callUUID: String ->
       NotificationManagerCompat.from(context).cancel(notificationId(callUUID))
+      cancelRingTimeout(context, callUUID)
     }
 
     // Called by JS once a call has ended — see clearLockScreenFlags() doc comment below.
@@ -215,11 +244,19 @@ class IncomingCallModule : Module() {
   /**
    * `context.applicationInfo.icon` is unreliable here — verified on-device it resolves to 0 in
    * this module's execution context, which crashes notification rendering with
-   * `Resources$NotFoundException: Resource ID #0x0` (system_server / Icon logs). Look up the
-   * launcher mipmap by name instead, which doesn't depend on ApplicationInfo being fully
-   * populated. Falls back to 0 only if even that lookup fails (defensive; shouldn't happen).
+   * `Resources$NotFoundException: Resource ID #0x0` (system_server / Icon logs). Look up
+   * resources by name instead, which doesn't depend on ApplicationInfo being fully populated.
+   *
+   * Prefer `notification_icon` — the white-silhouette drawable the expo-notifications config
+   * plugin generates from the `icon` option in app.json (see the "expo-notifications" plugin
+   * entry). The status bar renders a small icon using only its alpha channel, and the adaptive
+   * launcher mipmap has an opaque background layer, so using it here renders as a solid colored
+   * blob. Falls back to the launcher mipmap, then to applicationInfo.icon, only if that
+   * generated drawable is ever missing (e.g. plugin config was removed).
    */
   private fun resolveIcon(): Int {
+    val notificationIcon = context.resources.getIdentifier("notification_icon", "drawable", context.packageName)
+    if (notificationIcon != 0) return notificationIcon
     val byName = context.resources.getIdentifier("ic_launcher", "mipmap", context.packageName)
     if (byName != 0) return byName
     return context.applicationInfo.icon
@@ -380,9 +417,34 @@ class IncomingCallModule : Module() {
       // Loop the channel's ringtone until the notification is cancelled — the "ring", not a blip.
       notification.flags = notification.flags or Notification.FLAG_INSISTENT
       NotificationManagerCompat.from(context).notify(id, notification)
+      scheduleRingTimeout(callUUID, friendId, roomName, isVideo, callerName, id)
     } catch (e: SecurityException) {
       // Notification permission not granted — nothing more we can do here; the realtime
       // call_signals subscription still delivers the call to a foregrounded JS instance.
+    }
+  }
+
+  /**
+   * Local backstop for a ring that never resolves. Normally the caller's CANCEL push (or JS's
+   * own RING_TIMEOUT_MS effect in use-call.ts, while the app is alive) ends an unanswered call.
+   * But if the CANCEL push is dropped (swallowed as non-fatal — see callSignaling.ts) and this
+   * device's JS process is killed, nothing would otherwise ever stop the FLAG_INSISTENT
+   * ringtone/notification. This schedules a plain broadcast — handled by
+   * IncomingCallActionReceiver's ACTION_RING_TIMEOUT branch — timed to match use-call.ts's own
+   * ring timeout, so behavior is consistent whether or not JS is alive to run it.
+   *
+   * Uses setAndAllowWhileIdle rather than an exact alarm so it needs no extra permission
+   * (SCHEDULE_EXACT_ALARM) — silencing an already-unanswered ring tolerates a few seconds of
+   * Doze-deferral slack fine.
+   */
+  private fun scheduleRingTimeout(callUUID: String, friendId: String, roomName: String, isVideo: Boolean, callerName: String, id: Int) {
+    val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
+    val pendingIntent = actionBroadcastPendingIntent(ACTION_RING_TIMEOUT, callUUID, friendId, roomName, isVideo, callerName, id + 3)
+    try {
+      alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, System.currentTimeMillis() + RING_TIMEOUT_MS, pendingIntent)
+    } catch (e: SecurityException) {
+      // Nothing more we can do; the JS-side ring timeout (use-call.ts) still covers the
+      // process-alive case.
     }
   }
 

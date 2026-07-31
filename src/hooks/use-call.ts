@@ -1,4 +1,4 @@
-import { agoraManager, fetchAgoraToken, hashCode } from '@/services/agora';
+import { agoraManager, fetchAgoraToken, resolveCallUid } from '@/services/agora';
 import { callKeepManager } from '@/services/callkeep';
 import {
   CallSignalPayload,
@@ -75,6 +75,7 @@ export function useCall({
 
   const isMounted = useRef(true);
   const callStatusRef = useRef<CallStatus>('ringing');
+  const callDurationRef = useRef(0);
   const callDirectionRef = useRef<CallDirection>('outgoing');
   const callRoomRef = useRef<string>('');
   const activeCallUuidRef = useRef<string | null>(null);
@@ -110,7 +111,7 @@ export function useCall({
   // --- Agora media -----------------------------------------------------------
   const startAgoraCall = useCallback(
     async (channelName: string, isVideo: boolean, isIncoming: boolean) => {
-      if (!profile) return;
+      if (!profile || !friend) return;
 
       if (isVideo) {
         const cameraStatus = await Camera.requestCameraPermissionsAsync();
@@ -146,7 +147,7 @@ export function useCall({
           }
         );
 
-        const localUid = hashCode(profile.cookieCode);
+        const localUid = resolveCallUid(profile.cookieCode, friend.cookieCode);
         let token = '';
         try {
           token = await fetchAgoraToken(channelName, localUid);
@@ -172,7 +173,7 @@ export function useCall({
         handleEndCallRef.current?.();
       }
     },
-    [profile, showAlert]
+    [profile, friend, showAlert]
   );
 
   // --- Call log helper -------------------------------------------------------
@@ -300,13 +301,15 @@ export function useCall({
     // Direction reflects who placed the original call, not who happened to hang up — an
     // unanswered outgoing call ending here is "I called, no answer", not a missed call of mine.
     const direction = callDirectionRef.current === 'incoming' ? 'INCOMING' : 'OUTGOING';
+    // Captured before teardown() can trigger the duration-timer effect's reset-to-0.
+    const duration = callDurationRef.current;
     const logText = wasRinging
       ? callTypeVideo
         ? `[CALL_LOG:MISSED_VIDEO:${direction}]`
         : `[CALL_LOG:MISSED_AUDIO:${direction}]`
       : callTypeVideo
-      ? `[CALL_LOG:ENDED_VIDEO:${direction}]`
-      : `[CALL_LOG:ENDED_AUDIO:${direction}]`;
+      ? `[CALL_LOG:ENDED_VIDEO:${direction}:${duration}]`
+      : `[CALL_LOG:ENDED_AUDIO:${direction}:${duration}]`;
     await teardown('END_CALL', logText);
     if (isMounted.current) {
       setTimeout(() => {
@@ -545,19 +548,34 @@ export function useCall({
       if (event.friendId !== friendId) return;
       declineCall();
     });
+    // Native ring-timeout backstop (see IncomingCallModule.scheduleRingTimeout) — only reaches
+    // JS if this process is still alive; a killed app never gets this, but its notification
+    // still stops ringing regardless (handled natively).
+    const missSub = IncomingCall.addListener('onMissFromNotification', (event) => {
+      if (event.friendId !== friendId) return;
+      missCall();
+    });
 
     return () => {
       answerSub.remove();
       declineSub.remove();
+      missSub.remove();
     };
-  }, [friendId, acceptCall, declineCall]);
+  }, [friendId, acceptCall, declineCall, missCall]);
 
   // --- Duration timer --------------------------------------------------------
   useEffect(() => {
     let timer: any;
     if (callStatus === 'connected') {
-      timer = setInterval(() => setCallDuration((prev) => prev + 1), 1000);
+      timer = setInterval(() => {
+        setCallDuration((prev) => {
+          const next = prev + 1;
+          callDurationRef.current = next;
+          return next;
+        });
+      }, 1000);
     } else {
+      callDurationRef.current = 0;
       setCallDuration(0);
     }
     return () => clearInterval(timer);
@@ -590,12 +608,14 @@ export function useCall({
   // --- Unmount: end an in-flight call ---------------------------------------
   useEffect(() => {
     return () => {
-      if (callStatusRef.current === 'ringing' || callStatusRef.current === 'connected') {
-        if (callStatusRef.current === 'ringing' && callDirectionRef.current === 'incoming') {
-          handleDeclineCallRef.current?.();
-        } else {
-          handleEndCallRef.current?.();
-        }
+      // Don't decline an incoming ring just because this screen unmounted (e.g. the kid
+      // navigated back to the friends list). The native incoming-call notification/CallKeep
+      // own the ring independently of this screen's lifecycle — most phone apps keep ringing
+      // until it's explicitly answered/declined or the caller hangs up, not "busy" on nav-away.
+      const isUnansweredIncomingRing =
+        callStatusRef.current === 'ringing' && callDirectionRef.current === 'incoming';
+      if (!isUnansweredIncomingRing && (callStatusRef.current === 'ringing' || callStatusRef.current === 'connected')) {
+        handleEndCallRef.current?.();
       }
       Vibration.cancel();
       agoraManager.destroy();

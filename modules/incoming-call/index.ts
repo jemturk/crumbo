@@ -22,6 +22,13 @@ interface IncomingCallNativeModuleEvents {
   onAnswerFromNotification(event: NotificationCallActionEvent): void;
   /** Fired the instant Decline is tapped on the notification — resolves before the app even opens. */
   onDeclineFromNotification(event: NotificationCallActionEvent): void;
+  /**
+   * Fired when the native ring-timeout alarm fires because nobody answered/declined in time
+   * (see IncomingCallModule's scheduleRingTimeout) — a local backstop for when the caller's
+   * CANCEL push never arrives. Only reaches JS if the app process is still alive; a killed app
+   * instead gets relaunched via the `missedCall=true` deep link, same as the decline fallback.
+   */
+  onMissFromNotification(event: NotificationCallActionEvent): void;
 }
 
 interface IncomingCallNativeModule {

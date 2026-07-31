@@ -39,6 +39,11 @@ const KEYS = {
 // Default setup
 const DEFAULT_EMOJIS = ['🍪', '🧁', '🍩', '🍫', '🍧', '🍰', '🍭', '🍓', '🍒', '🦕', '🐱', '🐼', '🐨', '🦊', '🦁'];
 
+// `profiles.name` isn't used for parent rows (kid rows store the kid's real name there) — this
+// fixed marker just distinguishes a parent account row at a glance. Kept as a constant so
+// syncParentData and createParentAccount can't drift apart.
+const PARENT_ROW_NAME_MARKER = "6a09e667bb67ae853c6ef372a54ff53a510e527f9b05688c1f83d9ab5be0cd19";
+
 export const StorageService = {
   // Parent Subscription
   async getParentEmail(): Promise<string | null> {
@@ -55,6 +60,16 @@ export const StorageService = {
 
   async saveParentPassword(password: string): Promise<void> {
     await AsyncStorage.setItem(KEYS.PARENT_PASSWORD, password);
+  },
+
+  /**
+   * Undoes saveParentEmail/saveParentPassword. Used by gate.tsx when createParentAccount loses
+   * a registration race (email already taken by another device) — without this, the losing
+   * device would be left with someone else's email cached as its own PARENT_EMAIL, and a later
+   * unrelated syncParentData() call would upsert local settings into that stranger's account row.
+   */
+  async clearParentCredentials(): Promise<void> {
+    await AsyncStorage.multiRemove([KEYS.PARENT_EMAIL, KEYS.PARENT_PASSWORD]);
   },
 
   async isSubscribed(): Promise<boolean> {
@@ -390,54 +405,58 @@ export const StorageService = {
     };
   },
 
+  async buildParentPushTokenPayload(): Promise<string> {
+    const subscribed = await this.isSubscribed();
+    const parentPassword = await this.getParentPassword();
+    const kids = await this.getKidsList();
+    const activeProfile = await this.getKidProfile();
+    const activeFriends = await this.getFriends();
+
+    const kidsPayload = kids.map(k => {
+      // If this is the active kid, use the latest friends list from storage
+      const isCurrentActive = activeProfile?.cookieCode === k.cookieCode;
+      const friendsList = isCurrentActive ? activeFriends : (k.friends || []);
+
+      return {
+        cookieCode: k.cookieCode,
+        name: k.name,
+        chatDisabled: !!k.chatDisabled,
+        callingDisabled: !!k.callingDisabled,
+        videoCallingDisabled: !!k.videoCallingDisabled,
+        friends: friendsList.map((f: any) => ({
+          id: f.id,
+          name: f.name,
+          cookieCode: f.cookieCode,
+          avatarEmoji: f.avatarEmoji
+        }))
+      };
+    });
+
+    const displaySize = await AsyncStorage.getItem('crumbo_display_size') || 'default';
+    const theme = await AsyncStorage.getItem('crumbo_theme') || 'light';
+
+    return JSON.stringify({
+      subscribed,
+      parentPassword,
+      kids: kidsPayload,
+      displaySize,
+      theme
+    });
+  },
+
   async syncParentData(): Promise<void> {
     try {
       const email = await this.getParentEmail();
       if (!email) return;
 
-      const subscribed = await this.isSubscribed();
-      const parentPassword = await this.getParentPassword();
-      const kids = await this.getKidsList();
-      const activeProfile = await this.getKidProfile();
-      const activeFriends = await this.getFriends();
-
-      const kidsPayload = kids.map(k => {
-        // If this is the active kid, use the latest friends list from storage
-        const isCurrentActive = activeProfile?.cookieCode === k.cookieCode;
-        const friendsList = isCurrentActive ? activeFriends : (k.friends || []);
-        
-        return {
-          cookieCode: k.cookieCode,
-          name: k.name,
-          chatDisabled: !!k.chatDisabled,
-          callingDisabled: !!k.callingDisabled,
-          videoCallingDisabled: !!k.videoCallingDisabled,
-          friends: friendsList.map((f: any) => ({
-            id: f.id,
-            name: f.name,
-            cookieCode: f.cookieCode,
-            avatarEmoji: f.avatarEmoji
-          }))
-        };
-      });
-
-      const displaySize = await AsyncStorage.getItem('crumbo_display_size') || 'default';
-      const theme = await AsyncStorage.getItem('crumbo_theme') || 'light';
-
-      const pushTokenPayload = JSON.stringify({
-        subscribed,
-        parentPassword,
-        kids: kidsPayload,
-        displaySize,
-        theme
-      });
+      const pushTokenPayload = await this.buildParentPushTokenPayload();
 
       const { error: upsertError } = await supabase
         .from('profiles')
         .upsert({
           cookie_code: `PARENT:${email}`,
           push_token: pushTokenPayload,
-          name: "6a09e667bb67ae853c6ef372a54ff53a510e527f9b05688c1f83d9ab5be0cd19"
+          name: PARENT_ROW_NAME_MARKER
         });
 
       if (upsertError) {
@@ -447,6 +466,33 @@ export const StorageService = {
       console.error("Failed to sync parent settings to Supabase:", e);
       throw e;
     }
+  },
+
+  /**
+   * Creates the parent account row with a real INSERT rather than syncParentData's upsert.
+   * Two devices registering the same email can both pass gate.tsx's own exists-check before
+   * either has written — that pre-check is only a fast-path UX hint, not a guarantee. This
+   * insert is the actual guard: it relies on the unique constraint on profiles.cookie_code
+   * (see supabase/migrations/20260731000000_profiles_cookie_code_unique.sql) to make the
+   * loser's insert fail with a Postgres unique-violation instead of silently overwriting the
+   * winner's row.
+   */
+  async createParentAccount(email: string): Promise<'created' | 'exists'> {
+    const pushTokenPayload = await this.buildParentPushTokenPayload();
+
+    const { error } = await supabase
+      .from('profiles')
+      .insert({
+        cookie_code: `PARENT:${email}`,
+        push_token: pushTokenPayload,
+        name: PARENT_ROW_NAME_MARKER
+      });
+
+    if (error) {
+      if (error.code === '23505') return 'exists'; // unique_violation
+      throw new Error(error.message || "Failed to create parent account");
+    }
+    return 'created';
   },
 
   async fetchAndRestoreParentData(email: string): Promise<boolean> {
