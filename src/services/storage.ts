@@ -10,6 +10,17 @@ export interface Message {
   sender: 'me' | 'them';
 }
 
+// A message whose Supabase insert failed (offline, dropped connection, etc.) — kept separately
+// per friendId so it isn't lost when getMessages' next server-sync overwrites the local cache
+// with the server's view, and so it can be retried. See bug #4 in BUGS.md.
+interface OutboxEntry {
+  id: string;
+  senderCode: string;
+  receiverCode: string;
+  text: string;
+  createdAt: string;
+}
+
 export interface Friend {
   id: string;
   name: string;
@@ -33,6 +44,7 @@ const KEYS = {
   KID_PROFILE: 'crumbo_kid_profile',
   FRIENDS: 'crumbo_friends',
   MESSAGES_PREFIX: 'crumbo_messages_',
+  OUTBOX_PREFIX: 'crumbo_outbox_',
   PARENT_PASSWORD: 'crumbo_parent_password',
   KIDS_LIST: 'crumbo_parent_kids_list',
 };
@@ -70,6 +82,116 @@ async function readCachedMessages(friendId: string): Promise<Message[]> {
   const cachedData = await AsyncStorage.getItem(`${KEYS.MESSAGES_PREFIX}${friendId}`);
   const messages: Message[] = cachedData ? JSON.parse(cachedData) : [];
   return messages.filter(m => m.text && !StorageService.isCallSignalText(m.text));
+}
+
+// [CALL_LOG:type:direction:callUUID(:duration)] — callUUID is the 3rd field. use-call.ts embeds
+// it in every call-log row it writes; older rows written before this existed have no 3rd field
+// (nothing to dedupe against). A brief prior format instead had a plain duration-in-seconds
+// integer at this same position for ended calls — the hyphen check rejects that so it's never
+// mistaken for a callUUID (which would wrongly collapse two different calls that happened to
+// last the same number of seconds).
+function extractCallLogUUID(text: string): string | null {
+  if (!text.startsWith('[CALL_LOG:')) return null;
+  const candidate = text.replace('[CALL_LOG:', '').replace(']', '').split(':')[2];
+  return candidate && candidate.includes('-') ? candidate : null;
+}
+
+// Both sides of a call independently run their own ~45s ring timeout and can each write their
+// own missed-call row for the same call before the other side's END/CANCEL signal lands — both
+// rows sync to both devices, so without this a kid sees the same missed call listed twice (see
+// bug #5 in BUGS.md). Rows sharing a callUUID are collapsed to one, keeping whichever has the
+// lexicographically smaller id — an arbitrary but deterministic tiebreak, so both devices
+// (which eventually see the same pair of rows) converge on keeping the same one.
+function dedupeCallLogs(messages: Message[]): Message[] {
+  const bestByCallUUID = new Map<string, Message>();
+  for (const m of messages) {
+    const callUUID = extractCallLogUUID(m.text);
+    if (!callUUID) continue;
+    const existing = bestByCallUUID.get(callUUID);
+    if (!existing || m.id < existing.id) {
+      bestByCallUUID.set(callUUID, m);
+    }
+  }
+  return messages.filter(m => {
+    const callUUID = extractCallLogUUID(m.text);
+    return !callUUID || bestByCallUUID.get(callUUID) === m;
+  });
+}
+
+async function getOutbox(friendId: string): Promise<OutboxEntry[]> {
+  const data = await AsyncStorage.getItem(`${KEYS.OUTBOX_PREFIX}${friendId}`);
+  return data ? JSON.parse(data) : [];
+}
+
+async function addToOutbox(friendId: string, entry: OutboxEntry): Promise<void> {
+  const outbox = await getOutbox(friendId);
+  outbox.push(entry);
+  await AsyncStorage.setItem(`${KEYS.OUTBOX_PREFIX}${friendId}`, JSON.stringify(outbox));
+}
+
+// Attempts the actual `messages` row insert for one outbox entry. Shared by sendMessage/
+// sendCallLogMessage's first attempt and getMessages' retry pass, so both go through the exact
+// same insert shape.
+async function insertOutboxEntry(entry: OutboxEntry): Promise<boolean> {
+  try {
+    const { error } = await supabase
+      .from('messages')
+      .insert({
+        id: entry.id,
+        sender_code: entry.senderCode,
+        receiver_code: entry.receiverCode,
+        text: entry.text,
+        created_at: entry.createdAt,
+      });
+    if (error) {
+      console.error("Error writing message to Supabase:", error);
+      return false;
+    }
+    return true;
+  } catch (e) {
+    console.error("Error writing message to Supabase:", e);
+    return false;
+  }
+}
+
+function randomCookieCode(): string {
+  const part1 = Math.floor(100 + Math.random() * 900);
+  const part2 = Math.floor(100 + Math.random() * 900);
+  return `CRUM-${part1}-${part2}`;
+}
+
+// createKidProfile used to pick a code purely locally with no server check at all — see bug #2
+// (only 810,000 combinations, ~50% chance of at least one collision by ~1,000 kids). Kid codes
+// live nested inside each parent row's push_token JSON blob rather than as their own indexed
+// column, so there's no DB uniqueness constraint to fall back on here (that needs the schema
+// rework tracked as bug #1); this is the best available guard until then — check-then-generate
+// against the server, retrying on an actual collision. It doesn't close the race between two
+// devices checking at the exact same instant, but that's a vanishingly rare coincidence compared
+// to the previous "no check at all, guaranteed to collide eventually" state.
+async function generateUniqueCookieCode(): Promise<string> {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const candidate = randomCookieCode();
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('cookie_code')
+        .like('cookie_code', 'PARENT:%')
+        .like('push_token', `%"cookieCode":"${candidate}"%`)
+        .limit(1);
+      if (error) {
+        console.error("Error checking cookie code uniqueness:", error);
+        return candidate; // Can't verify — don't block profile creation on it.
+      }
+      if (!data || data.length === 0) return candidate;
+      // Collision — loop and try another candidate.
+    } catch (e) {
+      console.error("Error checking cookie code uniqueness:", e);
+      return candidate; // Offline or query failed — same fallback as above.
+    }
+  }
+  // Exhausting 5 retries in an 810,000-code space would mean the pool is nearly saturated;
+  // fall back to one last random code rather than failing profile creation outright.
+  return randomCookieCode();
 }
 
 export const StorageService = {
@@ -131,11 +253,9 @@ export const StorageService = {
   },
 
   async createKidProfile(name: string): Promise<KidProfile> {
-    // Generate a random Cookie Code e.g. CRUM-123-456
-    const part1 = Math.floor(100 + Math.random() * 900);
-    const part2 = Math.floor(100 + Math.random() * 900);
-    const cookieCode = `CRUM-${part1}-${part2}`;
-    
+    // e.g. CRUM-123-456 — checked against the server for an existing collision first (bug #2).
+    const cookieCode = await generateUniqueCookieCode();
+
     const initialFriends: Friend[] = [];
 
     const profile: KidProfile = { 
@@ -219,10 +339,10 @@ export const StorageService = {
     let messages: Message[] = cachedData ? JSON.parse(cachedData) : [];
     messages = messages.filter(m => m.text && !this.isCallSignalText(m.text));
 
-    // 2. Fetch fresh history from Supabase to sync. The overwrite below is serialized per-friend
-    // (see withMessagesLock) so it can't race sendMessage/sendCallLogMessage/receiveMockMessage/
-    // the realtime subscriber appending to the same local cache at the same time and silently
-    // dropping whichever wrote first.
+    // 2. Fetch fresh history from Supabase to sync, retrying any outbox messages first. The
+    // overwrite below is serialized per-friend (see withMessagesLock) so it can't race
+    // sendMessage/sendCallLogMessage/receiveMockMessage/the realtime subscriber appending to the
+    // same local cache at the same time and silently dropping whichever wrote first.
     const fetchedMessages = await withMessagesLock(friendId, async (): Promise<Message[] | null> => {
       try {
         const profile = await this.getKidProfile();
@@ -230,6 +350,14 @@ export const StorageService = {
         const friend = friends.find(f => f.id === friendId);
 
         if (profile && friend) {
+          // Retry anything that failed to sync last time (offline send, dropped connection,
+          // etc.) — see bug #4 (messages sent offline used to just evaporate on the next
+          // server-sync overwrite below, with no outbox or retry at all).
+          const outbox = await getOutbox(friendId);
+          const retryResults = await Promise.all(
+            outbox.map(async (entry) => ({ entry, synced: await insertOutboxEntry(entry) }))
+          );
+
           const { data: dbMsgs, error } = await supabase
             .from('messages')
             .select('*')
@@ -246,9 +374,35 @@ export const StorageService = {
                 sender: msg.sender_code === profile.cookieCode ? 'me' : 'them',
               }));
 
+            // A retry can fail with "already exists" if an earlier attempt actually succeeded
+            // server-side but this device crashed/lost connectivity before clearing the outbox
+            // entry — cross-check against `fetched` (the actual server state) rather than trust
+            // insertOutboxEntry's own success flag, so that case still clears correctly instead
+            // of getting stuck retrying (and duplicating) forever.
+            const stillPending = retryResults
+              .filter(({ entry, synced }) => !synced && !fetched.some(f => f.id === entry.id))
+              .map(({ entry }) => entry);
+            if (stillPending.length !== outbox.length) {
+              await AsyncStorage.setItem(`${KEYS.OUTBOX_PREFIX}${friendId}`, JSON.stringify(stillPending));
+            }
+
+            // Still-pending entries haven't made it to the server yet — merge them back in so
+            // the overwrite below doesn't erase them from the local cache.
+            const pendingAsMessages: Message[] = stillPending.map(e => ({
+              id: e.id,
+              text: e.text,
+              timestamp: e.createdAt,
+              sender: 'me',
+            }));
+            const merged = dedupeCallLogs(
+              [...fetched, ...pendingAsMessages].sort(
+                (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+              )
+            );
+
             // Overwrite local storage cache with latest data
-            await AsyncStorage.setItem(`${KEYS.MESSAGES_PREFIX}${friendId}`, JSON.stringify(fetched));
-            return fetched;
+            await AsyncStorage.setItem(`${KEYS.MESSAGES_PREFIX}${friendId}`, JSON.stringify(merged));
+            return merged;
           } else if (error) {
             console.error("Error fetching messages from Supabase:", error);
           }
@@ -304,24 +458,24 @@ export const StorageService = {
       await AsyncStorage.setItem(`${KEYS.MESSAGES_PREFIX}${friendId}`, JSON.stringify(updated));
     });
 
-    // Async write to Supabase
-    try {
-      const profile = await this.getKidProfile();
-      const friends = await this.getFriends();
-      const friend = friends.find(f => f.id === friendId);
-      if (profile && friend) {
-        await supabase
-          .from('messages')
-          .insert({
-            id: newMsgId,
-            sender_code: profile.cookieCode,
-            receiver_code: friend.cookieCode,
-            text: text,
-            created_at: newMsg.timestamp
-          });
+    // Write to Supabase — if this fails (offline, dropped connection, etc.), queue it in the
+    // outbox instead of silently losing it. getMessages retries the outbox on its next sync
+    // (see bug #4).
+    const profile = await this.getKidProfile();
+    const friends = await this.getFriends();
+    const friend = friends.find(f => f.id === friendId);
+    if (profile && friend) {
+      const entry: OutboxEntry = {
+        id: newMsgId,
+        senderCode: profile.cookieCode,
+        receiverCode: friend.cookieCode,
+        text,
+        createdAt: newMsg.timestamp,
+      };
+      const synced = await insertOutboxEntry(entry);
+      if (!synced) {
+        await addToOutbox(friendId, entry);
       }
-    } catch (e) {
-      console.error("Error writing message to Supabase", e);
     }
 
     return newMsg;
@@ -434,9 +588,14 @@ export const StorageService = {
             const cachedMessages: Message[] = data ? JSON.parse(data) : [];
             if (cachedMessages.find(m => m.id === localMsg.id)) return false;
 
-            const updated = [...cachedMessages, localMsg];
+            // dedupeCallLogs collapses this against any existing call-log row for the same
+            // callUUID (see bug #5 — both sides of a missed call can independently write their
+            // own row for it). `wasNew` reflects whether localMsg actually survived that, so a
+            // duplicate that lost the tiebreak is written to cache (a no-op) but never surfaced
+            // to the UI via onNewMessage.
+            const updated = dedupeCallLogs([...cachedMessages, localMsg]);
             await AsyncStorage.setItem(`${KEYS.MESSAGES_PREFIX}${correspondingFriend.id}`, JSON.stringify(updated));
-            return true;
+            return updated.some(m => m.id === localMsg.id);
           });
           if (wasNew) onNewMessage(localMsg, correspondingFriend.id);
         }
@@ -618,27 +777,30 @@ export const StorageService = {
 
     await withMessagesLock(friendId, async () => {
       const messages = await readCachedMessages(friendId);
-      const updated = [...messages, newMsg];
+      // Defensive: the other side's row for the same call may have already synced in (e.g. via
+      // the realtime subscriber) before this local write lands — dedupeCallLogs collapses that
+      // pair down to one immediately rather than waiting for the next getMessages sync.
+      const updated = dedupeCallLogs([...messages, newMsg]);
       await AsyncStorage.setItem(`${KEYS.MESSAGES_PREFIX}${friendId}`, JSON.stringify(updated));
     });
 
-    try {
-      const profile = await this.getKidProfile();
-      const friends = await this.getFriends();
-      const friend = friends.find(f => f.id === friendId);
-      if (profile && friend) {
-        await supabase
-          .from('messages')
-          .insert({
-            id: newMsgId,
-            sender_code: profile.cookieCode,
-            receiver_code: friend.cookieCode,
-            text: text,
-            created_at: newMsg.timestamp
-          });
+    // Same outbox/retry treatment as sendMessage — a call log is just a specially-formatted
+    // message, and evaporates the same way without it (bug #4).
+    const profile = await this.getKidProfile();
+    const friends = await this.getFriends();
+    const friend = friends.find(f => f.id === friendId);
+    if (profile && friend) {
+      const entry: OutboxEntry = {
+        id: newMsgId,
+        senderCode: profile.cookieCode,
+        receiverCode: friend.cookieCode,
+        text,
+        createdAt: newMsg.timestamp,
+      };
+      const synced = await insertOutboxEntry(entry);
+      if (!synced) {
+        await addToOutbox(friendId, entry);
       }
-    } catch (e) {
-      console.error("Error writing call log to Supabase", e);
     }
 
     return newMsg;
@@ -806,6 +968,7 @@ export const StorageService = {
       if (!error && data && data.length > 0) {
         // Find the parent profile that actually OWNS this kid
         let targetKid = null;
+        let owningPayload: any = null;
         for (const parentProfile of data) {
           try {
             const payload = JSON.parse(parentProfile.push_token);
@@ -813,6 +976,7 @@ export const StorageService = {
               const found = payload.kids.find((k: any) => k.cookieCode === active.cookieCode);
               if (found) {
                 targetKid = found;
+                owningPayload = payload;
                 break;
               }
             }
@@ -832,6 +996,15 @@ export const StorageService = {
             await AsyncStorage.setItem(KEYS.FRIENDS, JSON.stringify(targetKid.friends));
           } else {
             await AsyncStorage.setItem(KEYS.FRIENDS, JSON.stringify([]));
+          }
+          // Mirror the parent's actual subscription state onto this device — IS_SUBSCRIBED was
+          // previously only ever set once at kid-login and never re-checked, so a parent
+          // cancelling on their own device (see handleCancelSubscription in dashboard.tsx) never
+          // reached the kid's device at all (bug #6). Only touch it when the field is actually
+          // present, so a parent row from before `subscribed` existed in the payload doesn't
+          // spuriously lock an otherwise-active kid out.
+          if (typeof owningPayload.subscribed === 'boolean') {
+            await AsyncStorage.setItem(KEYS.IS_SUBSCRIBED, owningPayload.subscribed ? 'true' : 'false');
           }
           return updatedProfile;
         }

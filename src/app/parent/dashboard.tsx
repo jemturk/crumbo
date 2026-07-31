@@ -235,13 +235,26 @@ export default function ParentDashboard() {
       "Your child won't be able to chat anymore. No data will be lost from the device.",
       [
         { text: "Keep Subscription", style: "cancel" },
-        { 
-          text: "Cancel Subscription", 
+        {
+          text: "Cancel Subscription",
           style: "destructive",
           onPress: async () => {
             await StorageService.setSubscribed(false);
-            setSubscribed(false);
-            showAlert("Subscription Cancelled", "Your subscription is now inactive.");
+            try {
+              // Push the cancellation to Supabase — without this it only ever set a flag on
+              // this device, and the kid's device (which checks the parent's synced row, not
+              // anything local to it) would never learn the subscription was cancelled. See
+              // bug #6 in BUGS.md.
+              await StorageService.syncParentData();
+              setSubscribed(false);
+              showAlert("Subscription Cancelled", "Your subscription is now inactive.");
+            } catch (e) {
+              // Roll back the local flag — better to show "still subscribed" (safe/consistent
+              // with the server) than to silently claim cancellation succeeded when the kid's
+              // device was never actually told.
+              await StorageService.setSubscribed(true);
+              showAlert("Connection Error", "Could not cancel your subscription. Please check your network and try again.");
+            }
           }
         }
       ]

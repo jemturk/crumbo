@@ -4,6 +4,7 @@ import { Alert, AppState, Platform } from 'react-native';
 import RNCallKeep from 'react-native-callkeep';
 import IncomingCall from '../../modules/incoming-call';
 import { CallSignalPayload, parseCallSignalText, sendCallSignal } from './callSignaling';
+import { StorageService } from './storage';
 
 const BACKGROUND_NOTIFICATION_TASK = 'CRUMBO_CALLKEEP_BACKGROUND_NOTIFICATION_TASK';
 
@@ -224,6 +225,14 @@ class CallKeepManager {
     if (Platform.OS !== 'android') return;
     try {
       console.log(`[CallKeep] Ending call: ${uuid}`);
+      // The CallStyle notification is posted with setOngoing(true) (so it can't be swiped away
+      // mid-ring) — Android's NotificationManager.cancelAll(), which is all
+      // dismissAllNotificationsAsync() below does, explicitly skips ongoing notifications. So
+      // when the caller hangs up before this side answers, that call never actually silenced
+      // the still-ringing notification, and it kept ringing until the 45s AlarmManager backstop
+      // (or the user) dismissed it. Targeted dismiss-by-id (matching answerCall() above) isn't
+      // subject to that exclusion.
+      IncomingCall?.dismiss(uuid);
       RNCallKeep.endCall(uuid);
       RNCallKeep.endAllCalls();
       Notifications.dismissAllNotificationsAsync().catch(() => {});
@@ -511,9 +520,37 @@ TaskManager.defineTask(BACKGROUND_NOTIFICATION_TASK, async ({ data, error }) => 
 
   if (payload.type === 'START_AUDIO_CALL' || payload.type === 'START_VIDEO_CALL') {
     const callUUID = payload.callUUID || Math.random().toString(36).substring(2, 15);
+    const isVideo = !!payload.isVideo;
     // Push signals never carry friendId (it's a per-device id the sender/server don't know) —
     // resolve it from sender_code so the notification's deep link routes to the right chat.
     const resolvedFriendId = await callKeepManager.resolveFriendId(payload.friendId, payload.senderCode);
+
+    // A parent's lock blocks the call before it ever rings, even when this device's JS process
+    // was fully killed and only woken by this push — see bug #3 in BUGS.md. Reads the locally
+    // cached profile since a live server round-trip isn't worth the latency/reliability risk in
+    // a background push handler; use-call.ts's own foreground check (and the chat screens'
+    // periodic re-sync) cover the case where that cache is stale.
+    const profile = await StorageService.getKidProfile();
+    const isLocked = profile && (isVideo ? profile.videoCallingDisabled : profile.callingDisabled);
+    if (isLocked && payload.senderCode) {
+      sendCallSignal({
+        type: 'DECLINE_CALL',
+        callUUID,
+        senderCode: profile!.cookieCode,
+        senderName: profile!.name,
+        receiverCode: payload.senderCode,
+        roomName: payload.roomName,
+        isVideo,
+      }).catch((e) => console.error('[CallKeep Background Task] Failed to auto-decline locked call:', e));
+      if (resolvedFriendId) {
+        const logText = isVideo ? `[CALL_LOG:MISSED_VIDEO:INCOMING:${callUUID}]` : `[CALL_LOG:MISSED_AUDIO:INCOMING:${callUUID}]`;
+        StorageService.sendCallLogMessage(resolvedFriendId, logText).catch((e) =>
+          console.error('[CallKeep Background Task] Failed to log locked call:', e)
+        );
+      }
+      return;
+    }
+
     await callKeepManager.displayIncomingCall(
       callUUID,
       payload.callerName ?? payload.friendName ?? 'Crumbo Friend',

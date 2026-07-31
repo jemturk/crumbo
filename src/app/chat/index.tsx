@@ -67,15 +67,25 @@ export default function ChatDashboard() {
   const loadDashboardData = async () => {
     try {
       // 1. Verify subscription and profile
-      const isSub = await StorageService.isSubscribed();
       const kidProf = await StorageService.getKidProfile();
-
-      if (!isSub || !kidProf) {
+      if (!kidProf) {
         router.replace('/');
         return;
       }
 
+      // Refresh from the parent's synced profile before checking isSubscribed() below — this
+      // also mirrors the parent's actual subscription state onto this device, so a parent who
+      // cancelled from their own device (see handleCancelSubscription in dashboard.tsx) is
+      // reflected immediately here rather than on some later focus (bug #6). If this fails
+      // (offline etc.) isSubscribed() below just falls back to the last-known local flag.
       const syncedProf = await StorageService.syncKidProfileAndFriends();
+
+      const isSub = await StorageService.isSubscribed();
+      if (!isSub) {
+        router.replace('/');
+        return;
+      }
+
       setProfile(syncedProf || kidProf);
       
       // Async request and register push notification token, always syncing the profile to Supabase

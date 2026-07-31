@@ -80,6 +80,13 @@ export function useCall({
   const callRoomRef = useRef<string>('');
   const activeCallUuidRef = useRef<string | null>(null);
   const handledStartUuids = useRef<Set<string>>(new Set());
+  // DECLINE_CALL/CANCEL_CALL/END_CALL for one callUUID can legitimately arrive more than once —
+  // e.g. the native notification's Decline button fires both the onDeclineFromNotification event
+  // AND (once the app foregrounds) the declineCall=true deep-link's own "quick decline" effect,
+  // each independently sending its own DECLINE_CALL signal. Without this, the caller's device
+  // processes every duplicate: re-showing "Call Busy" each time (needing repeated dismissal, and
+  // reappearing if a delayed duplicate lands right as the chat screen reopens).
+  const handledTerminalUuids = useRef<Set<string>>(new Set());
   const handleEndCallRef = useRef<(() => Promise<void>) | null>(null);
   const handleDeclineCallRef = useRef<(() => Promise<void>) | null>(null);
   const handleMissCallRef = useRef<(() => Promise<void>) | null>(null);
@@ -281,8 +288,10 @@ export function useCall({
   );
 
   const declineCall = useCallback(async () => {
-    // Declining only ever happens on an incoming (friend-initiated) call.
-    const logText = callTypeVideo ? '[CALL_LOG:MISSED_VIDEO:INCOMING]' : '[CALL_LOG:MISSED_AUDIO:INCOMING]';
+    // Declining only ever happens on an incoming (friend-initiated) call. callUUID is embedded
+    // so a duplicate log for the same call (see endCall's comment below) can be deduplicated.
+    const uuid = activeCallUuidRef.current || '';
+    const logText = callTypeVideo ? `[CALL_LOG:MISSED_VIDEO:INCOMING:${uuid}]` : `[CALL_LOG:MISSED_AUDIO:INCOMING:${uuid}]`;
     await teardown('DECLINE_CALL', logText);
     if (isMounted.current) setCallModalVisible(false);
   }, [callTypeVideo, teardown]);
@@ -291,7 +300,8 @@ export function useCall({
   // CANCEL_CALL rather than DECLINE_CALL so the caller sees a silent "no answer" end instead
   // of the "Call Busy" alert reserved for an active decline — matching WhatsApp's behavior.
   const missCall = useCallback(async () => {
-    const logText = callTypeVideo ? '[CALL_LOG:MISSED_VIDEO:INCOMING]' : '[CALL_LOG:MISSED_AUDIO:INCOMING]';
+    const uuid = activeCallUuidRef.current || '';
+    const logText = callTypeVideo ? `[CALL_LOG:MISSED_VIDEO:INCOMING:${uuid}]` : `[CALL_LOG:MISSED_AUDIO:INCOMING:${uuid}]`;
     await teardown('CANCEL_CALL', logText);
     if (isMounted.current) setCallModalVisible(false);
   }, [callTypeVideo, teardown]);
@@ -303,13 +313,18 @@ export function useCall({
     const direction = callDirectionRef.current === 'incoming' ? 'INCOMING' : 'OUTGOING';
     // Captured before teardown() can trigger the duration-timer effect's reset-to-0.
     const duration = callDurationRef.current;
+    // Both sides independently run a ~45s ring timeout (see below) and can each write their own
+    // missed-call row for the same call before the other side's END/CANCEL signal lands —
+    // embedding callUUID here lets storage.ts's getMessages/subscribeToMessages collapse the
+    // resulting duplicate pair down to one visible entry (see bug #5 in BUGS.md).
+    const uuid = activeCallUuidRef.current || '';
     const logText = wasRinging
       ? callTypeVideo
-        ? `[CALL_LOG:MISSED_VIDEO:${direction}]`
-        : `[CALL_LOG:MISSED_AUDIO:${direction}]`
+        ? `[CALL_LOG:MISSED_VIDEO:${direction}:${uuid}]`
+        : `[CALL_LOG:MISSED_AUDIO:${direction}:${uuid}]`
       : callTypeVideo
-      ? `[CALL_LOG:ENDED_VIDEO:${direction}:${duration}]`
-      : `[CALL_LOG:ENDED_AUDIO:${direction}:${duration}]`;
+      ? `[CALL_LOG:ENDED_VIDEO:${direction}:${uuid}:${duration}]`
+      : `[CALL_LOG:ENDED_AUDIO:${direction}:${uuid}:${duration}]`;
     await teardown('END_CALL', logText);
     if (isMounted.current) {
       setTimeout(() => {
@@ -331,6 +346,29 @@ export function useCall({
         handledStartUuids.current.add(uuid);
 
         const isVideo = payload.type === 'START_VIDEO_CALL';
+
+        // A parent's lock blocks the call before this device ever rings or shows anything —
+        // previously the lock only hid the *outgoing* call buttons, and an incoming signal was
+        // handled with no lock check at all (bug #3 in BUGS.md). Declining immediately (rather
+        // than just staying silent) gives the caller a prompt "Call Busy" instead of a mysterious
+        // 45s hang before their own ring-timeout gives up.
+        const isLocked = isVideo ? profile?.videoCallingDisabled : profile?.callingDisabled;
+        if (isLocked) {
+          if (profile && friend) {
+            sendCallSignal({
+              type: 'DECLINE_CALL',
+              callUUID: uuid,
+              senderCode: profile.cookieCode,
+              senderName: profile.name,
+              receiverCode: friend.cookieCode,
+              roomName: payload.roomName,
+              isVideo,
+            }).catch((e) => console.error('[useCall] Failed to auto-decline locked call:', e));
+            writeCallLog(isVideo ? `[CALL_LOG:MISSED_VIDEO:INCOMING:${uuid}]` : `[CALL_LOG:MISSED_AUDIO:INCOMING:${uuid}]`);
+          }
+          return;
+        }
+
         setActiveCallUuid(uuid);
         setCallTypeVideo(isVideo);
         setCallDirection('incoming');
@@ -358,6 +396,10 @@ export function useCall({
       }
 
       if (payload.type === 'DECLINE_CALL' || payload.type === 'CANCEL_CALL') {
+        if (payload.callUUID) {
+          if (handledTerminalUuids.current.has(payload.callUUID)) return; // duplicate delivery
+          handledTerminalUuids.current.add(payload.callUUID);
+        }
         Vibration.cancel();
         setCallStatus('ended');
         const uuid = activeCallUuidRef.current;
@@ -377,6 +419,10 @@ export function useCall({
       }
 
       if (payload.type === 'END_CALL') {
+        if (payload.callUUID) {
+          if (handledTerminalUuids.current.has(payload.callUUID)) return; // duplicate delivery
+          handledTerminalUuids.current.add(payload.callUUID);
+        }
         Vibration.cancel();
         setCallStatus('ended');
         const uuid = activeCallUuidRef.current;
@@ -392,7 +438,7 @@ export function useCall({
         return;
       }
     },
-    [friend, friendId, showAlert]
+    [profile, friend, friendId, showAlert, writeCallLog]
   );
 
   // Subscribe to call signals for this conversation.
@@ -492,17 +538,28 @@ export function useCall({
     clearIncomingParams();
 
     (async () => {
+      const uuid = incomingParams.callUUID || generateUUID();
+      // This deep link fires on EVERY notification-Decline tap, alongside the
+      // onDeclineFromNotification event above — it's only meant to be a fallback for when that
+      // event doesn't reach JS in time (very cold start). If the event already handled this
+      // exact call, sending our own DECLINE_CALL here too would just be a second signal for the
+      // same tap, which used to show the caller a duplicate "Call Busy" alert they had to
+      // dismiss twice (and again if a delayed duplicate arrived after they reopened the chat).
+      if (handledTerminalUuids.current.has(uuid)) return;
+      handledTerminalUuids.current.add(uuid);
+
       await sendCallSignal({
         type: 'DECLINE_CALL',
-        callUUID: incomingParams.callUUID || generateUUID(),
+        callUUID: uuid,
         senderCode: profile.cookieCode,
         senderName: profile.name,
         receiverCode: friend.cookieCode,
         roomName: incomingParams.roomName,
         isVideo,
       });
-      // Quick-decline is always for an incoming (friend-initiated) call.
-      await writeCallLog(isVideo ? '[CALL_LOG:MISSED_VIDEO:INCOMING]' : '[CALL_LOG:MISSED_AUDIO:INCOMING]');
+      // Quick-decline is always for an incoming (friend-initiated) call. callUUID is embedded so
+      // a duplicate log for the same call can be deduplicated (see endCall's comment).
+      await writeCallLog(isVideo ? `[CALL_LOG:MISSED_VIDEO:INCOMING:${uuid}]` : `[CALL_LOG:MISSED_AUDIO:INCOMING:${uuid}]`);
     })().catch((err) => {
       console.error('[useCall] Failed to process quick decline:', err);
     });
@@ -546,6 +603,11 @@ export function useCall({
     });
     const declineSub = IncomingCall.addListener('onDeclineFromNotification', (event) => {
       if (event.friendId !== friendId) return;
+      // Tapping Decline on the notification always ALSO relaunches the app via the
+      // declineCall=true deep link (see IncomingCallActionReceiver.kt) as a cold-start fallback
+      // for this event — mark it handled first so that effect (below) doesn't independently
+      // send its own second DECLINE_CALL for the same tap once the app finishes foregrounding.
+      if (event.callUUID) handledTerminalUuids.current.add(event.callUUID);
       declineCall();
     });
     // Native ring-timeout backstop (see IncomingCallModule.scheduleRingTimeout) — only reaches

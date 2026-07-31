@@ -44,6 +44,13 @@ const formatCallDuration = (totalSeconds: number) => {
   return `${mins}:${secs.toString().padStart(2, '0')}`;
 };
 
+// Locks (chatDisabled/callingDisabled/videoCallingDisabled) and pairing status used to only be
+// refreshed on focus — a kid staying on an open chat while a parent flipped a lock elsewhere
+// wouldn't see it take effect until navigating away and back (bug #3 in BUGS.md). There's no
+// realtime channel for profile/lock changes, so polling while this screen is the focused one is
+// the practical middle ground between staying reasonably live and hammering the server.
+const LOCK_REFRESH_INTERVAL_MS = 20000;
+
 export default function ChatScreen() {
   const router = useRouter();
   const { s } = useDisplayScale();
@@ -62,6 +69,14 @@ export default function ChatScreen() {
 
   // Chat state
   const [friend, setFriend] = useState<Friend | null>(null);
+  // The periodic lock-refresh poll (see LOCK_REFRESH_INTERVAL_MS below) is set up once per
+  // useFocusEffect run, so its setInterval callback closes over `friend` as of that moment —
+  // reading a ref instead keeps it current across renders (same pattern used throughout
+  // use-call.ts / chat/index.tsx's pairingStatusesRef).
+  const friendRef = useRef<Friend | null>(null);
+  useEffect(() => {
+    friendRef.current = friend;
+  }, [friend]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
   const [loading, setLoading] = useState(true);
@@ -184,6 +199,10 @@ export default function ChatScreen() {
   useFocusEffect(
     useCallback(() => {
       loadChat();
+      // Keep locks/pairing status live while this screen stays focused, not just on the next
+      // focus — see LOCK_REFRESH_INTERVAL_MS's comment (bug #3 in BUGS.md).
+      const interval = setInterval(refreshLocksAndStatus, LOCK_REFRESH_INTERVAL_MS);
+      return () => clearInterval(interval);
     }, [friendId])
   );
 
@@ -204,7 +223,10 @@ export default function ChatScreen() {
       const currentFriend = friends.find(f => f.id === friendId) || null;
       setFriend(currentFriend);
 
-      const kidProf = await StorageService.getKidProfile();
+      // Synced from the parent's profile (not just the local cache) so a lock the parent just
+      // flipped is picked up on this load rather than whatever was cached from before — falls
+      // back to the local cache if the sync fails (offline etc.), same as chat/index.tsx.
+      const kidProf = (await StorageService.syncKidProfileAndFriends()) || (await StorageService.getKidProfile());
       setProfile(kidProf);
       if (kidProf) {
         setChatDisabled(!!kidProf.chatDisabled);
@@ -235,6 +257,35 @@ export default function ChatScreen() {
     }
   };
 
+  // Lightweight sibling of loadChat for the periodic poll set up in the useFocusEffect above —
+  // refreshes only locks/pairing status, without setLoading(true)/reloading messages, so it
+  // doesn't blank the screen out from under a kid mid-conversation every
+  // LOCK_REFRESH_INTERVAL_MS.
+  const refreshLocksAndStatus = async () => {
+    if (!friendId) return;
+    try {
+      const kidProf = (await StorageService.syncKidProfileAndFriends()) || (await StorageService.getKidProfile());
+      setProfile(kidProf);
+      if (kidProf) {
+        setChatDisabled(!!kidProf.chatDisabled);
+        setCallingDisabled(!!kidProf.callingDisabled);
+        setVideoCallingDisabled(!!kidProf.videoCallingDisabled);
+      }
+
+      const currentFriend = friendRef.current;
+      if (kidProf && currentFriend) {
+        try {
+          const status = await StorageService.checkFriendPairingStatus(kidProf.cookieCode, currentFriend.cookieCode);
+          setPairingStatus(status);
+        } catch (e) {
+          console.error('Error checking pairing status', e);
+        }
+      }
+    } catch (e) {
+      console.error('Error refreshing locks/status', e);
+    }
+  };
+
   const handleSend = async () => {
     if (!inputText.trim() || !friend) return;
     const textToSend = inputText.trim();
@@ -260,10 +311,11 @@ export default function ChatScreen() {
     const isCallLog = item.text.startsWith('[CALL_LOG:');
 
     if (isCallLog) {
-      // Direction suffix (INCOMING/OUTGOING) is who initiated the call, and a completed
-      // (non-missed) call also carries a trailing duration-in-seconds field — both added after
-      // this log format first shipped, so older stored entries may be missing either or both.
-      const [logType, direction, durationStr] = item.text.replace('[CALL_LOG:', '').replace(']', '').split(':');
+      // Direction suffix (INCOMING/OUTGOING) is who initiated the call; callUUID (used to
+      // dedupe each side's independent missed-call write, see storage.ts's dedupeCallLogs) and
+      // a completed (non-missed) call's trailing duration-in-seconds field were added after
+      // this log format first shipped, so older stored entries may be missing some of these.
+      const [logType, direction, , durationStr] = item.text.replace('[CALL_LOG:', '').replace(']', '').split(':');
       let logTitle = '';
       let logIcon: keyof typeof Ionicons.glyphMap = 'call';
       let isMissed = false;
