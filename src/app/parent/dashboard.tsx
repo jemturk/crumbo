@@ -414,7 +414,9 @@ export default function ParentDashboard() {
     await StorageService.updateKidSettingsForProfile(kid.cookieCode, {
       chatDisabled: nextChatDisabled,
       callingDisabled: nextCallingDisabled,
-      videoCallingDisabled: nextVideoCallingDisabled
+      videoCallingDisabled: nextVideoCallingDisabled,
+      photosDisabled: !!kid.photosDisabled,
+      drawingDisabled: !!kid.drawingDisabled
     });
     await StorageService.syncParentData().catch(e => console.error(e));
     await loadSettings();
@@ -436,7 +438,9 @@ export default function ParentDashboard() {
     await StorageService.updateKidSettingsForProfile(kid.cookieCode, {
       chatDisabled: nextChatDisabled,
       callingDisabled: nextCallingDisabled,
-      videoCallingDisabled: nextVideoCallingDisabled
+      videoCallingDisabled: nextVideoCallingDisabled,
+      photosDisabled: !!kid.photosDisabled,
+      drawingDisabled: !!kid.drawingDisabled
     });
     await StorageService.syncParentData().catch(e => console.error(e));
     await loadSettings();
@@ -456,7 +460,35 @@ export default function ParentDashboard() {
     await StorageService.updateKidSettingsForProfile(kid.cookieCode, {
       chatDisabled: nextChatDisabled,
       callingDisabled: nextCallingDisabled,
-      videoCallingDisabled: nextVideoCallingDisabled
+      videoCallingDisabled: nextVideoCallingDisabled,
+      photosDisabled: !!kid.photosDisabled,
+      drawingDisabled: !!kid.drawingDisabled
+    });
+    await StorageService.syncParentData().catch(e => console.error(e));
+    await loadSettings();
+  };
+
+  // Independent of chat/calling/video and of each other — no cascade logic, unlike the three
+  // handlers above.
+  const handleTogglePhotos = async (kid: KidProfile) => {
+    await StorageService.updateKidSettingsForProfile(kid.cookieCode, {
+      chatDisabled: !!kid.chatDisabled,
+      callingDisabled: !!kid.callingDisabled,
+      videoCallingDisabled: !!kid.videoCallingDisabled,
+      photosDisabled: !kid.photosDisabled,
+      drawingDisabled: !!kid.drawingDisabled
+    });
+    await StorageService.syncParentData().catch(e => console.error(e));
+    await loadSettings();
+  };
+
+  const handleToggleDrawing = async (kid: KidProfile) => {
+    await StorageService.updateKidSettingsForProfile(kid.cookieCode, {
+      chatDisabled: !!kid.chatDisabled,
+      callingDisabled: !!kid.callingDisabled,
+      videoCallingDisabled: !!kid.videoCallingDisabled,
+      photosDisabled: !!kid.photosDisabled,
+      drawingDisabled: !kid.drawingDisabled
     });
     await StorageService.syncParentData().catch(e => console.error(e));
     await loadSettings();
@@ -576,13 +608,33 @@ export default function ParentDashboard() {
                           </TouchableOpacity>
 
                           {/* Video Call Toggle */}
-                          <TouchableOpacity 
+                          <TouchableOpacity
                             style={[styles.toggleCircle, { width: s(40), height: s(40), borderRadius: s(20) }, kid.videoCallingDisabled ? styles.toggleRedBg : styles.toggleGreenBg]}
                             onPress={() => handleToggleVideo(kid)}
                             activeOpacity={0.8}
                           >
                             <Ionicons name="videocam" size={s(20)} color="#FFFFFF" />
                             {kid.videoCallingDisabled && <View style={styles.slashOverlay} />}
+                          </TouchableOpacity>
+
+                          {/* Photos Toggle */}
+                          <TouchableOpacity
+                            style={[styles.toggleCircle, { width: s(40), height: s(40), borderRadius: s(20) }, kid.photosDisabled ? styles.toggleRedBg : styles.toggleGreenBg]}
+                            onPress={() => handleTogglePhotos(kid)}
+                            activeOpacity={0.8}
+                          >
+                            <Ionicons name="image" size={s(20)} color="#FFFFFF" />
+                            {kid.photosDisabled && <View style={styles.slashOverlay} />}
+                          </TouchableOpacity>
+
+                          {/* Drawing Toggle */}
+                          <TouchableOpacity
+                            style={[styles.toggleCircle, { width: s(40), height: s(40), borderRadius: s(20) }, kid.drawingDisabled ? styles.toggleRedBg : styles.toggleGreenBg]}
+                            onPress={() => handleToggleDrawing(kid)}
+                            activeOpacity={0.8}
+                          >
+                            <Ionicons name="brush" size={s(20)} color="#FFFFFF" />
+                            {kid.drawingDisabled && <View style={styles.slashOverlay} />}
                           </TouchableOpacity>
                         </View>
 
@@ -1295,12 +1347,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   controlsRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+    flexDirection: 'column',
+    gap: 8,
   },
   togglesGroup: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 10,
   },
   toggleCircle: {
@@ -1328,6 +1380,7 @@ const styles = StyleSheet.create({
   friendsLogsBtn: {
     flexDirection: 'row',
     alignItems: 'center',
+    alignSelf: 'flex-start',
     backgroundColor: '#FFFDF5',
     borderWidth: 1,
     borderColor: '#FFEFC0',

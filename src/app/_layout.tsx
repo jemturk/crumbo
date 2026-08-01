@@ -7,6 +7,7 @@ import { StatusBar } from 'expo-status-bar';
 import { useEffect, useRef } from 'react';
 
 import { Platform, StatusBar as RNStatusBar } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
 function NavigationLayout() {
   const { theme, colors } = useSettings();
@@ -106,8 +107,14 @@ export default function RootLayout() {
   }, []);
 
   return (
-    <SettingsProvider>
-      <NavigationLayout />
-    </SettingsProvider>
+    // Required by react-native-gesture-handler's Gesture/GestureDetector API (used by the
+    // drawing canvas) — without a root view somewhere above it, gestures silently fail to
+    // recognize touches rather than throwing. DrawingCanvasModal adds its own nested one too,
+    // since RN's Modal renders into a separate native root that this one doesn't reach into.
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <SettingsProvider>
+        <NavigationLayout />
+      </SettingsProvider>
+    </GestureHandlerRootView>
   );
 }

@@ -1,9 +1,13 @@
+import AttachmentMenuModal from '@/components/AttachmentMenuModal';
 import CustomAlertModal, { AlertButton } from '@/components/CustomAlertModal';
+import DrawingCanvasModal from '@/components/DrawingCanvasModal';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { useCall } from '@/hooks/use-call';
 import { useDisplayScale } from '@/hooks/use-display-scale';
 import { Friend, KidProfile, Message, StorageService } from '@/services/storage';
 import { Ionicons } from '@expo/vector-icons';
+import { Image } from 'expo-image';
+import * as ImagePicker from 'expo-image-picker';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -89,7 +93,13 @@ export default function ChatScreen() {
   const [chatDisabled, setChatDisabled] = useState(false);
   const [callingDisabled, setCallingDisabled] = useState(false);
   const [videoCallingDisabled, setVideoCallingDisabled] = useState(false);
+  const [photosDisabled, setPhotosDisabled] = useState(false);
+  const [drawingDisabled, setDrawingDisabled] = useState(false);
   const [pairingStatus, setPairingStatus] = useState<'paired' | 'pending'>('paired');
+
+  // Photo/drawing attachment flow
+  const [attachmentMenuVisible, setAttachmentMenuVisible] = useState(false);
+  const [drawingModalVisible, setDrawingModalVisible] = useState(false);
 
   // Custom Alert State
   const [alertConfig, setAlertConfig] = useState<{
@@ -232,6 +242,8 @@ export default function ChatScreen() {
         setChatDisabled(!!kidProf.chatDisabled);
         setCallingDisabled(!!kidProf.callingDisabled);
         setVideoCallingDisabled(!!kidProf.videoCallingDisabled);
+        setPhotosDisabled(!!kidProf.photosDisabled);
+        setDrawingDisabled(!!kidProf.drawingDisabled);
       }
 
       if (currentFriend) {
@@ -276,6 +288,8 @@ export default function ChatScreen() {
         setChatDisabled(!!kidProf.chatDisabled);
         setCallingDisabled(!!kidProf.callingDisabled);
         setVideoCallingDisabled(!!kidProf.videoCallingDisabled);
+        setPhotosDisabled(!!kidProf.photosDisabled);
+        setDrawingDisabled(!!kidProf.drawingDisabled);
       }
 
       const currentFriend = friendRef.current;
@@ -305,6 +319,71 @@ export default function ChatScreen() {
       setMessages(prev => (prev.find(m => m.id === savedMsg.id) ? prev : [...prev, savedMsg]));
     } catch (e) {
       console.error('Error sending message', e);
+    }
+  };
+
+  // --- Photos + drawings -----------------------------------------------------
+  const sendImage = async (uri: string) => {
+    if (!friend) return;
+    try {
+      const savedMsg = await StorageService.sendImageMessage(friendId, uri);
+      setMessages(prev => (prev.find(m => m.id === savedMsg.id) ? prev : [...prev, savedMsg]));
+    } catch (e) {
+      console.error('Error sending photo', e);
+      showAlert('Send Failed', "Couldn't send that photo — check your connection and try again.");
+    }
+  };
+
+  const handleTakePhoto = async () => {
+    setAttachmentMenuVisible(false);
+    if (photosDisabled) {
+      showAlert('Paused', 'Sending photos is paused by your parent.');
+      return;
+    }
+    const permission = await ImagePicker.requestCameraPermissionsAsync();
+    if (!permission.granted) {
+      showAlert('Permission Required', 'Camera permission is required to take a photo.');
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({ quality: 0.8 });
+    if (result.canceled) return;
+    await sendImage(result.assets[0].uri);
+  };
+
+  const handleChooseFromGallery = async () => {
+    setAttachmentMenuVisible(false);
+    if (photosDisabled) {
+      showAlert('Paused', 'Sending photos is paused by your parent.');
+      return;
+    }
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      showAlert('Permission Required', 'Photo library permission is required to choose a photo.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({ quality: 0.8, mediaTypes: ['images'] });
+    if (result.canceled) return;
+    await sendImage(result.assets[0].uri);
+  };
+
+  const handleOpenDrawing = () => {
+    setAttachmentMenuVisible(false);
+    if (drawingDisabled) {
+      showAlert('Paused', 'Sending drawings is paused by your parent.');
+      return;
+    }
+    setDrawingModalVisible(true);
+  };
+
+  const handleSendDrawing = async (uri: string) => {
+    setDrawingModalVisible(false);
+    if (!friend) return;
+    try {
+      const savedMsg = await StorageService.sendDrawingMessage(friendId, uri);
+      setMessages(prev => (prev.find(m => m.id === savedMsg.id) ? prev : [...prev, savedMsg]));
+    } catch (e) {
+      console.error('Error sending drawing', e);
+      showAlert('Send Failed', "Couldn't send that drawing — check your connection and try again.");
     }
   };
 
@@ -393,6 +472,36 @@ export default function ChatScreen() {
             </Text>
             <Text style={[styles.callLogTime, { color: colors.textSecondary }, { fontSize: s(10) }]}>{formatTime(item.timestamp)}</Text>
           </View>
+        </View>
+      );
+    }
+
+    const isImage = item.text.startsWith('[IMAGE:');
+    const isDrawing = item.text.startsWith('[DRAWING:');
+
+    if (isImage || isDrawing) {
+      const url = item.text.replace(isImage ? '[IMAGE:' : '[DRAWING:', '').replace(/\]$/, '');
+      const isMeMedia = item.sender === 'me';
+      // Checked against THIS device's own current lock state, regardless of who sent it — a
+      // locked kid can't send OR see photos/drawings, including their own already-sent ones
+      // once their lock turns on (render-time check, not a one-time send-time gate).
+      const isBlocked = isImage ? photosDisabled : drawingDisabled;
+
+      return (
+        <View style={[styles.messageRow, isMeMedia ? styles.myRow : styles.theirRow]}>
+          {isBlocked ? (
+            <View style={[styles.mediaBubble, styles.mediaBlockedBubble, { backgroundColor: isDark ? '#3D1B1B' : '#FFF5F5', borderColor: isDark ? '#5C2525' : '#FFD1D1' }, { width: s(200), height: s(200), borderRadius: s(16) }]}>
+              <Ionicons name="lock-closed" size={s(28)} color={colors.dangerText} />
+              <Text style={[styles.mediaBlockedText, { color: colors.dangerText, fontSize: s(13) }]}>
+                {isImage ? 'Photo hidden' : 'Drawing hidden'}
+              </Text>
+            </View>
+          ) : (
+            <Image source={{ uri: url }} style={[styles.mediaBubble, { width: s(200), height: s(200), borderRadius: s(16) }]} contentFit="cover" transition={150} />
+          )}
+          <Text style={[styles.timestamp, isMeMedia ? styles.myTimestamp : styles.theirTimestamp, { color: colors.textSecondary }, { fontSize: s(10) }]}>
+            {formatTime(item.timestamp)}
+          </Text>
         </View>
       );
     }
@@ -491,6 +600,12 @@ export default function ChatScreen() {
           </View>
         ) : (
           <View style={[styles.inputArea, { backgroundColor: colors.cardBg, borderColor: colors.border }, { paddingBottom: Platform.OS === 'android' ? (insets.bottom > 0 && !keyboardVisible ? insets.bottom + s(12) : s(12)) : s(12), paddingHorizontal: s(16), paddingVertical: s(8), gap: s(12) }]}>
+            <TouchableOpacity
+              style={[styles.attachButton, { width: s(40), height: s(40), borderRadius: s(20) }]}
+              onPress={() => setAttachmentMenuVisible(true)}
+            >
+              <Ionicons name="add-circle" size={s(28)} color={colors.textSecondary} />
+            </TouchableOpacity>
             <View style={[styles.inputContainer, { backgroundColor: colors.inputBg, borderColor: colors.borderStrong }, { paddingHorizontal: s(16), borderRadius: s(24), height: s(48) }]}>
               <TextInput
                 style={[styles.textInput, { color: colors.inputText }, { fontSize: s(16) }]}
@@ -683,6 +798,20 @@ export default function ChatScreen() {
         buttons={alertConfig.buttons}
         onClose={() => setAlertConfig(prev => ({ ...prev, visible: false }))}
       />
+      <AttachmentMenuModal
+        visible={attachmentMenuVisible}
+        photosDisabled={photosDisabled}
+        drawingDisabled={drawingDisabled}
+        onClose={() => setAttachmentMenuVisible(false)}
+        onTakePhoto={handleTakePhoto}
+        onChooseFromGallery={handleChooseFromGallery}
+        onDraw={handleOpenDrawing}
+      />
+      <DrawingCanvasModal
+        visible={drawingModalVisible}
+        onClose={() => setDrawingModalVisible(false)}
+        onSend={handleSendDrawing}
+      />
     </SafeAreaView>
   );
 }
@@ -768,6 +897,18 @@ const styles = StyleSheet.create({
     color: '#4E342E',
     lineHeight: 22,
   },
+  mediaBubble: {
+    overflow: 'hidden',
+  },
+  mediaBlockedBubble: {
+    borderWidth: 2,
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 8,
+  },
+  mediaBlockedText: {
+    fontWeight: '700',
+  },
   timestamp: {
     fontSize: 11,
     color: '#8D6E63',
@@ -831,6 +972,10 @@ const styles = StyleSheet.create({
   },
   sendButtonDisabled: {
     opacity: 0.5,
+  },
+  attachButton: {
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   headerRight: {
     flexDirection: 'row',

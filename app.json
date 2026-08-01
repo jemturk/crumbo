@@ -60,6 +60,13 @@
           "microphonePermission": "Allow Crumbo to access your microphone for voice calls."
         }
       ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow Crumbo to access your photos so you can send them to a friend.",
+          "cameraPermission": "Allow Crumbo to access your camera to take a photo to send to a friend."
+        }
+      ],
       "@config-plugins/react-native-callkeep",
       "./plugins/withCallkeepSelfManagedPermissions.js",
       [

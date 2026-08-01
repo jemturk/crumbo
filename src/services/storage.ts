@@ -1,5 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Crypto from 'expo-crypto';
+import { File } from 'expo-file-system';
+import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import { supabase } from './supabase';
 
 // Interfaces
@@ -28,6 +30,14 @@ export interface Friend {
   avatarEmoji: string;
 }
 
+// Adding a new per-kid lock flag? There's no single source of truth for KidProfile — it's
+// manually reconstructed at every one of these sites, so a new flag must be added to all of
+// them or it'll silently fail to persist/sync: createKidProfile, buildParentPushTokenPayload,
+// fetchAndRestoreParentData, deleteKidProfile's reactivation, updateKidSettingsForProfile's
+// (and updateKidSettings's) settings type, activateKidProfile, loginKidWithCode, and
+// syncKidProfileAndFriends (the most important one — it's what delivers a parent's toggle to
+// the kid's device). Also: every settings-object literal passed to updateKidSettingsForProfile
+// in dashboard.tsx.
 export interface KidProfile {
   name: string;
   cookieCode: string;
@@ -35,6 +45,8 @@ export interface KidProfile {
   chatDisabled?: boolean;
   callingDisabled?: boolean;
   videoCallingDisabled?: boolean;
+  photosDisabled?: boolean;
+  drawingDisabled?: boolean;
   friends?: any[];
 }
 
@@ -159,6 +171,47 @@ async function insertOutboxEntry(entry: OutboxEntry): Promise<boolean> {
   }
 }
 
+/**
+ * Resizes/compresses a locally-picked photo or captured drawing and uploads it to the
+ * `kid_media` Supabase Storage bucket (see supabase/migrations/20260801000000_kid_media_bucket.sql),
+ * returning its public URL. Used by sendImageMessage/sendDrawingMessage, which embed the URL
+ * in the message text (`[IMAGE:<url>]` / `[DRAWING:<url>]`) rather than storing image bytes
+ * directly — keeps the local per-friend AsyncStorage message cache small.
+ *
+ * Unlike a failed messages-row insert (which the outbox retries), a failed upload has nothing
+ * to retry from — there's no local record of "a photo was supposed to go here." Callers should
+ * let this throw and show a "couldn't send" alert rather than writing anything locally first.
+ */
+async function compressAndUploadImage(localUri: string, kind: 'photo' | 'drawing', senderCookieCode: string): Promise<string> {
+  const manipulated =
+    kind === 'photo'
+      ? await ImageManipulator.manipulate(localUri)
+          .resize({ width: 1080 })
+          .renderAsync()
+          .then(image => image.saveAsync({ compress: 0.6, format: SaveFormat.JPEG }))
+      // Drawings stay lossless PNG — the canvas is a plain white background (like paper), and
+      // JPEG compression would visibly smear/fringe the thin strokes drawn on it.
+      : await ImageManipulator.manipulate(localUri)
+          .renderAsync()
+          .then(image => image.saveAsync({ format: SaveFormat.PNG }));
+
+  const file = new File(manipulated.uri);
+  const bytes = await file.arrayBuffer();
+  const ext = kind === 'photo' ? 'jpg' : 'png';
+  const path = `${senderCookieCode}/${kind}_${Crypto.randomUUID()}.${ext}`;
+
+  const { error } = await supabase.storage
+    .from('kid_media')
+    .upload(path, bytes, { contentType: kind === 'photo' ? 'image/jpeg' : 'image/png' });
+
+  if (error) {
+    throw new Error(error.message || 'Failed to upload image');
+  }
+
+  const { data } = supabase.storage.from('kid_media').getPublicUrl(path);
+  return data.publicUrl;
+}
+
 function randomCookieCode(): string {
   const part1 = Math.floor(100 + Math.random() * 900);
   const part2 = Math.floor(100 + Math.random() * 900);
@@ -270,6 +323,8 @@ export const StorageService = {
       chatDisabled: false,
       callingDisabled: false,
       videoCallingDisabled: false,
+      photosDisabled: false,
+      drawingDisabled: false,
       friends: initialFriends
     };
 
@@ -631,6 +686,8 @@ export const StorageService = {
         chatDisabled: !!k.chatDisabled,
         callingDisabled: !!k.callingDisabled,
         videoCallingDisabled: !!k.videoCallingDisabled,
+        photosDisabled: !!k.photosDisabled,
+        drawingDisabled: !!k.drawingDisabled,
         friends: friendsList.map((f: any) => ({
           id: f.id,
           name: f.name,
@@ -746,7 +803,9 @@ export const StorageService = {
             cookieCode: kidToActivate.cookieCode,
             chatDisabled: !!kidToActivate.chatDisabled,
             callingDisabled: !!kidToActivate.callingDisabled,
-            videoCallingDisabled: !!kidToActivate.videoCallingDisabled
+            videoCallingDisabled: !!kidToActivate.videoCallingDisabled,
+            photosDisabled: !!kidToActivate.photosDisabled,
+            drawingDisabled: !!kidToActivate.drawingDisabled
           };
           await AsyncStorage.setItem(KEYS.KID_PROFILE, JSON.stringify(kidProfile));
 
@@ -764,7 +823,7 @@ export const StorageService = {
     return false;
   },
 
-  async updateKidSettings(settings: { chatDisabled: boolean; callingDisabled: boolean; videoCallingDisabled: boolean }): Promise<void> {
+  async updateKidSettings(settings: { chatDisabled: boolean; callingDisabled: boolean; videoCallingDisabled: boolean; photosDisabled: boolean; drawingDisabled: boolean }): Promise<void> {
     const profile = await this.getKidProfile();
     if (profile) {
       await this.updateKidSettingsForProfile(profile.cookieCode, settings);
@@ -812,6 +871,59 @@ export const StorageService = {
     return newMsg;
   },
 
+  /**
+   * Sends a photo (from camera or gallery). Unlike sendMessage/sendCallLogMessage, this
+   * uploads FIRST and only writes anything (local cache or outbox) once there's a real URL —
+   * a failed upload has nothing to retry from, so callers should let this throw and show a
+   * "couldn't send" alert rather than optimistically appending a message first.
+   */
+  async sendImageMessage(friendId: string, localUri: string): Promise<Message> {
+    return this.sendMediaMessage(friendId, localUri, 'photo', 'IMAGE');
+  },
+
+  /** Sends a hand-drawn sketch captured from the drawing canvas. See sendImageMessage. */
+  async sendDrawingMessage(friendId: string, localUri: string): Promise<Message> {
+    return this.sendMediaMessage(friendId, localUri, 'drawing', 'DRAWING');
+  },
+
+  async sendMediaMessage(friendId: string, localUri: string, kind: 'photo' | 'drawing', prefix: 'IMAGE' | 'DRAWING'): Promise<Message> {
+    const profile = await this.getKidProfile();
+    const friends = await this.getFriends();
+    const friend = friends.find(f => f.id === friendId);
+    if (!profile || !friend) {
+      throw new Error('No active profile or friend to send to');
+    }
+
+    const url = await compressAndUploadImage(localUri, kind, profile.cookieCode);
+    const text = `[${prefix}:${url}]`;
+    const newMsgId = Crypto.randomUUID();
+    const newMsg: Message = {
+      id: newMsgId,
+      text,
+      timestamp: new Date().toISOString(),
+      sender: 'me',
+    };
+
+    await withMessagesLock(friendId, async () => {
+      const messages = await readCachedMessages(friendId);
+      await AsyncStorage.setItem(`${KEYS.MESSAGES_PREFIX}${friendId}`, JSON.stringify([...messages, newMsg]));
+    });
+
+    const entry: OutboxEntry = {
+      id: newMsgId,
+      senderCode: profile.cookieCode,
+      receiverCode: friend.cookieCode,
+      text,
+      createdAt: newMsg.timestamp,
+    };
+    const synced = await insertOutboxEntry(entry);
+    if (!synced) {
+      await addToOutbox(friendId, entry);
+    }
+
+    return newMsg;
+  },
+
   async deleteKidProfile(cookieCode: string): Promise<void> {
     const kids = await this.getKidsList();
     const updatedKids = kids.filter(k => k.cookieCode !== cookieCode);
@@ -827,7 +939,9 @@ export const StorageService = {
           cookieCode: nextActive.cookieCode,
           chatDisabled: !!nextActive.chatDisabled,
           callingDisabled: !!nextActive.callingDisabled,
-          videoCallingDisabled: !!nextActive.videoCallingDisabled
+          videoCallingDisabled: !!nextActive.videoCallingDisabled,
+          photosDisabled: !!nextActive.photosDisabled,
+          drawingDisabled: !!nextActive.drawingDisabled
         }));
         if (nextActive.friends) {
           await AsyncStorage.setItem(KEYS.FRIENDS, JSON.stringify(nextActive.friends));
@@ -841,7 +955,7 @@ export const StorageService = {
 
   async updateKidSettingsForProfile(
     cookieCode: string, 
-    settings: { chatDisabled: boolean; callingDisabled: boolean; videoCallingDisabled: boolean }
+    settings: { chatDisabled: boolean; callingDisabled: boolean; videoCallingDisabled: boolean; photosDisabled: boolean; drawingDisabled: boolean }
   ): Promise<void> {
     const kids = await this.getKidsList();
     const updatedKids = kids.map(k => {
@@ -874,7 +988,9 @@ export const StorageService = {
         cookieCode: target.cookieCode,
         chatDisabled: !!target.chatDisabled,
         callingDisabled: !!target.callingDisabled,
-        videoCallingDisabled: !!target.videoCallingDisabled
+        videoCallingDisabled: !!target.videoCallingDisabled,
+        photosDisabled: !!target.photosDisabled,
+        drawingDisabled: !!target.drawingDisabled
       }));
       if (target.friends) {
         await AsyncStorage.setItem(KEYS.FRIENDS, JSON.stringify(target.friends));
@@ -924,7 +1040,9 @@ export const StorageService = {
           avatarEmoji: targetKid.avatarEmoji,
           chatDisabled: !!targetKid.chatDisabled,
           callingDisabled: !!targetKid.callingDisabled,
-          videoCallingDisabled: !!targetKid.videoCallingDisabled
+          videoCallingDisabled: !!targetKid.videoCallingDisabled,
+          photosDisabled: !!targetKid.photosDisabled,
+          drawingDisabled: !!targetKid.drawingDisabled
         };
         await AsyncStorage.setItem(KEYS.KID_PROFILE, JSON.stringify(kidProfile));
         await AsyncStorage.setItem(KEYS.IS_SUBSCRIBED, 'true');
@@ -997,7 +1115,9 @@ export const StorageService = {
             avatarEmoji: targetKid.avatarEmoji,
             chatDisabled: !!targetKid.chatDisabled,
             callingDisabled: !!targetKid.callingDisabled,
-            videoCallingDisabled: !!targetKid.videoCallingDisabled
+            videoCallingDisabled: !!targetKid.videoCallingDisabled,
+            photosDisabled: !!targetKid.photosDisabled,
+            drawingDisabled: !!targetKid.drawingDisabled
           };
           await AsyncStorage.setItem(KEYS.KID_PROFILE, JSON.stringify(updatedProfile));
           if (targetKid.friends) {
