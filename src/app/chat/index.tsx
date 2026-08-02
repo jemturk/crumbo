@@ -80,7 +80,22 @@ export default function ChatDashboard() {
       // cancelled from their own device (see handleCancelSubscription in dashboard.tsx) is
       // reflected immediately here rather than on some later focus (bug #6). If this fails
       // (offline etc.) isSubscribed() below just falls back to the last-known local flag.
-      const syncedProf = await StorageService.syncKidProfileAndFriends();
+      let syncedProf: KidProfile | null = null;
+      try {
+        syncedProf = await StorageService.syncKidProfileAndFriends();
+      } catch (e) {
+        if (e instanceof Error && e.message === 'KID_NOT_FOUND') {
+          // This device's cookie code no longer resolves to any kid anywhere — it was removed,
+          // or its code was rotated out from under this exact device (see regenerateKidCode).
+          // A stolen/leaked code being used elsewhere doesn't hit this path (that device just
+          // never bound in the first place); this is specifically "this used to be me".
+          await StorageService.logoutKid();
+          router.replace('/');
+          return;
+        }
+        // Any other failure (network etc.) — fall through and use the last-known local cache,
+        // same leniency as before this device-binding check existed.
+      }
 
       const isSub = await StorageService.isSubscribed();
       if (!isSub) {

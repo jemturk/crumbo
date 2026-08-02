@@ -16,13 +16,31 @@ import * as Clipboard from 'expo-clipboard';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { StorageService, KidProfile } from '@/services/storage';
+import { supabase } from '@/services/supabase';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import CustomAlertModal, { AlertButton } from '@/components/CustomAlertModal';
+import OnboardingModal from '@/components/OnboardingModal';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import QRCode from 'react-native-qrcode-svg';
 import { useDisplayScale } from '@/hooks/use-display-scale';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { useSettings } from '@/context/settings-context';
+import { Image } from 'expo-image';
+
+// Mirrors CALL_LOG_COLORS in chat/[friendId].tsx — kept in sync so a parent reviewing logs
+// sees the exact same call-type colors a kid sees in their own chat.
+const CALL_LOG_COLORS: Record<string, { fg: string; fgDark: string; bg: string; bgDark: string; border: string; borderDark: string }> = {
+  MISSED_AUDIO: { fg: '#D32F2F', fgDark: '#FF8A80', bg: '#FFEBEE', bgDark: '#4C1E20', border: '#FFCDD2', borderDark: '#5C2E30' },
+  MISSED_VIDEO: { fg: '#7B1FA2', fgDark: '#CE93D8', bg: '#F3E5F5', bgDark: '#3B1F47', border: '#E1BEE7', borderDark: '#4A2B58' },
+  ENDED_AUDIO: { fg: '#00796B', fgDark: '#4DB6AC', bg: '#E0F2F1', bgDark: '#123330', border: '#B2DFDB', borderDark: '#1F4A45' },
+  ENDED_VIDEO: { fg: '#1976D2', fgDark: '#64B5F6', bg: '#E3F2FD', bgDark: '#12293D', border: '#BBDEFB', borderDark: '#1E3A5A' },
+};
+
+const formatCallDuration = (totalSeconds: number) => {
+  const mins = Math.floor(totalSeconds / 60);
+  const secs = totalSeconds % 60;
+  return `${mins}:${secs.toString().padStart(2, '0')}`;
+};
 
 export default function ParentDashboard() {
   const router = useRouter();
@@ -63,6 +81,7 @@ export default function ParentDashboard() {
   // Modals
   const [friendsModalVisible, setFriendsModalVisible] = useState(false);
   const [addKidModalVisible, setAddKidModalVisible] = useState(false);
+  const [onboardingVisible, setOnboardingVisible] = useState(false);
   const [newKidName, setNewKidName] = useState('');
   const [selectedKidForLogs, setSelectedKidForLogs] = useState<KidProfile | null>(null);
   const [syncing, setSyncing] = useState(false);
@@ -189,11 +208,12 @@ export default function ParentDashboard() {
       [
         { text: "Cancel", style: "cancel" },
         { 
-          text: "Log Out", 
+          text: "Log Out",
           style: "destructive",
           onPress: async () => {
+            await supabase.auth.signOut();
             await StorageService.saveParentEmail('');
-            await StorageService.saveParentPassword('');
+            await StorageService.clearManagedKidsCache();
             setParentEmail(null);
             router.replace('/');
           }
@@ -212,25 +232,28 @@ export default function ParentDashboard() {
     try {
       setSyncing(true);
       const restored = await StorageService.fetchAndRestoreParentData(trimmedEmail);
-      if (restored) {
-        showAlert(
-          "Welcome Back! 🎉", 
-          "We found your existing parent profile. All settings and child data have been restored.",
-          [
-            { text: "OK", onPress: async () => { await loadSettings(); } }
-          ]
-        );
-        setSyncing(false);
-        return;
-      }
-
+      // Force-activate and push the corrected state either way — restoring an existing row
+      // as-is would silently keep a stale subscribed:false from ever getting corrected (this is
+      // the one UI path meant to fix exactly that), and a kid's device mirrors that flag down
+      // from here, locking them out of their own already-active chat jar.
       await StorageService.saveParentEmail(trimmedEmail);
       await StorageService.setSubscribed(true);
       setParentEmail(trimmedEmail);
       setSubscribed(true);
       await StorageService.syncParentData();
       setSyncing(false);
-      showAlert("Subscription Activated!", "Your Crumbo parental control account is active.");
+
+      if (restored) {
+        showAlert(
+          "Welcome Back! 🎉",
+          "We found your existing parent profile. All settings and child data have been restored.",
+          [
+            { text: "OK", onPress: async () => { await loadSettings(); } }
+          ]
+        );
+      } else {
+        showAlert("Subscription Activated!", "Your Crumbo parental control account is active.");
+      }
     } catch (e) {
       setSyncing(false);
       showAlert("Error", "Could not complete registration.");
@@ -311,6 +334,31 @@ export default function ParentDashboard() {
             await loadSettings();
             setSyncing(false);
             showAlert("Deleted", "Profile successfully deleted.");
+          }
+        }
+      ]
+    );
+  };
+
+  const handleRegenerateCode = (cookieCode: string, name: string) => {
+    showAlert(
+      "Generate New Code?",
+      `${name}'s current Cookie Code will stop working immediately on any device — including their own. Only do this if they're switching to a new phone, or you suspect someone else has their code.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Generate New Code",
+          style: "destructive",
+          onPress: async () => {
+            setSyncing(true);
+            const newCode = await StorageService.regenerateKidCode(cookieCode);
+            await loadSettings();
+            setSyncing(false);
+            if (newCode) {
+              showAlert("New Code Generated 🍪", `${name}'s new Cookie Code is ${newCode}. They'll need to enter this to log back in.`);
+            } else {
+              showAlert("Error", "Could not generate a new code. Please check your connection and try again.");
+            }
           }
         }
       ]
@@ -505,20 +553,76 @@ export default function ParentDashboard() {
   const handleResetApp = async () => {
     showAlert(
       "Erase All Data?",
-      "This will erase ALL local profiles, friends, and messaging histories. This action cannot be undone.",
+      "This will erase ALL local profiles, friends, and messaging histories on this device, and log you out of the Parent Area. This action cannot be undone.",
       [
         { text: "Cancel", style: "cancel" },
         {
           text: "Erase Everything",
           style: "destructive",
           onPress: async () => {
+            // Wipe local state, but explicitly sign out first — AsyncStorage.clear() (inside
+            // clearAll) only erases the session's on-disk cache; the JS client still holds the
+            // access token in memory and would keep making authenticated calls until restart.
+            await supabase.auth.signOut();
             await StorageService.clearAll();
-            setSubscribed(false);
-            setParentEmail(null);
-            setProfile(null);
-            setEmailInput('');
-            setKidsList([]);
-            showAlert("Reset Completed", "All data successfully cleared.");
+            router.replace('/');
+          }
+        }
+      ]
+    );
+  };
+
+  const handleDeactivateThisDevice = () => {
+    if (!profile) return;
+    showAlert(
+      "Deactivate on This Device?",
+      `${profile.name}'s Cookie Code will be freed up, but their Cookie Code alone won't be enough to claim it — you'll get a one-time Activation Code to enter on the new phone, valid for 15 minutes. This device will stop showing ${profile.name} as active.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Deactivate",
+          style: "destructive",
+          onPress: async () => {
+            setSyncing(true);
+            const result = await StorageService.deactivateKidDevice(profile.cookieCode);
+            setSyncing(false);
+            if (result.success && result.claimCode) {
+              setProfile(null);
+              showAlert(
+                "Activation Code",
+                `On the new phone, enter Cookie Code ${profile.cookieCode} and Activation Code ${result.claimCode}. This code expires in 15 minutes and works once.`
+              );
+            } else {
+              showAlert("Error", "Could not deactivate this device. Please check your connection and try again.");
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  const handleDeleteServerData = () => {
+    showAlert(
+      "Delete Account & All Data?",
+      "This permanently deletes your parent account, every child profile, all chat and call history, and every uploaded photo or drawing from the server. Shared chat history is deleted for buddies too — this cannot be undone.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete Everything",
+          style: "destructive",
+          onPress: async () => {
+            setSyncing(true);
+            try {
+              await StorageService.deleteAccountFromServer();
+              // Best-effort only — the auth.users row is already gone at this point, so a
+              // failure here doesn't matter; clearAll() below wipes the session cache regardless.
+              await supabase.auth.signOut().catch(() => {});
+              await StorageService.clearAll();
+              router.replace('/');
+            } catch (e) {
+              setSyncing(false);
+              showAlert("Error", `Could not delete account: ${e instanceof Error ? e.message : 'unknown error'}`);
+            }
           }
         }
       ]
@@ -531,9 +635,14 @@ export default function ParentDashboard() {
       <View style={[styles.header, { borderBottomColor: colors.border, backgroundColor: colors.cardBg, paddingTop: Platform.OS === 'android' ? (insets.top > 0 ? insets.top + s(8) : s(44)) : s(16), paddingHorizontal: s(16), borderBottomWidth: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }]}>
         <Text style={[styles.headerTitle, { color: colors.text, fontSize: s(18) }]}>Parent Area</Text>
 
-        <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
-          <Ionicons name="log-out-outline" size={s(22)} color="#D32F2F" />
-        </TouchableOpacity>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: s(16) }}>
+          <TouchableOpacity style={styles.logoutButton} onPress={() => setOnboardingVisible(true)}>
+            <Ionicons name="help-circle-outline" size={s(28)} color={colors.textSecondary} />
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
+            <Ionicons name="log-out-outline" size={s(28)} color="#D32F2F" />
+          </TouchableOpacity>
+        </View>
       </View>
 
       <ScrollView contentContainerStyle={[styles.scrollContent, { padding: s(16), gap: s(16) }]}>
@@ -560,6 +669,12 @@ export default function ParentDashboard() {
             <View style={[styles.cardBody, { borderTopColor: colors.border }]}>
               {kidsList.length > 0 ? (
                 kidsList.map((kid) => {
+                  // Sending photos/drawings happens IN the chat, so with chat off they're
+                  // effectively unusable too — shown red here to reflect that, without actually
+                  // touching their own stored flag. Turning chat back on reveals whatever
+                  // photosDisabled/drawingDisabled already was, since it was never mutated.
+                  const photosEffectivelyDisabled = kid.chatDisabled || kid.photosDisabled;
+                  const drawingEffectivelyDisabled = kid.chatDisabled || kid.drawingDisabled;
                   return (
                     <View key={kid.cookieCode} style={[styles.childContainer, { borderColor: colors.border, padding: s(16), borderRadius: s(20), backgroundColor: isDark ? colors.inputBg : '#FFFDF8' }]}>
                       {/* Name and Delete Row */}
@@ -581,6 +696,13 @@ export default function ParentDashboard() {
                         
                         <TouchableOpacity style={[styles.qrBtn, { width: s(36), height: s(36), borderRadius: s(18), backgroundColor: isDark ? '#3D2A1D' : '#FFFDF5' }]} onPress={() => { setSelectedKidForLogs(kid); setQrCodeVisible(true); }}>
                           <Ionicons name="qr-code-outline" size={s(16)} color="#8D6E63" />
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                          style={[styles.qrBtn, { width: s(36), height: s(36), borderRadius: s(18), backgroundColor: isDark ? '#3D2A1D' : '#FFFDF5' }]}
+                          onPress={() => handleRegenerateCode(kid.cookieCode, kid.name)}
+                        >
+                          <Ionicons name="refresh-outline" size={s(16)} color="#8D6E63" />
                         </TouchableOpacity>
                       </View>
 
@@ -619,22 +741,22 @@ export default function ParentDashboard() {
 
                           {/* Photos Toggle */}
                           <TouchableOpacity
-                            style={[styles.toggleCircle, { width: s(40), height: s(40), borderRadius: s(20) }, kid.photosDisabled ? styles.toggleRedBg : styles.toggleGreenBg]}
+                            style={[styles.toggleCircle, { width: s(40), height: s(40), borderRadius: s(20) }, photosEffectivelyDisabled ? styles.toggleRedBg : styles.toggleGreenBg]}
                             onPress={() => handleTogglePhotos(kid)}
                             activeOpacity={0.8}
                           >
                             <Ionicons name="image" size={s(20)} color="#FFFFFF" />
-                            {kid.photosDisabled && <View style={styles.slashOverlay} />}
+                            {photosEffectivelyDisabled && <View style={styles.slashOverlay} />}
                           </TouchableOpacity>
 
                           {/* Drawing Toggle */}
                           <TouchableOpacity
-                            style={[styles.toggleCircle, { width: s(40), height: s(40), borderRadius: s(20) }, kid.drawingDisabled ? styles.toggleRedBg : styles.toggleGreenBg]}
+                            style={[styles.toggleCircle, { width: s(40), height: s(40), borderRadius: s(20) }, drawingEffectivelyDisabled ? styles.toggleRedBg : styles.toggleGreenBg]}
                             onPress={() => handleToggleDrawing(kid)}
                             activeOpacity={0.8}
                           >
                             <Ionicons name="brush" size={s(20)} color="#FFFFFF" />
-                            {kid.drawingDisabled && <View style={styles.slashOverlay} />}
+                            {drawingEffectivelyDisabled && <View style={styles.slashOverlay} />}
                           </TouchableOpacity>
                         </View>
 
@@ -800,32 +922,78 @@ export default function ParentDashboard() {
           )}
         </View>
 
-        {/* Accordion 4: Local Device Cache */}
+        {/* Accordion 4: Device & Account Data */}
         <View style={[styles.card, { backgroundColor: colors.cardBg, borderColor: colors.border, borderRadius: s(24) }]}>
-          <TouchableOpacity 
-            style={[styles.cardHeader, { paddingHorizontal: s(16), paddingVertical: s(14) }]} 
+          <TouchableOpacity
+            style={[styles.cardHeader, { paddingHorizontal: s(16), paddingVertical: s(14) }]}
             onPress={() => setCacheExpanded(!cacheExpanded)}
             activeOpacity={0.7}
           >
             <View style={styles.cardHeaderLeft}>
-              <Ionicons name="trash-outline" size={s(24)} color={colors.cardHeaderLeftIcon} style={styles.cardIcon} />
-              <Text style={[styles.cardTitle, { color: colors.text, fontSize: s(16) }]}>Local Device Cache</Text>
+              <Ionicons name="phone-portrait-outline" size={s(24)} color={colors.cardHeaderLeftIcon} style={styles.cardIcon} />
+              <Text style={[styles.cardTitle, { color: colors.text, fontSize: s(16) }]}>Device & Account Data</Text>
             </View>
-            <Ionicons 
-              name={cacheExpanded ? "chevron-up" : "chevron-down"} 
-              size={s(20)} 
-              color="#A1887F" 
+            <Ionicons
+              name={cacheExpanded ? "chevron-up" : "chevron-down"}
+              size={s(20)}
+              color="#A1887F"
             />
           </TouchableOpacity>
 
           {cacheExpanded && (
-            <View style={styles.cardBodyPadding}>
-              <Text style={[styles.infoText, { color: colors.textSecondary, fontSize: s(13), lineHeight: s(18) }]}>
-                Erase local cookies, pairing profiles, messaging history, and cached media on this local device. This action cannot be undone.
-              </Text>
-              <TouchableOpacity style={[styles.actionBtnSecondary, { backgroundColor: colors.actionBtnSecondaryBg, borderColor: colors.border, height: s(48), borderRadius: s(14) }]} onPress={handleResetApp}>
-                <Text style={[styles.actionBtnSecondaryText, { color: colors.actionBtnSecondaryText, fontSize: s(14) }]}>Erase All Local Data</Text>
-              </TouchableOpacity>
+            <View style={[styles.cardBodyPadding, { gap: s(12) }]}>
+              {/* Sub-section: active kid on this device */}
+              <View style={[styles.deviceDataSection, { backgroundColor: colors.bg, borderColor: colors.border }]}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: s(8), marginBottom: s(8) }}>
+                  <Ionicons name="person-circle-outline" size={s(18)} color={colors.textSecondary} />
+                  <Text style={[styles.inputLabel, { color: colors.text, fontSize: s(13) }]}>Active Kid on This Device</Text>
+                </View>
+                {profile ? (
+                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <Text style={[styles.infoText, { color: colors.textSecondary, fontSize: s(14), fontWeight: '700' }]}>
+                      {profile.name} ({profile.cookieCode})
+                    </Text>
+                    <TouchableOpacity
+                      style={[styles.actionBtnSecondary, { backgroundColor: colors.actionBtnSecondaryBg, borderColor: '#D32F2F', height: s(40), borderRadius: s(12), paddingHorizontal: s(12) }]}
+                      onPress={handleDeactivateThisDevice}
+                    >
+                      <Text style={[styles.actionBtnSecondaryText, { color: '#D32F2F', fontSize: s(13) }]}>Deactivate</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : (
+                  <Text style={[styles.infoText, { color: colors.textSecondary, fontSize: s(13) }]}>
+                    No kid is currently active on this device.
+                  </Text>
+                )}
+              </View>
+
+              {/* Sub-section: local data erasure */}
+              <View style={[styles.deviceDataSection, { backgroundColor: colors.bg, borderColor: colors.border }]}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: s(8), marginBottom: s(8) }}>
+                  <Ionicons name="trash-outline" size={s(18)} color={colors.textSecondary} />
+                  <Text style={[styles.inputLabel, { color: colors.text, fontSize: s(13) }]}>Local Data</Text>
+                </View>
+                <Text style={[styles.infoText, { color: colors.textSecondary, fontSize: s(13), lineHeight: s(18), marginBottom: s(10) }]}>
+                  Erase local cookies, pairing profiles, messaging history, and cached media on this device, and log out of the Parent Area. This action cannot be undone.
+                </Text>
+                <TouchableOpacity style={[styles.actionBtnSecondary, { backgroundColor: colors.actionBtnSecondaryBg, borderColor: colors.border, height: s(48), borderRadius: s(14) }]} onPress={handleResetApp}>
+                  <Text style={[styles.actionBtnSecondaryText, { color: colors.actionBtnSecondaryText, fontSize: s(14) }]}>Erase All Local Data</Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Sub-section: full account deletion */}
+              <View style={[styles.deviceDataSection, { backgroundColor: colors.bg, borderColor: '#D32F2F' }]}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: s(8), marginBottom: s(8) }}>
+                  <Ionicons name="warning-outline" size={s(18)} color="#D32F2F" />
+                  <Text style={[styles.inputLabel, { color: '#D32F2F', fontSize: s(13) }]}>Delete Account</Text>
+                </View>
+                <Text style={[styles.infoText, { color: colors.textSecondary, fontSize: s(13), lineHeight: s(18), marginBottom: s(10) }]}>
+                  Permanently delete your parent account and all of its data — profiles, chat and call history, and uploaded media — from the server. This action cannot be undone.
+                </Text>
+                <TouchableOpacity style={[styles.actionBtnSecondary, { backgroundColor: colors.actionBtnSecondaryBg, borderColor: '#D32F2F', height: s(48), borderRadius: s(14) }]} onPress={handleDeleteServerData}>
+                  <Text style={[styles.actionBtnSecondaryText, { color: '#D32F2F', fontSize: s(14) }]}>Delete Account & All Server Data</Text>
+                </TouchableOpacity>
+              </View>
             </View>
           )}
         </View>
@@ -874,10 +1042,13 @@ export default function ParentDashboard() {
                     ) : (
                       chatLogs.map((msg) => {
                         const isCallLog = msg.text.startsWith('[CALL_LOG:');
+                        const formatTime = (ts: string) => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
                         if (isCallLog) {
-                          // Newer rows carry a :INCOMING/:OUTGOING direction suffix — strip it here.
-                          const logType = msg.text.replace('[CALL_LOG:', '').replace(']', '').split(':')[0];
+                          // Direction suffix (INCOMING/OUTGOING) is who initiated the call; callUUID
+                          // and a completed call's trailing duration-in-seconds may be missing on
+                          // older rows — same format chat/[friendId].tsx parses.
+                          const [logType, direction, , durationStr] = msg.text.replace('[CALL_LOG:', '').replace(']', '').split(':');
                           let logTitle = '';
                           let logIcon: keyof typeof Ionicons.glyphMap = 'call';
                           let isMissed = false;
@@ -904,25 +1075,64 @@ export default function ParentDashboard() {
                               break;
                           }
 
+                          const durationSeconds = !isMissed && durationStr ? parseInt(durationStr, 10) : NaN;
+                          if (!isNaN(durationSeconds)) {
+                            logTitle = `${logTitle} · ${formatCallDuration(durationSeconds)}`;
+                          }
+
+                          const logColors = CALL_LOG_COLORS[logType] || CALL_LOG_COLORS.ENDED_AUDIO;
+                          const logColor = isDark ? logColors.fgDark : logColors.fg;
+
+                          // Direction is relative to whoever wrote the row; XOR with which kid this
+                          // log view's "me" is (selectedKidForLogs) to get "did that kid initiate it".
+                          const initiatedByMe = (msg.sender === 'me') === (direction === 'OUTGOING');
+                          const rowAlign = !direction ? styles.logRowCenter : initiatedByMe ? styles.logRowMe : styles.logRowThem;
+
                           return (
-                            <View key={msg.id} style={styles.logCallWrapper}>
-                              <View style={[styles.logCallContainer, isMissed ? styles.logCallMissed : styles.logCallEnded]}>
-                                <Ionicons name={logIcon} size={14} color={isMissed ? '#D32F2F' : '#8D6E63'} style={styles.logCallIcon} />
-                                <Text style={[styles.logCallText, isMissed && styles.logCallTextMissed]}>
+                            <View key={msg.id} style={[styles.logCallWrapper, rowAlign]}>
+                              <View style={[styles.logCallContainer, {
+                                backgroundColor: isDark ? logColors.bgDark : logColors.bg,
+                                borderColor: isDark ? logColors.borderDark : logColors.border,
+                              }]}>
+                                {direction && (
+                                  <Ionicons
+                                    name="arrow-up-outline"
+                                    size={12}
+                                    color={logColor}
+                                    style={{ transform: [{ rotate: initiatedByMe ? '45deg' : '225deg' }] }}
+                                  />
+                                )}
+                                <Ionicons name={logIcon} size={14} color={logColor} style={styles.logCallIcon} />
+                                <Text style={[styles.logCallText, { color: logColor }]}>
                                   {logTitle}
                                 </Text>
-                                <Text style={styles.logCallTime}>
-                                  {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                                </Text>
+                                <Text style={styles.logCallTime}>{formatTime(msg.timestamp)}</Text>
                               </View>
+                            </View>
+                          );
+                        }
+
+                        const isImage = msg.text.startsWith('[IMAGE:');
+                        const isDrawing = msg.text.startsWith('[DRAWING:');
+
+                        if (isImage || isDrawing) {
+                          const url = msg.text.replace(isImage ? '[IMAGE:' : '[DRAWING:', '').replace(/\]$/, '');
+                          const isMeMedia = msg.sender === 'me';
+                          return (
+                            <View key={msg.id} style={[styles.logCallWrapper, isMeMedia ? styles.logRowMe : styles.logRowThem]}>
+                              <Text style={styles.logMsgSender}>
+                                {isMeMedia ? selectedKidForLogs?.name : selectedBuddyForLogs?.name}
+                              </Text>
+                              <Image source={{ uri: url }} style={styles.logMediaImage} contentFit="cover" transition={150} />
+                              <Text style={styles.logMsgTime}>{formatTime(msg.timestamp)}</Text>
                             </View>
                           );
                         }
 
                         const isMe = msg.sender === 'me';
                         return (
-                          <View 
-                            key={msg.id} 
+                          <View
+                            key={msg.id}
                             style={[
                               styles.logMessageBubble,
                               isMe ? styles.logMsgKid : styles.logMsgBuddy
@@ -932,9 +1142,7 @@ export default function ParentDashboard() {
                               {isMe ? selectedKidForLogs?.name : selectedBuddyForLogs?.name}
                             </Text>
                             <Text style={styles.logMsgText}>{msg.text}</Text>
-                            <Text style={styles.logMsgTime}>
-                              {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                            </Text>
+                            <Text style={styles.logMsgTime}>{formatTime(msg.timestamp)}</Text>
                           </View>
                         );
                       })
@@ -1208,6 +1416,10 @@ export default function ParentDashboard() {
         buttons={alertConfig.buttons}
         onClose={() => setAlertConfig(prev => ({ ...prev, visible: false }))}
       />
+      <OnboardingModal
+        visible={onboardingVisible}
+        onDone={() => setOnboardingVisible(false)}
+      />
     </SafeAreaView>
   );
 }
@@ -1279,6 +1491,11 @@ const styles = StyleSheet.create({
   cardBodyPadding: {
     paddingHorizontal: 20,
     paddingBottom: 24,
+  },
+  deviceDataSection: {
+    borderWidth: 1,
+    borderRadius: 16,
+    padding: 14,
   },
   noChildrenText: {
     fontSize: 14,
@@ -1799,9 +2016,17 @@ const styles = StyleSheet.create({
     padding: 4,
   },
   logCallWrapper: {
-    alignSelf: 'center',
     marginVertical: 4,
     maxWidth: '85%',
+  },
+  logRowCenter: {
+    alignSelf: 'center',
+  },
+  logRowMe: {
+    alignSelf: 'flex-end',
+  },
+  logRowThem: {
+    alignSelf: 'flex-start',
   },
   logCallContainer: {
     flexDirection: 'row',
@@ -1812,30 +2037,24 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     gap: 6,
   },
-  logCallMissed: {
-    backgroundColor: '#FFEBEE',
-    borderColor: '#FFCDD2',
-  },
-  logCallEnded: {
-    backgroundColor: '#F5F5F5',
-    borderColor: '#E0E0E0',
-  },
   logCallIcon: {
     marginRight: 2,
   },
   logCallText: {
     fontSize: 13,
     fontWeight: '700',
-    color: '#4E342E',
-  },
-  logCallTextMissed: {
-    color: '#D32F2F',
   },
   logCallTime: {
     fontSize: 10,
     color: '#8D6E63',
     marginLeft: 6,
     fontWeight: '600',
+  },
+  logMediaImage: {
+    width: 160,
+    height: 160,
+    borderRadius: 16,
+    marginTop: 2,
   },
   // QR Dialog & Scanner Styles
   qrCodeDialog: {

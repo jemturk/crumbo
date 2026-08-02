@@ -12,7 +12,14 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState, Vibration } from 'react-native';
 import IncomingCall from '../../modules/incoming-call';
 
-export type CallStatus = 'ringing' | 'connected' | 'ended';
+// 'idle' = no call in progress at all — distinct from 'ringing', which used to double as both
+// "actually ringing" AND "just mounted, nothing has happened yet" (they were the same value).
+// The ring-timeout effect below only checked `callStatus === 'ringing'`, so 45s after simply
+// opening a chat screen — without ever placing or receiving a call — it fired anyway, tore down
+// call state, and wrote a bogus [CALL_LOG:MISSED_*] entry. Both real call-start paths
+// (startCall / handleSignal's START_*_CALL branch) already explicitly setCallStatus('ringing')
+// themselves, so this only changes what "nothing has happened yet" looks like.
+export type CallStatus = 'idle' | 'ringing' | 'connected' | 'ended';
 export type CallDirection = 'incoming' | 'outgoing';
 
 export interface IncomingCallParams {
@@ -64,7 +71,7 @@ export function useCall({
 }: UseCallOptions) {
   const [callModalVisible, setCallModalVisible] = useState(false);
   const [callTypeVideo, setCallTypeVideo] = useState(false);
-  const [callStatus, setCallStatus] = useState<CallStatus>('ringing');
+  const [callStatus, setCallStatus] = useState<CallStatus>('idle');
   const [callDuration, setCallDuration] = useState(0);
   const [callDirection, setCallDirection] = useState<CallDirection>('outgoing');
   const [callRoom, setCallRoom] = useState<string>('');
@@ -74,7 +81,7 @@ export function useCall({
   const [activeCallUuid, setActiveCallUuid] = useState<string | null>(null);
 
   const isMounted = useRef(true);
-  const callStatusRef = useRef<CallStatus>('ringing');
+  const callStatusRef = useRef<CallStatus>('idle');
   const callDurationRef = useRef(0);
   const callDirectionRef = useRef<CallDirection>('outgoing');
   const callRoomRef = useRef<string>('');

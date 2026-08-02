@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, TextInput, TouchableOpacity, SafeAreaView, Platform, ActivityIndicator, KeyboardAvoidingView, ScrollView } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -8,6 +8,10 @@ import { supabase } from '@/services/supabase';
 import CustomAlertModal, { AlertButton } from '@/components/CustomAlertModal';
 import { useDisplayScale } from '@/hooks/use-display-scale';
 import { useAppTheme } from '@/hooks/use-app-theme';
+
+// At least 8 characters, one letter, one number, one special character.
+const PASSWORD_COMPLEXITY_REGEX = /^(?=.*[A-Za-z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$/;
+const PASSWORD_REQUIREMENTS_TEXT = 'Password must be at least 8 characters and include a letter, a number, and a special character.';
 
 export default function ParentGate() {
   const router = useRouter();
@@ -20,8 +24,8 @@ export default function ParentGate() {
   
   const [emailInput, setEmailInput] = useState('');
   const [passwordInput, setPasswordInput] = useState('');
-  const [confirmInput, setConfirmInput] = useState('');
-  
+  const [showPassword, setShowPassword] = useState(false);
+
   const [error, setError] = useState(false);
   const [loading, setLoading] = useState(false);
 
@@ -56,6 +60,15 @@ export default function ParentGate() {
     }
   };
 
+  const handleResendVerification = async (email: string) => {
+    const { error: resendError } = await supabase.auth.resend({ type: 'signup', email });
+    if (resendError) {
+      showAlert("Error", "Could not resend the verification email. Please try again shortly.");
+    } else {
+      showAlert("Email Sent", `A new verification link was sent to ${email}.`);
+    }
+  };
+
   const handleSignIn = async () => {
     const email = emailInput.trim().toLowerCase();
     const pwd = passwordInput.trim();
@@ -72,73 +85,81 @@ export default function ParentGate() {
     setLoading(true);
     setError(false);
 
-    try {
-      const { data, error: fetchError } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('cookie_code', `PARENT:${email}`)
-        .single();
+    const { error: signInError } = await supabase.auth.signInWithPassword({ email, password: pwd });
 
-      if (fetchError) {
-        setLoading(false);
-        setError(true);
-        if (fetchError.code === 'PGRST116') {
-          showAlert("Account Not Found", "No account found with this email. Please register first.");
-        } else {
-          showAlert("Connection Error", "Could not connect to the database. Please check your network.");
-        }
-        return;
-      }
-
-      if (!data || !data.push_token) {
-        setLoading(false);
-        setError(true);
-        showAlert("Account Not Found", "No account found with this email. Please register first.");
-        return;
-      }
-
-      const payload = JSON.parse(data.push_token);
-      
-      if (payload.parentPassword === pwd) {
-        // Correct password! Call restore helper to pull profile
-        const restored = await StorageService.fetchAndRestoreParentData(email);
-        if (!restored) {
-          setLoading(false);
-          setError(true);
-          showAlert("Connection Error", "Could not restore your account data. Please check your network.");
-          return;
-        }
-        await StorageService.saveParentPassword(pwd);
-
-        setLoading(false);
-        router.replace('/parent/dashboard');
-      } else {
-        setLoading(false);
-        setError(true);
+    if (signInError) {
+      setLoading(false);
+      setError(true);
+      if (signInError.code === 'email_not_confirmed') {
+        showAlert("Verify Your Email", "Please confirm your email address before signing in — check your inbox for the verification link.", [
+          { text: "Resend Email", onPress: () => handleResendVerification(email) },
+          { text: "OK", style: "cancel" },
+        ]);
+      } else if (signInError.code === 'invalid_credentials') {
         setPasswordInput('');
-        showAlert("Access Denied", "Incorrect password. Please try again.");
+        showAlert("Access Denied", "Incorrect email or password. Please try again.");
+      } else {
+        console.error('Sign-in error:', signInError.code, signInError.status, signInError.message);
+        showAlert("Sign In Failed", `${signInError.message} (${signInError.code || 'unknown'})`);
       }
+      return;
+    }
+
+    try {
+      await StorageService.saveParentEmail(email);
+      const restored = await StorageService.fetchAndRestoreParentData(email);
+      if (!restored) {
+        // Signed in but no data row yet (shouldn't normally happen — register creates one).
+        // Set subscribed first — createParentAccount bakes the CURRENT isSubscribed() flag into
+        // the row it creates, so setting it after would create the row as subscribed:false.
+        await StorageService.setSubscribed(true);
+        await StorageService.createParentAccount(email);
+      }
+      setLoading(false);
+      router.replace('/parent/dashboard');
     } catch (e) {
       setLoading(false);
-      showAlert("Connection Error", "Could not connect to the database. Please check your network.");
+      showAlert("Connection Error", "Could not restore your account data. Please check your network.");
+    }
+  };
+
+  const handleForgotPassword = async () => {
+    const email = emailInput.trim().toLowerCase();
+    if (!email || !email.includes('@')) {
+      showAlert("Email Required", "Enter your email address above first, then tap \"Forgot password?\" again.");
+      return;
+    }
+
+    setLoading(true);
+    const { error: resetError } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: 'crumbo://reset-password',
+    });
+    setLoading(false);
+
+    // Supabase intentionally reports success here even for an email with no account, to avoid
+    // leaking which emails are registered — so this message is shown either way.
+    if (resetError) {
+      if (resetError.code === 'over_email_send_rate_limit') {
+        showAlert("Too Many Requests", "Supabase's shared email sender is rate-limited — please wait a bit before requesting another reset email.");
+      } else {
+        console.error('Reset password error:', resetError.code, resetError.status, resetError.message);
+        showAlert("Error", `${resetError.message} (${resetError.code || 'unknown'})`);
+      }
+    } else {
+      showAlert("Check Your Email 📬", `If an account exists for ${email}, a password reset link has been sent.`);
     }
   };
 
   const handleRegister = async () => {
     const email = emailInput.trim().toLowerCase();
     const pwd = passwordInput.trim();
-    const confirm = confirmInput.trim();
 
     if (!email || !email.includes('@')) {
       showAlert("Invalid Email", "Please enter a valid parent email address.");
       return;
     }
-    if (pwd.length < 4) {
-      showAlert("Weak Password", "Please set a password of at least 4 characters.");
-      return;
-    }
-    if (pwd !== confirm) {
-      showAlert("Passwords Match", "The passwords you entered do not match. Please try again.");
+    if (!PASSWORD_COMPLEXITY_REGEX.test(pwd)) {
+      showAlert("Weak Password", PASSWORD_REQUIREMENTS_TEXT);
       return;
     }
 
@@ -146,22 +167,33 @@ export default function ParentGate() {
     setError(false);
 
     try {
-      // Fast-path UX only — two devices can both pass this check before either has written.
-      // createParentAccount's INSERT below (backed by a unique constraint on cookie_code) is
-      // the actual guard against a concurrent registration for the same email.
-      const { data, error: checkError } = await supabase
-        .from('profiles')
-        .select('cookie_code')
-        .eq('cookie_code', `PARENT:${email}`)
-        .single();
+      const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+        email,
+        password: pwd,
+        options: { emailRedirectTo: 'crumbo://' },
+      });
 
-      if (checkError && checkError.code !== 'PGRST116') {
+      if (signUpError) {
         setLoading(false);
-        showAlert("Connection Error", "Could not connect to the database. Please check your network.");
+        if (signUpError.code === 'user_already_exists') {
+          showAlert("Account Exists", "An account with this email already exists. Please sign in.", [
+            { text: "OK", onPress: () => setMode('signin') }
+          ]);
+        } else if (signUpError.code === 'weak_password') {
+          showAlert("Weak Password", PASSWORD_REQUIREMENTS_TEXT);
+        } else if (signUpError.code === 'over_email_send_rate_limit') {
+          showAlert("Too Many Requests", "Supabase's shared email sender is rate-limited — please wait a bit before trying to register again.");
+        } else {
+          console.error('Sign-up error:', signUpError.code, signUpError.status, signUpError.message);
+          showAlert("Registration Failed", `${signUpError.message} (${signUpError.code || 'unknown'})`);
+        }
         return;
       }
 
-      if (data) {
+      // Supabase's signUp returns success (rather than an error, to avoid leaking which emails
+      // are registered) for an email that already has a CONFIRMED account — surfaced as an
+      // empty identities array instead of a new one.
+      if (signUpData.user && signUpData.user.identities && signUpData.user.identities.length === 0) {
         setLoading(false);
         showAlert("Account Exists", "An account with this email already exists. Please sign in.", [
           { text: "OK", onPress: () => setMode('signin') }
@@ -169,29 +201,35 @@ export default function ParentGate() {
         return;
       }
 
-      // Save credentials locally — needed so buildParentPushTokenPayload (read by
-      // createParentAccount) has a password to serialize into the account row.
       await StorageService.saveParentEmail(email);
-      await StorageService.saveParentPassword(pwd);
-
+      // A brand-new account has no kids of its own — clear any previous account's cached kids
+      // list rather than leaving it in place (see clearManagedKidsCache).
+      await StorageService.clearManagedKidsCache();
+      // Order matters: createParentAccount builds the server row's payload from the CURRENT
+      // local isSubscribed() flag, so it must be set true first — otherwise the row is created
+      // with subscribed:false baked in, and a kid's device later mirrors that false value down
+      // from the parent's row and gets locked out of their own already-active chat jar.
+      await StorageService.setSubscribed(true); // Default active status on register
       const result = await StorageService.createParentAccount(email);
       if (result === 'exists') {
-        // Lost the race: another device won concurrently. Undo the local save above — leaving
-        // it would cache someone else's email as if it were this device's own account.
-        await StorageService.clearParentCredentials();
-        setLoading(false);
-        showAlert("Account Exists", "An account with this email already exists. Please sign in.", [
-          { text: "OK", onPress: () => setMode('signin') }
-        ]);
-        return;
+        // A row for this email already existed (e.g. from before this app's auth migration) —
+        // refresh it to match this device's current, correct state rather than leaving stale
+        // data (an old subscribed:false, an old kids list, etc.) sitting on the server.
+        await StorageService.syncParentData();
       }
 
-      await StorageService.setSubscribed(true); // Default active status on register
-
       setLoading(false);
-      showAlert("Registration Complete! 🔒", "Your parent account and subscription are now active.", [
-        { text: "OK", onPress: () => router.replace('/parent/dashboard') }
-      ]);
+
+      if (!signUpData.session) {
+        // Email confirmation is required before sign-in will succeed.
+        showAlert("Verify Your Email 📬", `We've sent a verification link to ${email}. Please confirm it, then sign in.`, [
+          { text: "OK", onPress: () => setMode('signin') }
+        ]);
+      } else {
+        showAlert("Registration Complete! 🔒", "Your parent account and subscription are now active.", [
+          { text: "OK", onPress: () => router.replace('/parent/dashboard') }
+        ]);
+      }
     } catch (e) {
       setLoading(false);
       showAlert("Error", "Could not complete registration. Please check your connection.");
@@ -200,21 +238,24 @@ export default function ParentGate() {
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
+      {/* Close button lives outside the KeyboardAvoidingView/ScrollView entirely (like the
+          equivalent buttons on index.tsx) so it can't get caught up in Android's keyboard-open
+          resize of that container — that resize was pushing this button's own padding around
+          and shoving it up under the status bar. */}
+      <View style={{ position: 'absolute', top: insets.top + s(4), right: s(16), zIndex: 10 }}>
+        <TouchableOpacity style={{ padding: s(8) }} onPress={() => router.back()}>
+          <Ionicons name="close-circle" size={s(36)} color={colors.textSecondary} />
+        </TouchableOpacity>
+      </View>
+
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={{ flex: 1 }}
       >
-        <ScrollView 
-          contentContainerStyle={[styles.content, { flex: 0, flexGrow: 1, paddingBottom: s(24) }]} 
+        <ScrollView
+          contentContainerStyle={[styles.content, { flex: 0, flexGrow: 1, paddingBottom: s(24) }]}
           keyboardShouldPersistTaps="handled"
         >
-          {/* Header */}
-          <View style={[styles.header, { width: '100%', paddingTop: Platform.OS === 'android' ? (insets.top > 0 ? insets.top + s(8) : s(40)) : s(10) }]}>
-            <TouchableOpacity style={styles.closeButton} onPress={() => router.back()}>
-              <Ionicons name="close-circle" size={s(36)} color={colors.textSecondary} />
-            </TouchableOpacity>
-          </View>
-
           <View style={[styles.iconContainer, { backgroundColor: isDark ? colors.cardBg : '#FFEFC0', borderColor: isDark ? colors.borderStrong : '#FFD966', width: s(80), height: s(80), borderRadius: s(40), borderWidth: 2 }]}>
             <Text style={[styles.lockIcon, { fontSize: s(40) }]}>🔒</Text>
           </View>
@@ -256,15 +297,27 @@ export default function ParentGate() {
               />
 
               {/* Password Input */}
-              <TextInput
-                style={[styles.input, { backgroundColor: colors.inputBg, color: colors.inputText, borderColor: colors.borderStrong, height: s(52), borderRadius: s(20), fontSize: s(16), paddingHorizontal: s(20), marginBottom: s(14) }, error && styles.inputError]}
-                placeholder="Parent Password"
-                placeholderTextColor={colors.textSecondary}
-                secureTextEntry={true}
-                value={passwordInput}
-                onChangeText={setPasswordInput}
-                onSubmitEditing={handleSignIn}
-              />
+              <View style={styles.passwordFieldWrapper}>
+                <TextInput
+                  style={[styles.input, { backgroundColor: colors.inputBg, color: colors.inputText, borderColor: colors.borderStrong, height: s(52), borderRadius: s(20), fontSize: s(16), paddingLeft: s(20), paddingRight: s(48), marginBottom: s(14) }, error && styles.inputError]}
+                  placeholder="Parent Password"
+                  placeholderTextColor={colors.textSecondary}
+                  secureTextEntry={!showPassword}
+                  value={passwordInput}
+                  onChangeText={setPasswordInput}
+                  onSubmitEditing={handleSignIn}
+                />
+                <TouchableOpacity
+                  style={[styles.passwordVisibilityBtn, { right: s(14), bottom: s(14) }]}
+                  onPress={() => setShowPassword(!showPassword)}
+                >
+                  <Ionicons name={showPassword ? 'eye-off' : 'eye'} size={s(20)} color={colors.textSecondary} />
+                </TouchableOpacity>
+              </View>
+
+              <TouchableOpacity onPress={handleForgotPassword} style={styles.forgotPasswordBtn} disabled={loading}>
+                <Text style={[styles.forgotPasswordText, { color: colors.textSecondary, fontSize: s(13) }]}>Forgot password?</Text>
+              </TouchableOpacity>
 
               {/* Submit Button */}
               <TouchableOpacity style={[styles.verifyButton, { backgroundColor: colors.primaryBtn, borderRadius: s(20), paddingVertical: s(16), marginTop: s(8) }]} onPress={handleSignIn} disabled={loading}>
@@ -289,25 +342,26 @@ export default function ParentGate() {
               />
 
               {/* Create Password Input */}
-              <TextInput
-                style={[styles.input, { backgroundColor: colors.inputBg, color: colors.inputText, borderColor: colors.borderStrong, height: s(52), borderRadius: s(20), fontSize: s(16), paddingHorizontal: s(20), marginBottom: s(14) }, error && styles.inputError]}
-                placeholder="Create Password"
-                placeholderTextColor={colors.textSecondary}
-                secureTextEntry={true}
-                value={passwordInput}
-                onChangeText={setPasswordInput}
-              />
-
-              {/* Confirm Password Input */}
-              <TextInput
-                style={[styles.input, { backgroundColor: colors.inputBg, color: colors.inputText, borderColor: colors.borderStrong, height: s(52), borderRadius: s(20), fontSize: s(16), paddingHorizontal: s(20), marginBottom: s(14) }, error && styles.inputError]}
-                placeholder="Confirm Password"
-                placeholderTextColor={colors.textSecondary}
-                secureTextEntry={true}
-                value={confirmInput}
-                onChangeText={setConfirmInput}
-                onSubmitEditing={handleRegister}
-              />
+              <View style={styles.passwordFieldWrapper}>
+                <TextInput
+                  style={[styles.input, { backgroundColor: colors.inputBg, color: colors.inputText, borderColor: colors.borderStrong, height: s(52), borderRadius: s(20), fontSize: s(16), paddingLeft: s(20), paddingRight: s(48), marginBottom: s(6) }, error && styles.inputError]}
+                  placeholder="Create Password"
+                  placeholderTextColor={colors.textSecondary}
+                  secureTextEntry={!showPassword}
+                  value={passwordInput}
+                  onChangeText={setPasswordInput}
+                  onSubmitEditing={handleRegister}
+                />
+                <TouchableOpacity
+                  style={[styles.passwordVisibilityBtn, { right: s(14), bottom: s(6) }]}
+                  onPress={() => setShowPassword(!showPassword)}
+                >
+                  <Ionicons name={showPassword ? 'eye-off' : 'eye'} size={s(20)} color={colors.textSecondary} />
+                </TouchableOpacity>
+              </View>
+              <Text style={[styles.passwordHintText, { color: colors.textSecondary, fontSize: s(12), marginBottom: s(14) }]}>
+                {PASSWORD_REQUIREMENTS_TEXT}
+              </Text>
 
               {/* Submit Button */}
               <TouchableOpacity style={[styles.verifyButton, { backgroundColor: colors.primaryBtn, borderRadius: s(20), paddingVertical: s(16), marginTop: s(8) }]} onPress={handleRegister} disabled={loading}>
@@ -337,21 +391,11 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#FFFDF3',
   },
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    paddingHorizontal: 20,
-    paddingTop: Platform.OS === 'android' ? 40 : 10,
-  },
-  closeButton: {
-    padding: 4,
-  },
   content: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: 32,
-    marginTop: -30,
   },
   iconContainer: {
     backgroundColor: '#FFEFC0',
@@ -437,6 +481,30 @@ const styles = StyleSheet.create({
   inputError: {
     borderColor: '#E57373',
     backgroundColor: '#FFEBEE',
+  },
+  passwordFieldWrapper: {
+    width: '100%',
+    position: 'relative',
+  },
+  passwordVisibilityBtn: {
+    position: 'absolute',
+    top: 0,
+    justifyContent: 'center',
+    paddingHorizontal: 4,
+  },
+  passwordHintText: {
+    width: '100%',
+    fontWeight: '600',
+    lineHeight: 16,
+  },
+  forgotPasswordBtn: {
+    width: '100%',
+    alignItems: 'flex-end',
+    marginBottom: 8,
+  },
+  forgotPasswordText: {
+    fontWeight: '700',
+    textDecorationLine: 'underline',
   },
   verifyButton: {
     backgroundColor: '#FFC93C',

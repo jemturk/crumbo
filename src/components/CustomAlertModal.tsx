@@ -132,11 +132,13 @@ const styles = StyleSheet.create({
   },
   button: {
     flex: 1,
-    height: 48,
+    minHeight: 48,
     borderRadius: 16,
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 2,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
   },
   defaultBtn: {
     backgroundColor: '#FBC02D',
@@ -162,5 +164,6 @@ const styles = StyleSheet.create({
   btnText: {
     fontSize: 15,
     fontWeight: '800',
+    textAlign: 'center',
   },
 });

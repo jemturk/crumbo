@@ -91,6 +91,7 @@ function NavigationLayout() {
         <Stack.Screen name="index" />
         <Stack.Screen name="parent/gate" />
         <Stack.Screen name="parent/dashboard" />
+        <Stack.Screen name="reset-password" />
         <Stack.Screen name="chat/index" />
         <Stack.Screen name="chat/[friendId]" />
       </Stack>

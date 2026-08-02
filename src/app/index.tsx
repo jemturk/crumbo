@@ -1,10 +1,11 @@
-import React, { useState, useCallback } from 'react';
-import { View, Text, StyleSheet, Image, TouchableOpacity, SafeAreaView, ActivityIndicator, Platform, Modal, TextInput, KeyboardAvoidingView, ScrollView } from 'react-native';
+import React, { useState, useCallback, useEffect } from 'react';
+import { View, Text, StyleSheet, Image, TouchableOpacity, SafeAreaView, ActivityIndicator, Platform, Modal, TextInput, KeyboardAvoidingView, ScrollView, Keyboard } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { StorageService, KidProfile } from '@/services/storage';
 import { Ionicons } from '@expo/vector-icons';
 import CustomAlertModal, { AlertButton } from '@/components/CustomAlertModal';
 import AppSettingsModal from '@/components/AppSettingsModal';
+import OnboardingModal from '@/components/OnboardingModal';
 import { useDisplayScale } from '@/hooks/use-display-scale';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -19,8 +20,27 @@ export default function WelcomeScreen() {
   const [profile, setProfile] = useState<KidProfile | null>(null);
 
   const [cookieCodeInput, setCookieCodeInput] = useState('');
+  const [claimCodeInput, setClaimCodeInput] = useState('');
+  const [claimCodeNeeded, setClaimCodeNeeded] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [settingsVisible, setSettingsVisible] = useState(false);
+  const [onboardingVisible, setOnboardingVisible] = useState(false);
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
+
+  useEffect(() => {
+    const showSub = Keyboard.addListener(
+      Platform.OS === 'android' ? 'keyboardDidShow' : 'keyboardWillShow',
+      () => setKeyboardVisible(true)
+    );
+    const hideSub = Keyboard.addListener(
+      Platform.OS === 'android' ? 'keyboardDidHide' : 'keyboardWillHide',
+      () => setKeyboardVisible(false)
+    );
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
 
   // Custom Alert State
   const [alertConfig, setAlertConfig] = useState<{
@@ -49,8 +69,10 @@ export default function WelcomeScreen() {
       setLoading(true);
       const isSub = await StorageService.isSubscribed();
       const kidProf = await StorageService.getKidProfile();
+      const seenOnboarding = await StorageService.hasSeenOnboarding();
       setSubscribed(isSub);
       setProfile(kidProf);
+      setOnboardingVisible(!seenOnboarding);
     } catch (e) {
       console.error("Error loading app state", e);
     } finally {
@@ -70,27 +92,57 @@ export default function WelcomeScreen() {
       return;
     }
 
+    if (claimCodeNeeded && !claimCodeInput.trim()) {
+      showAlert("Activation Code Required", "Ask a parent for the Activation Code shown in the Parent Area, then enter it below.");
+      return;
+    }
+
     setSyncing(true);
     try {
-      const kidProfile = await StorageService.loginKidWithCode(code);
+      const kidProfile = await StorageService.loginKidWithCode(code, claimCodeInput.trim() || undefined);
       if (kidProfile) {
         setProfile(kidProfile);
         setSubscribed(true);
         setCookieCodeInput('');
+        setClaimCodeInput('');
+        setClaimCodeNeeded(false);
         showAlert("Welcome! 🍪", `Logged in as ${kidProfile.name}!`, [
           { text: "OK", onPress: () => { router.push('/chat'); } }
         ]);
       } else {
         showAlert(
-          "Profile Not Found", 
+          "Profile Not Found",
           "Could not find a kid profile with this Cookie Code. Please verify the code in the parent dashboard."
         );
       }
     } catch (e) {
-      showAlert("Connection Error", "Could not connect to the database. Please check your network.");
+      if (e instanceof Error && e.message === 'DEVICE_MISMATCH') {
+        showAlert(
+          "Already Logged In Elsewhere",
+          "This Cookie Code is already active on another device. If this is your kid's new phone, ask a parent to deactivate the old device from the Parent Area."
+        );
+      } else if (e instanceof Error && e.message === 'CLAIM_CODE_REQUIRED') {
+        setClaimCodeNeeded(true);
+        showAlert(
+          "Activation Code Needed",
+          "This Cookie Code was freed up from another device. Ask a parent for the one-time Activation Code shown in the Parent Area, then enter it below and try again."
+        );
+      } else if (e instanceof Error && e.message === 'CLAIM_CODE_INVALID') {
+        showAlert(
+          "Invalid or Expired Code",
+          "That Activation Code is wrong or has expired. Ask a parent to deactivate the old device again to get a fresh one."
+        );
+      } else {
+        showAlert("Connection Error", "Could not connect to the database. Please check your network.");
+      }
     } finally {
       setSyncing(false);
     }
+  };
+
+  const handleOnboardingDone = async () => {
+    setOnboardingVisible(false);
+    await StorageService.setOnboardingSeen();
   };
 
   const handleLogout = () => {
@@ -122,9 +174,15 @@ export default function WelcomeScreen() {
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
-      {/* Top right settings button */}
-      <View style={{ position: 'absolute', top: insets.top + s(4), right: s(16), zIndex: 10 }}>
-        <TouchableOpacity 
+      {/* Top right help + settings buttons */}
+      <View style={{ position: 'absolute', top: insets.top + s(4), right: s(16), zIndex: 10, flexDirection: 'row', alignItems: 'center' }}>
+        <TouchableOpacity
+          style={{ padding: s(8) }}
+          onPress={() => setOnboardingVisible(true)}
+        >
+          <Ionicons name="help-circle" size={s(26)} color={colors.textSecondary} />
+        </TouchableOpacity>
+        <TouchableOpacity
           style={{ padding: s(8) }}
           onPress={() => setSettingsVisible(true)}
         >
@@ -140,15 +198,19 @@ export default function WelcomeScreen() {
           contentContainerStyle={[styles.content, { flex: 0, flexGrow: 1 }]} 
           keyboardShouldPersistTaps="handled"
         >
-          {/* Brand Header */}
-          <View style={styles.brandContainer}>
-            <Image 
-              source={require('@/assets/images/logo.png')} 
-              style={[styles.logo, { width: s(140), height: s(140) }]}
-              resizeMode="contain"
-            />
-            <Text style={[styles.title, { fontSize: s(48), color: colors.text }]}>Crumbo</Text>
-            <Text style={[styles.subtitle, { fontSize: s(16), color: colors.textSecondary }]}>The cookie-jar chat messenger for kids!</Text>
+          {/* Brand Header — centered within the whole region above the card (not just anchored
+              to the top with a spacer below it), so it sits in the middle of that space rather
+              than hugging the status bar. */}
+          <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+            <View style={styles.brandContainer}>
+              <Image
+                source={require('@/assets/images/logo.png')}
+                style={[styles.logo, { width: s(112), height: s(112) }]}
+                resizeMode="contain"
+              />
+              <Text style={[styles.title, { fontSize: s(40), color: colors.text }]}>Crumbo</Text>
+              <Text style={[styles.subtitle, { fontSize: s(16), color: colors.textSecondary }]}>The cookie-jar chat messenger for kids!</Text>
+            </View>
           </View>
 
           {/* Dynamic Action Card */}
@@ -191,7 +253,18 @@ export default function WelcomeScreen() {
                   value={cookieCodeInput}
                   onChangeText={setCookieCodeInput}
                 />
-                <TouchableOpacity 
+                {claimCodeNeeded && (
+                  <TextInput
+                    style={[styles.input, { width: '100%', marginBottom: s(16), fontSize: s(16), backgroundColor: colors.inputBg, color: colors.inputText, borderColor: colors.borderStrong }]}
+                    placeholder="Activation Code from a parent"
+                    placeholderTextColor={colors.textSecondary}
+                    autoCapitalize="characters"
+                    autoCorrect={false}
+                    value={claimCodeInput}
+                    onChangeText={setClaimCodeInput}
+                  />
+                )}
+                <TouchableOpacity
                   style={[styles.primaryButton, { backgroundColor: colors.primaryBtn }]}
                   onPress={handleKidLogin}
                   disabled={syncing}
@@ -206,18 +279,22 @@ export default function WelcomeScreen() {
             )}
           </View>
 
-          {/* Footer Area for parents */}
-          <View style={styles.footer}>
-            <TouchableOpacity 
-              style={styles.linkButton} 
-              onPress={() => router.push('/parent/gate')}
-            >
-              <Text style={[styles.linkButtonText, { fontSize: s(14), color: colors.textSecondary }]}>Parents Area (Setup & Controls)</Text>
-            </TouchableOpacity>
-            <Text style={[styles.privacyText, { fontSize: s(11), color: colors.textSecondary }]}>
-              Privacy promise: No child data will ever be collected or stored.
-            </Text>
-          </View>
+          {/* Footer Area for parents — flex:1 fills the remaining space below the card and
+              centers within it, so it sits midway to the bottom rather than hugging the card.
+              Hidden while the keyboard is open so it doesn't get squeezed above it. */}
+          {!keyboardVisible && (
+            <View style={[styles.footer, { flex: 1, justifyContent: 'center' }]}>
+              <TouchableOpacity
+                style={[styles.secondaryButton, { backgroundColor: colors.actionBtnSecondaryBg, borderColor: colors.borderStrong }]}
+                onPress={() => router.push('/parent/gate')}
+              >
+                <Text style={[styles.secondaryButtonText, { fontSize: s(14), color: colors.actionBtnSecondaryText }]}>Parents Area (Setup & Controls)</Text>
+              </TouchableOpacity>
+              <Text style={[styles.privacyText, { fontSize: s(11), color: colors.textSecondary }]}>
+                Privacy promise: No child data will ever be collected or stored.
+              </Text>
+            </View>
+          )}
         </ScrollView>
       </KeyboardAvoidingView>
       <CustomAlertModal
@@ -230,6 +307,10 @@ export default function WelcomeScreen() {
       <AppSettingsModal
         visible={settingsVisible}
         onClose={() => setSettingsVisible(false)}
+      />
+      <OnboardingModal
+        visible={onboardingVisible}
+        onDone={handleOnboardingDone}
       />
     </SafeAreaView>
   );
@@ -248,14 +329,13 @@ const styles = StyleSheet.create({
   },
   content: {
     flex: 1,
-    justifyContent: 'space-between',
+    justifyContent: 'flex-start',
     alignItems: 'center',
     paddingHorizontal: 24,
     paddingVertical: 32,
   },
   brandContainer: {
     alignItems: 'center',
-    marginTop: 40,
   },
   logo: {
     width: 140,
@@ -334,14 +414,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 12,
   },
-  linkButton: {
-    padding: 8,
+  secondaryButton: {
+    borderRadius: 20,
+    borderWidth: 1.5,
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    alignItems: 'center',
   },
-  linkButtonText: {
-    fontSize: 14,
+  secondaryButtonText: {
     fontWeight: '700',
-    color: '#8D6E63',
-    textDecorationLine: 'underline',
   },
   privacyText: {
     fontSize: 11,

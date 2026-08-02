@@ -58,8 +58,9 @@ const KEYS = {
   FRIENDS: 'crumbo_friends',
   MESSAGES_PREFIX: 'crumbo_messages_',
   OUTBOX_PREFIX: 'crumbo_outbox_',
-  PARENT_PASSWORD: 'crumbo_parent_password',
   KIDS_LIST: 'crumbo_parent_kids_list',
+  HAS_SEEN_ONBOARDING: 'crumbo_has_seen_onboarding',
+  DEVICE_ID: 'crumbo_device_id',
 };
 
 // Default setup — also the pool the avatar picker UI offers (see AvatarPickerModal).
@@ -252,6 +253,19 @@ async function generateUniqueCookieCode(): Promise<string> {
   return randomCookieCode();
 }
 
+// A Cookie Code alone used to be the entire kid credential — no password, no device check —
+// so anyone who obtained a code (guessed, leaked, shoulder-surfed) could log in as that kid from
+// anywhere. This device ID is generated once and cached locally; loginKidWithCode binds a code
+// to the first device that successfully uses it, and rejects the same code from any other
+// device afterward (see loginKidWithCode / regenerateKidCode below).
+async function getDeviceId(): Promise<string> {
+  const existing = await AsyncStorage.getItem(KEYS.DEVICE_ID);
+  if (existing) return existing;
+  const generated = Crypto.randomUUID();
+  await AsyncStorage.setItem(KEYS.DEVICE_ID, generated);
+  return generated;
+}
+
 export const StorageService = {
   // Parent Subscription
   async getParentEmail(): Promise<string | null> {
@@ -262,22 +276,29 @@ export const StorageService = {
     await AsyncStorage.setItem(KEYS.PARENT_EMAIL, email);
   },
 
-  async getParentPassword(): Promise<string | null> {
-    return await AsyncStorage.getItem(KEYS.PARENT_PASSWORD);
-  },
-
-  async saveParentPassword(password: string): Promise<void> {
-    await AsyncStorage.setItem(KEYS.PARENT_PASSWORD, password);
+  /**
+   * Undoes saveParentEmail. Used by gate.tsx when createParentAccount loses a registration race
+   * (email already taken by another device) — without this, the losing device would be left
+   * with someone else's email cached as its own PARENT_EMAIL, and a later unrelated
+   * syncParentData() call would upsert local settings into that stranger's account row.
+   */
+  async clearParentCredentials(): Promise<void> {
+    await AsyncStorage.removeItem(KEYS.PARENT_EMAIL);
   },
 
   /**
-   * Undoes saveParentEmail/saveParentPassword. Used by gate.tsx when createParentAccount loses
-   * a registration race (email already taken by another device) — without this, the losing
-   * device would be left with someone else's email cached as its own PARENT_EMAIL, and a later
-   * unrelated syncParentData() call would upsert local settings into that stranger's account row.
+   * Clears the parent dashboard's local "kids I manage" cache. Deliberately narrow — does NOT
+   * touch KID_PROFILE/FRIENDS/IS_SUBSCRIBED, since a shared device may have a kid actively
+   * logged in independently of the parent dashboard, and logging out of the parent side must
+   * not disturb that (see handleLogout's own alert text: "your child's active chat session will
+   * remain active"). Without this, KIDS_LIST kept whatever was cached from a previous parent
+   * account indefinitely — logging out of account A and registering (or signing into) a
+   * DIFFERENT account B would still show A's kids under B, since nothing ever cleared it, only
+   * PARENT_EMAIL. Call on parent logout, and defensively at the start of registration too (a
+   * brand-new account has no kids of its own yet to overwrite it with).
    */
-  async clearParentCredentials(): Promise<void> {
-    await AsyncStorage.multiRemove([KEYS.PARENT_EMAIL, KEYS.PARENT_PASSWORD]);
+  async clearManagedKidsCache(): Promise<void> {
+    await AsyncStorage.removeItem(KEYS.KIDS_LIST);
   },
 
   async isSubscribed(): Promise<boolean> {
@@ -287,6 +308,17 @@ export const StorageService = {
 
   async setSubscribed(subscribed: boolean): Promise<void> {
     await AsyncStorage.setItem(KEYS.IS_SUBSCRIBED, subscribed ? 'true' : 'false');
+  },
+
+  // Gates the one-time first-launch OnboardingModal (see index.tsx) — not tied to any profile
+  // or device, so it still shows once even for a device that never subscribes or logs in.
+  async hasSeenOnboarding(): Promise<boolean> {
+    const seen = await AsyncStorage.getItem(KEYS.HAS_SEEN_ONBOARDING);
+    return seen === 'true';
+  },
+
+  async setOnboardingSeen(): Promise<void> {
+    await AsyncStorage.setItem(KEYS.HAS_SEEN_ONBOARDING, 'true');
   },
 
   // Kid Profile List
@@ -670,19 +702,23 @@ export const StorageService = {
 
   async buildParentPushTokenPayload(): Promise<string> {
     const subscribed = await this.isSubscribed();
-    const parentPassword = await this.getParentPassword();
     const kids = await this.getKidsList();
     const activeProfile = await this.getKidProfile();
     const activeFriends = await this.getFriends();
 
     const kidsPayload = kids.map(k => {
-      // If this is the active kid, use the latest friends list from storage
+      // If this is the active kid, use the latest friends list/avatar from storage — this
+      // device's own KID_PROFILE is fresher than the parent dashboard's KIDS_LIST cache when
+      // they're the same kid (e.g. a kid who picked a new avatar via setKidAvatar, which writes
+      // straight to the server but has no way to update THIS separate device's local cache).
       const isCurrentActive = activeProfile?.cookieCode === k.cookieCode;
       const friendsList = isCurrentActive ? activeFriends : (k.friends || []);
+      const avatarEmoji = isCurrentActive && activeProfile ? activeProfile.avatarEmoji : k.avatarEmoji;
 
       return {
         cookieCode: k.cookieCode,
         name: k.name,
+        avatarEmoji,
         chatDisabled: !!k.chatDisabled,
         callingDisabled: !!k.callingDisabled,
         videoCallingDisabled: !!k.videoCallingDisabled,
@@ -702,7 +738,6 @@ export const StorageService = {
 
     return JSON.stringify({
       subscribed,
-      parentPassword,
       kids: kidsPayload,
       displaySize,
       theme
@@ -770,13 +805,9 @@ export const StorageService = {
 
       if (!error && data && data.push_token) {
         const payload = JSON.parse(data.push_token);
-        
+
         await AsyncStorage.setItem(KEYS.IS_SUBSCRIBED, payload.subscribed ? 'true' : 'false');
         await AsyncStorage.setItem(KEYS.PARENT_EMAIL, email);
-
-        if (payload.parentPassword) {
-          await AsyncStorage.setItem(KEYS.PARENT_PASSWORD, payload.parentPassword);
-        }
 
         if (payload.displaySize) {
           await AsyncStorage.setItem('crumbo_display_size', payload.displaySize);
@@ -786,18 +817,23 @@ export const StorageService = {
           await AsyncStorage.setItem('crumbo_theme', payload.theme);
         }
 
-        if (payload.kids && payload.kids.length > 0) {
-          // Restore KIDS_LIST
-          await AsyncStorage.setItem(KEYS.KIDS_LIST, JSON.stringify(payload.kids));
-          
+        // Always reflect THIS account's kids — even when there are none — rather than only
+        // writing KIDS_LIST/KID_PROFILE/FRIENDS when non-empty. Skipping that when empty used to
+        // leave a PREVIOUS account's kids sitting in local cache untouched, so switching accounts
+        // on the same device (sign out, then sign into or register a different email) could keep
+        // showing the old account's kids for as long as the new one had none of its own yet.
+        const kids = payload.kids || [];
+        await AsyncStorage.setItem(KEYS.KIDS_LIST, JSON.stringify(kids));
+
+        if (kids.length > 0) {
           // Decide which kid to activate on this device
           const currentActive = await this.getKidProfile();
-          const matchInRestored = currentActive 
-            ? payload.kids.find((k: any) => k.cookieCode === currentActive.cookieCode)
+          const matchInRestored = currentActive
+            ? kids.find((k: any) => k.cookieCode === currentActive.cookieCode)
             : null;
 
-          const kidToActivate = matchInRestored || payload.kids[0];
-          
+          const kidToActivate = matchInRestored || kids[0];
+
           const kidProfile: KidProfile = {
             name: kidToActivate.name,
             cookieCode: kidToActivate.cookieCode,
@@ -808,12 +844,10 @@ export const StorageService = {
             drawingDisabled: !!kidToActivate.drawingDisabled
           };
           await AsyncStorage.setItem(KEYS.KID_PROFILE, JSON.stringify(kidProfile));
-
-          if (kidToActivate.friends) {
-            await AsyncStorage.setItem(KEYS.FRIENDS, JSON.stringify(kidToActivate.friends));
-          } else {
-            await AsyncStorage.setItem(KEYS.FRIENDS, JSON.stringify([]));
-          }
+          await AsyncStorage.setItem(KEYS.FRIENDS, JSON.stringify(kidToActivate.friends || []));
+        } else {
+          await AsyncStorage.removeItem(KEYS.KID_PROFILE);
+          await AsyncStorage.removeItem(KEYS.FRIENDS);
         }
         return true;
       }
@@ -953,6 +987,144 @@ export const StorageService = {
     }
   },
 
+  /**
+   * Issues a kid a brand-new Cookie Code and invalidates the old one everywhere — the actual
+   * incident response for "someone else has my kid's code" (see loginKidWithCode's device
+   * binding), and also how a kid moves onto a new/replacement phone. Any device currently using
+   * the old code (the kid's own included) stops working immediately; loginKidWithCode must be
+   * used again with the new code to claim it fresh. Existing pairings and chat history are
+   * carried over to the new code rather than starting over.
+   */
+  async regenerateKidCode(oldCookieCode: string): Promise<string | null> {
+    try {
+      const newCookieCode = await generateUniqueCookieCode();
+
+      // A single search for '"cookieCode":"<old>"' finds every row that mentions this code at
+      // all — both the owning parent (where it's a kid's OWN code) and any friend's parent row
+      // (where it's stored as a friend reference) — so one pass renames it everywhere it lives.
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .like('cookie_code', 'PARENT:%')
+        .like('push_token', `%"cookieCode":"${oldCookieCode}"%`);
+
+      if (error || !data) return null;
+
+      let ownerRenamed = false;
+      for (const parentRow of data) {
+        try {
+          const payload = JSON.parse(parentRow.push_token);
+          if (!payload?.kids) continue;
+          let changed = false;
+
+          for (const kid of payload.kids) {
+            if (kid.cookieCode === oldCookieCode) {
+              kid.cookieCode = newCookieCode;
+              kid.boundDeviceId = null; // free for a legitimate device to claim
+              // A brand-new code is a fresh secret nobody else has seen yet — safe to claim on
+              // first use same as any new kid profile, so any leftover claim gate from a prior
+              // deactivateKidDevice call on the OLD code shouldn't carry over and block it.
+              kid.pendingClaimToken = null;
+              kid.pendingClaimExpiresAt = null;
+              changed = true;
+              ownerRenamed = true;
+            }
+            if (kid.friends) {
+              for (const friend of kid.friends) {
+                if (friend.cookieCode === oldCookieCode) {
+                  friend.cookieCode = newCookieCode;
+                  changed = true;
+                }
+              }
+            }
+          }
+
+          if (changed) {
+            await supabase
+              .from('profiles')
+              .upsert({ cookie_code: parentRow.cookie_code, push_token: JSON.stringify(payload), name: parentRow.name });
+          }
+        } catch {}
+      }
+
+      if (!ownerRenamed) return null; // never actually found the kid itself — don't touch messages
+
+      // Chat history is addressed by cookie code (messages.sender_code/receiver_code have no
+      // foreign key to a kid, just plain text matching) — repoint existing rows to the new code
+      // so history stays intact under the new identity instead of becoming unreachable.
+      await supabase.from('messages').update({ sender_code: newCookieCode }).eq('sender_code', oldCookieCode);
+      await supabase.from('messages').update({ receiver_code: newCookieCode }).eq('receiver_code', oldCookieCode);
+
+      // Reflect the rename in this (parent) device's own local cache too, so the dashboard
+      // doesn't show the stale code until its next full resync.
+      const kids = await this.getKidsList();
+      await this.saveKidsList(kids.map(k => (k.cookieCode === oldCookieCode ? { ...k, cookieCode: newCookieCode } : k)));
+
+      return newCookieCode;
+    } catch (e) {
+      console.error("Error regenerating kid code:", e);
+      return null;
+    }
+  },
+
+  /**
+   * Releases this Cookie Code's device lock WITHOUT issuing a new code (see regenerateKidCode
+   * above for that heavier alternative) — the fix for "kid needs to log in on a new phone but
+   * this code says it's already active elsewhere": a parent opens the OLD phone's Parent Area
+   * (account-based, works from any device) and deactivates it there, freeing the code for the
+   * new phone's loginKidWithCode to claim. If the device calling this is the one that had the
+   * kid active locally, it's logged out here too so this device's own UI reflects the change.
+   *
+   * Freeing boundDeviceId alone would turn the (long-lived, possibly-seen-by-others) Cookie Code
+   * back into a bare bearer secret — anyone with it could win the race to claim the freed slot,
+   * not just the phone the parent actually intends. So this also mints a short-lived, one-time
+   * claim code that loginKidWithCode requires alongside the Cookie Code to complete that claim;
+   * only the authenticated parent ever sees it, and it expires in 15 minutes or on first use.
+   */
+  async deactivateKidDevice(cookieCode: string): Promise<{ success: boolean; claimCode?: string }> {
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .like('cookie_code', 'PARENT:%')
+        .like('push_token', `%"cookieCode":"${cookieCode}"%`);
+
+      if (error || !data) return { success: false };
+
+      for (const parentRow of data) {
+        try {
+          const payload = JSON.parse(parentRow.push_token);
+          if (!payload?.kids) continue;
+          const kidIndex = payload.kids.findIndex((k: any) => k.cookieCode === cookieCode);
+          if (kidIndex === -1) continue;
+
+          const claimCode = Crypto.randomUUID().slice(0, 8).toUpperCase();
+          const claimExpiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+
+          payload.kids[kidIndex] = {
+            ...payload.kids[kidIndex],
+            boundDeviceId: null,
+            pendingClaimToken: claimCode,
+            pendingClaimExpiresAt: claimExpiresAt
+          };
+          await supabase
+            .from('profiles')
+            .upsert({ cookie_code: parentRow.cookie_code, push_token: JSON.stringify(payload), name: parentRow.name });
+
+          const active = await this.getKidProfile();
+          if (active && active.cookieCode === cookieCode) {
+            await this.logoutKid();
+          }
+          return { success: true, claimCode };
+        } catch {}
+      }
+      return { success: false };
+    } catch (e) {
+      console.error("Error deactivating kid device:", e);
+      return { success: false };
+    }
+  },
+
   async updateKidSettingsForProfile(
     cookieCode: string, 
     settings: { chatDisabled: boolean; callingDisabled: boolean; videoCallingDisabled: boolean; photosDisabled: boolean; drawingDisabled: boolean }
@@ -1002,7 +1174,7 @@ export const StorageService = {
 
 
 
-  async loginKidWithCode(cookieCode: string): Promise<KidProfile | null> {
+  async loginKidWithCode(cookieCode: string, claimCode?: string): Promise<KidProfile | null> {
     try {
       const { data, error } = await supabase
         .from('profiles')
@@ -1020,6 +1192,8 @@ export const StorageService = {
 
       // Find the parent profile that actually OWNS this kid
       let targetKid = null;
+      let owningRow = null;
+      let owningPayload: any = null;
       for (const parentProfile of data) {
         try {
           const payload = JSON.parse(parentProfile.push_token);
@@ -1027,6 +1201,8 @@ export const StorageService = {
             const found = payload.kids.find((k: any) => k.cookieCode === cookieCode);
             if (found) {
               targetKid = found;
+              owningRow = parentProfile;
+              owningPayload = payload;
               break;
             }
           }
@@ -1034,6 +1210,50 @@ export const StorageService = {
       }
 
       if (targetKid) {
+        const deviceId = await getDeviceId();
+
+        if (targetKid.boundDeviceId && targetKid.boundDeviceId !== deviceId) {
+          // Someone else's device already claimed this code — a leaked/guessed code alone is no
+          // longer enough. Thrown (not returned null) so callers can show a specific message
+          // instead of the generic "code not found" one.
+          throw new Error('DEVICE_MISMATCH');
+        }
+
+        if (!targetKid.boundDeviceId) {
+          // A code freed by deactivateKidDevice (as opposed to one that's simply never been
+          // claimed yet) carries a one-time claim code — without this gate, freeing the slot
+          // would make the bare Cookie Code a sufficient bearer secret again, letting ANYONE who
+          // has it win the race to claim it, not just the device the parent actually intended.
+          if (targetKid.pendingClaimToken) {
+            const expired = !targetKid.pendingClaimExpiresAt || Date.parse(targetKid.pendingClaimExpiresAt) < Date.now();
+            if (!claimCode) {
+              throw new Error('CLAIM_CODE_REQUIRED');
+            }
+            if (expired || claimCode.trim().toUpperCase() !== targetKid.pendingClaimToken) {
+              throw new Error('CLAIM_CODE_INVALID');
+            }
+          }
+
+          // First-ever login for this code, or a freed one whose claim code just checked out —
+          // claim this device. Written directly to the owning parent row (same cross-family-write
+          // pattern as setKidAvatar below), since this kid's device has no local parent
+          // credentials to sync through.
+          const kidIndex = owningPayload.kids.findIndex((k: any) => k.cookieCode === cookieCode);
+          owningPayload.kids[kidIndex] = {
+            ...owningPayload.kids[kidIndex],
+            boundDeviceId: deviceId,
+            pendingClaimToken: null,
+            pendingClaimExpiresAt: null
+          };
+          await supabase
+            .from('profiles')
+            .upsert({
+              cookie_code: owningRow!.cookie_code,
+              push_token: JSON.stringify(owningPayload),
+              name: owningRow!.name
+            });
+        }
+
         const kidProfile: KidProfile = {
           name: targetKid.name,
           cookieCode: targetKid.cookieCode,
@@ -1046,7 +1266,7 @@ export const StorageService = {
         };
         await AsyncStorage.setItem(KEYS.KID_PROFILE, JSON.stringify(kidProfile));
         await AsyncStorage.setItem(KEYS.IS_SUBSCRIBED, 'true');
-        
+
         if (targetKid.friends) {
           await AsyncStorage.setItem(KEYS.FRIENDS, JSON.stringify(targetKid.friends));
         } else {
@@ -1080,20 +1300,25 @@ export const StorageService = {
   },
 
   async syncKidProfileAndFriends(): Promise<KidProfile | null> {
-    try {
-      const active = await this.getKidProfile();
-      if (!active) return null;
+    const active = await this.getKidProfile();
+    if (!active) return null;
 
+    try {
       const { data, error } = await supabase
         .from('profiles')
         .select('*')
         .like('cookie_code', 'PARENT:%')
         .like('push_token', `%"cookieCode":"${active.cookieCode}"%`);
 
-      if (!error && data && data.length > 0) {
-        // Find the parent profile that actually OWNS this kid
-        let targetKid = null;
-        let owningPayload: any = null;
+      if (error) {
+        console.error("Failed to sync kid profile from Supabase:", error);
+        return null; // query itself failed (network etc.) — caller falls back to stale cache
+      }
+
+      // Find the parent profile that actually OWNS this kid
+      let targetKid = null;
+      let owningPayload: any = null;
+      if (data) {
         for (const parentProfile of data) {
           try {
             const payload = JSON.parse(parentProfile.push_token);
@@ -1107,40 +1332,48 @@ export const StorageService = {
             }
           } catch {}
         }
-
-        if (targetKid) {
-          const updatedProfile: KidProfile = {
-            name: targetKid.name,
-            cookieCode: targetKid.cookieCode,
-            avatarEmoji: targetKid.avatarEmoji,
-            chatDisabled: !!targetKid.chatDisabled,
-            callingDisabled: !!targetKid.callingDisabled,
-            videoCallingDisabled: !!targetKid.videoCallingDisabled,
-            photosDisabled: !!targetKid.photosDisabled,
-            drawingDisabled: !!targetKid.drawingDisabled
-          };
-          await AsyncStorage.setItem(KEYS.KID_PROFILE, JSON.stringify(updatedProfile));
-          if (targetKid.friends) {
-            await AsyncStorage.setItem(KEYS.FRIENDS, JSON.stringify(targetKid.friends));
-          } else {
-            await AsyncStorage.setItem(KEYS.FRIENDS, JSON.stringify([]));
-          }
-          // Mirror the parent's actual subscription state onto this device — IS_SUBSCRIBED was
-          // previously only ever set once at kid-login and never re-checked, so a parent
-          // cancelling on their own device (see handleCancelSubscription in dashboard.tsx) never
-          // reached the kid's device at all (bug #6). Only touch it when the field is actually
-          // present, so a parent row from before `subscribed` existed in the payload doesn't
-          // spuriously lock an otherwise-active kid out.
-          if (typeof owningPayload.subscribed === 'boolean') {
-            await AsyncStorage.setItem(KEYS.IS_SUBSCRIBED, owningPayload.subscribed ? 'true' : 'false');
-          }
-          return updatedProfile;
-        }
       }
+
+      if (!targetKid) {
+        // The query succeeded but no parent row's kids[] contains this cookie code anymore —
+        // this kid was removed, or (see regenerateKidCode) their code was rotated out from under
+        // this exact device. Unlike a network hiccup, this genuinely means "you don't exist here
+        // anymore" — thrown so the caller can force a real logout instead of silently continuing
+        // to operate on stale local cache.
+        throw new Error('KID_NOT_FOUND');
+      }
+
+      const updatedProfile: KidProfile = {
+        name: targetKid.name,
+        cookieCode: targetKid.cookieCode,
+        avatarEmoji: targetKid.avatarEmoji,
+        chatDisabled: !!targetKid.chatDisabled,
+        callingDisabled: !!targetKid.callingDisabled,
+        videoCallingDisabled: !!targetKid.videoCallingDisabled,
+        photosDisabled: !!targetKid.photosDisabled,
+        drawingDisabled: !!targetKid.drawingDisabled
+      };
+      await AsyncStorage.setItem(KEYS.KID_PROFILE, JSON.stringify(updatedProfile));
+      if (targetKid.friends) {
+        await AsyncStorage.setItem(KEYS.FRIENDS, JSON.stringify(targetKid.friends));
+      } else {
+        await AsyncStorage.setItem(KEYS.FRIENDS, JSON.stringify([]));
+      }
+      // Mirror the parent's actual subscription state onto this device — IS_SUBSCRIBED was
+      // previously only ever set once at kid-login and never re-checked, so a parent
+      // cancelling on their own device (see handleCancelSubscription in dashboard.tsx) never
+      // reached the kid's device at all (bug #6). Only touch it when the field is actually
+      // present, so a parent row from before `subscribed` existed in the payload doesn't
+      // spuriously lock an otherwise-active kid out.
+      if (typeof owningPayload.subscribed === 'boolean') {
+        await AsyncStorage.setItem(KEYS.IS_SUBSCRIBED, owningPayload.subscribed ? 'true' : 'false');
+      }
+      return updatedProfile;
     } catch (e) {
+      if (e instanceof Error && e.message === 'KID_NOT_FOUND') throw e;
       console.error("Failed to sync kid profile from Supabase:", e);
+      return null;
     }
-    return null;
   },
 
   /**
@@ -1433,6 +1666,21 @@ export const StorageService = {
   // Reset helper
   async clearAll(): Promise<void> {
     await AsyncStorage.clear();
+  },
+
+  /**
+   * Permanently deletes this parent's entire account from the server: every kid's profile row,
+   * their push tokens, all chat/call history, any uploaded photos/drawings, and finally the
+   * auth.users row itself. Deleting an auth user requires the service-role key, which the app
+   * never holds — this delegates to the delete-account Edge Function (runs server-side with
+   * that key), authenticated via this client's current Supabase Auth session. Irreversible;
+   * callers are expected to confirm with the user first and clear local state afterward.
+   */
+  async deleteAccountFromServer(): Promise<void> {
+    const { error } = await supabase.functions.invoke('delete-account');
+    if (error) {
+      throw new Error(error.message || "Failed to delete account from the server");
+    }
   }
 };
 

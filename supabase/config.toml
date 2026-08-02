@@ -155,12 +155,15 @@ max_indexes = 5
 [auth]
 enabled = true
 # The base URL of your website. Used as an allow-list for redirects and for constructing URLs used
-# in emails.
-site_url = "http://127.0.0.1:3000"
-# The public URL that Auth serves on. Defaults to the API external URL with `/auth/v1` appended.
-# external_url = ""
+# in emails. Crumbo has no website — this is a mobile app, so its own deep link scheme (see
+# app.json's "scheme": "crumbo") is the closest equivalent. Left at the CLI's 127.0.0.1:3000
+# placeholder, every auth email's link (confirmation, recovery) redirects to that unreachable
+# localhost address instead of back into the app — parent/gate.tsx's signUp/resetPasswordForEmail
+# calls pass `crumbo://` / `crumbo://reset-password` as redirectTo, but Supabase silently ignores
+# any redirectTo not on this allow-list and falls back to site_url.
+site_url = "crumbo://"
 # A list of *exact* URLs that auth providers are permitted to redirect to post authentication.
-additional_redirect_urls = ["https://127.0.0.1:3000"]
+additional_redirect_urls = ["crumbo://", "crumbo://reset-password"]
 # How long tokens are valid for, in seconds. Defaults to 3600 (1 hour), maximum 604,800 (1 week).
 jwt_expiry = 3600
 # JWT issuer URL. If not set, defaults to auth.external_url.
@@ -223,7 +226,7 @@ enable_signup = true
 # addresses. If disabled, only the new email is required to confirm.
 double_confirm_changes = true
 # If enabled, users need to confirm their email address before signing in.
-enable_confirmations = false
+enable_confirmations = true
 # If enabled, users will need to reauthenticate or have logged in recently to change their password.
 secure_password_change = false
 # Controls the minimum amount of time that must pass before sending another signup confirmation or password reset email.
@@ -233,20 +236,35 @@ otp_length = 6
 # Number of seconds before the email OTP expires (defaults to 1 hour).
 otp_expiry = 3600
 
-# Use a production-ready SMTP server
-# [auth.email.smtp]
-# enabled = true
-# host = "smtp.sendgrid.net"
-# port = 587
-# user = "apikey"
-# pass = "env(SENDGRID_API_KEY)"
-# admin_email = "admin@email.com"
-# sender_name = "Admin"
+# Production SMTP via Resend — removes the default provider's 2-emails/hour limit and sends as
+# "Crumbo" instead of "Supabase". `pass` reads from a local RESEND_API_KEY env var rather than a
+# literal secret here — export it in your shell before running `supabase config push`, it's
+# never written to this file or committed.
+[auth.email.smtp]
+enabled = true
+host = "smtp.resend.com"
+port = 587
+user = "resend"
+pass = "env(RESEND_API_KEY)"
+admin_email = "noreply@revynd.com"
+sender_name = "Crumbo"
 
 # Uncomment to customize email template
 # [auth.email.template.invite]
 # subject = "You have been invited"
 # content_path = "./supabase/templates/invite.html"
+
+# Branded "Confirm your email" (signup) and "Reset your password" emails — see parent/gate.tsx's
+# signUp/resetPasswordForEmail calls. Requires `supabase login` + `supabase config push` to
+# actually apply to the linked project (see README note); the dashboard's Email Templates page
+# works too, and needs no CLI login, if you'd rather paste these in directly.
+[auth.email.template.confirmation]
+subject = "Confirm your Crumbo account 🍪"
+content_path = "./supabase/templates/confirmation.html"
+
+[auth.email.template.recovery]
+subject = "Reset your Crumbo password 🔒"
+content_path = "./supabase/templates/recovery.html"
 
 # Uncomment to customize notification email template
 # [auth.email.notification.password_changed]

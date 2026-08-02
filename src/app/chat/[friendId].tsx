@@ -1,4 +1,3 @@
-import AttachmentMenuModal from '@/components/AttachmentMenuModal';
 import CustomAlertModal, { AlertButton } from '@/components/CustomAlertModal';
 import DrawingCanvasModal from '@/components/DrawingCanvasModal';
 import { useAppTheme } from '@/hooks/use-app-theme';
@@ -225,6 +224,22 @@ export default function ChatScreen() {
     return () => unsubscribe();
   }, [friendId]);
 
+  // Wraps syncKidProfileAndFriends so a kid whose code no longer resolves to anyone (removed, or
+  // rotated away via regenerateKidCode — see storage.ts) gets logged out from here too, not just
+  // from the chat list — this screen can be the one left open when that happens.
+  const syncOrHandleRemoval = async (): Promise<KidProfile | null> => {
+    try {
+      return await StorageService.syncKidProfileAndFriends();
+    } catch (e) {
+      if (e instanceof Error && e.message === 'KID_NOT_FOUND') {
+        await StorageService.logoutKid();
+        router.replace('/');
+        return null;
+      }
+      return null; // other failures (network etc.) — caller falls back to local cache
+    }
+  };
+
   const loadChat = async () => {
     if (!friendId) return;
     try {
@@ -236,7 +251,7 @@ export default function ChatScreen() {
       // Synced from the parent's profile (not just the local cache) so a lock the parent just
       // flipped is picked up on this load rather than whatever was cached from before — falls
       // back to the local cache if the sync fails (offline etc.), same as chat/index.tsx.
-      const kidProf = (await StorageService.syncKidProfileAndFriends()) || (await StorageService.getKidProfile());
+      const kidProf = (await syncOrHandleRemoval()) || (await StorageService.getKidProfile());
       setProfile(kidProf);
       if (kidProf) {
         setChatDisabled(!!kidProf.chatDisabled);
@@ -282,7 +297,7 @@ export default function ChatScreen() {
   const refreshLocksAndStatus = async () => {
     if (!friendId) return;
     try {
-      const kidProf = (await StorageService.syncKidProfileAndFriends()) || (await StorageService.getKidProfile());
+      const kidProf = (await syncOrHandleRemoval()) || (await StorageService.getKidProfile());
       setProfile(kidProf);
       if (kidProf) {
         setChatDisabled(!!kidProf.chatDisabled);
@@ -600,12 +615,44 @@ export default function ChatScreen() {
           </View>
         ) : (
           <View style={[styles.inputArea, { backgroundColor: colors.cardBg, borderColor: colors.border }, { paddingBottom: Platform.OS === 'android' ? (insets.bottom > 0 && !keyboardVisible ? insets.bottom + s(12) : s(12)) : s(12), paddingHorizontal: s(16), paddingVertical: s(8), gap: s(12) }]}>
-            <TouchableOpacity
-              style={[styles.attachButton, { width: s(40), height: s(40), borderRadius: s(20) }]}
-              onPress={() => setAttachmentMenuVisible(true)}
-            >
-              <Ionicons name="add-circle" size={s(28)} color={colors.textSecondary} />
-            </TouchableOpacity>
+            {!(photosDisabled && drawingDisabled) && (
+              <View style={{ position: 'relative' }}>
+                {attachmentMenuVisible && (
+                  <View style={[styles.attachIconsColumn, { gap: s(8), bottom: s(48) }]}>
+                    {!photosDisabled && (
+                      <TouchableOpacity
+                        style={[styles.attachIconButton, { width: s(40), height: s(40), borderRadius: s(20), backgroundColor: colors.inputBg }]}
+                        onPress={handleTakePhoto}
+                      >
+                        <Ionicons name="camera" size={s(19)} color={colors.textSecondary} />
+                      </TouchableOpacity>
+                    )}
+                    {!photosDisabled && (
+                      <TouchableOpacity
+                        style={[styles.attachIconButton, { width: s(40), height: s(40), borderRadius: s(20), backgroundColor: colors.inputBg }]}
+                        onPress={handleChooseFromGallery}
+                      >
+                        <Ionicons name="images" size={s(19)} color={colors.textSecondary} />
+                      </TouchableOpacity>
+                    )}
+                    {!drawingDisabled && (
+                      <TouchableOpacity
+                        style={[styles.attachIconButton, { width: s(40), height: s(40), borderRadius: s(20), backgroundColor: colors.inputBg }]}
+                        onPress={handleOpenDrawing}
+                      >
+                        <Ionicons name="brush" size={s(19)} color={colors.textSecondary} />
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                )}
+                <TouchableOpacity
+                  style={[styles.attachButton, { width: s(40), height: s(40), borderRadius: s(20) }]}
+                  onPress={() => setAttachmentMenuVisible(!attachmentMenuVisible)}
+                >
+                  <Ionicons name={attachmentMenuVisible ? 'close' : 'add-circle'} size={s(28)} color={colors.textSecondary} />
+                </TouchableOpacity>
+              </View>
+            )}
             <View style={[styles.inputContainer, { backgroundColor: colors.inputBg, borderColor: colors.borderStrong }, { paddingHorizontal: s(16), borderRadius: s(24), height: s(48) }]}>
               <TextInput
                 style={[styles.textInput, { color: colors.inputText }, { fontSize: s(16) }]}
@@ -798,15 +845,6 @@ export default function ChatScreen() {
         buttons={alertConfig.buttons}
         onClose={() => setAlertConfig(prev => ({ ...prev, visible: false }))}
       />
-      <AttachmentMenuModal
-        visible={attachmentMenuVisible}
-        photosDisabled={photosDisabled}
-        drawingDisabled={drawingDisabled}
-        onClose={() => setAttachmentMenuVisible(false)}
-        onTakePhoto={handleTakePhoto}
-        onChooseFromGallery={handleChooseFromGallery}
-        onDraw={handleOpenDrawing}
-      />
       <DrawingCanvasModal
         visible={drawingModalVisible}
         onClose={() => setDrawingModalVisible(false)}
@@ -976,6 +1014,21 @@ const styles = StyleSheet.create({
   attachButton: {
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  attachIconsColumn: {
+    position: 'absolute',
+    left: 0,
+    flexDirection: 'column-reverse',
+    alignItems: 'center',
+  },
+  attachIconButton: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 3,
   },
   headerRight: {
     flexDirection: 'row',
