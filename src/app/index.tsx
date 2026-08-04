@@ -1,14 +1,23 @@
-import React, { useState, useCallback, useEffect } from 'react';
-import { View, Text, StyleSheet, Image, TouchableOpacity, SafeAreaView, ActivityIndicator, Platform, Modal, TextInput, KeyboardAvoidingView, ScrollView, Keyboard } from 'react-native';
+import React, { useState, useCallback } from 'react';
+import { View, Text, StyleSheet, Image, TouchableOpacity, SafeAreaView, ActivityIndicator, Platform, KeyboardAvoidingView, ScrollView } from 'react-native';
 import { useRouter, useFocusEffect } from 'expo-router';
+import Constants from 'expo-constants';
 import { StorageService, KidProfile } from '@/services/storage';
 import { Ionicons } from '@expo/vector-icons';
-import CustomAlertModal, { AlertButton } from '@/components/CustomAlertModal';
+import AdultAvatar from '@/components/AdultAvatar';
+import AdultAvatarPickerModal from '@/components/AdultAvatarPickerModal';
 import AppSettingsModal from '@/components/AppSettingsModal';
+import AvatarPickerModal from '@/components/AvatarPickerModal';
+import CustomAlertModal, { AlertButton } from '@/components/CustomAlertModal';
 import OnboardingModal from '@/components/OnboardingModal';
 import { useDisplayScale } from '@/hooks/use-display-scale';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import { useParentAvatarPicker } from '@/hooks/use-parent-avatar-picker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+
+// Read from app.json (via app config, not hardcoded) so this can't drift out of sync with the
+// actual shipped version.
+const APP_VERSION = Constants.expoConfig?.version;
 
 export default function WelcomeScreen() {
   const router = useRouter();
@@ -18,31 +27,15 @@ export default function WelcomeScreen() {
   const [loading, setLoading] = useState(true);
   const [subscribed, setSubscribed] = useState(false);
   const [profile, setProfile] = useState<KidProfile | null>(null);
+  const [parentActive, setParentActive] = useState(false);
+  const [parentName, setParentName] = useState<string | null>(null);
+  const [parentAvatarUrl, setParentAvatarUrl] = useState<string | null>(null);
+  const [parentAvatarEmoji, setParentAvatarEmoji] = useState<string | null>(null);
 
-  const [cookieCodeInput, setCookieCodeInput] = useState('');
-  const [claimCodeInput, setClaimCodeInput] = useState('');
-  const [claimCodeNeeded, setClaimCodeNeeded] = useState(false);
-  const [syncing, setSyncing] = useState(false);
   const [settingsVisible, setSettingsVisible] = useState(false);
   const [onboardingVisible, setOnboardingVisible] = useState(false);
-  const [keyboardVisible, setKeyboardVisible] = useState(false);
+  const [avatarPickerVisible, setAvatarPickerVisible] = useState(false);
 
-  useEffect(() => {
-    const showSub = Keyboard.addListener(
-      Platform.OS === 'android' ? 'keyboardDidShow' : 'keyboardWillShow',
-      () => setKeyboardVisible(true)
-    );
-    const hideSub = Keyboard.addListener(
-      Platform.OS === 'android' ? 'keyboardDidHide' : 'keyboardWillHide',
-      () => setKeyboardVisible(false)
-    );
-    return () => {
-      showSub.remove();
-      hideSub.remove();
-    };
-  }, []);
-
-  // Custom Alert State
   const [alertConfig, setAlertConfig] = useState<{
     visible: boolean;
     title: string;
@@ -50,12 +43,25 @@ export default function WelcomeScreen() {
     buttons?: AlertButton[];
   }>({ visible: false, title: '', message: '' });
 
-  const showAlert = (
-    title: string,
-    message: string,
-    buttons?: AlertButton[]
-  ) => {
+  const showAlert = (title: string, message: string, buttons?: AlertButton[]) => {
     setAlertConfig({ visible: true, title, message, buttons });
+  };
+
+  const parentAvatarPicker = useParentAvatarPicker({
+    onAvatarUrlChange: setParentAvatarUrl,
+    onAvatarEmojiChange: setParentAvatarEmoji,
+    showAlert,
+  });
+
+  const handleKidAvatarSelect = (emoji: string) => {
+    setAvatarPickerVisible(false);
+    // Optimistic: update immediately rather than waiting on the network round-trip.
+    setProfile(prev => (prev ? { ...prev, avatarEmoji: emoji } : prev));
+    StorageService.setKidAvatar(emoji).then((success) => {
+      if (!success) {
+        showAlert("Connection Error", "Could not save your new avatar. Please check your network and try again.");
+      }
+    });
   };
 
   useFocusEffect(
@@ -69,9 +75,20 @@ export default function WelcomeScreen() {
       setLoading(true);
       const isSub = await StorageService.isSubscribed();
       const kidProf = await StorageService.getKidProfile();
+      const isParentActive = await StorageService.isParentActiveOnDevice();
       const seenOnboarding = await StorageService.hasSeenOnboarding();
       setSubscribed(isSub);
       setProfile(kidProf);
+      setParentActive(isParentActive);
+      if (isParentActive) {
+        const pName = await StorageService.getParentName();
+        const pEmail = await StorageService.getParentEmail();
+        setParentName(pName || pEmail);
+        const pAvatarUrl = await StorageService.getParentAvatarUrl();
+        setParentAvatarUrl(pAvatarUrl);
+        const pAvatarEmoji = await StorageService.getParentAvatarEmoji();
+        setParentAvatarEmoji(pAvatarEmoji);
+      }
       setOnboardingVisible(!seenOnboarding);
     } catch (e) {
       console.error("Error loading app state", e);
@@ -80,88 +97,9 @@ export default function WelcomeScreen() {
     }
   };
 
-  const handleKidLogin = async () => {
-    const code = cookieCodeInput.trim().toUpperCase();
-    const codePattern = /^CRUM-\d{3}-\d{3}$/;
-    
-    if (!codePattern.test(code)) {
-      showAlert(
-        "Invalid Cookie Code", 
-        "Code should look like CRUM-123-456. Ask your parent for your code!"
-      );
-      return;
-    }
-
-    if (claimCodeNeeded && !claimCodeInput.trim()) {
-      showAlert("Activation Code Required", "Ask a parent for the Activation Code shown in the Parent Area, then enter it below.");
-      return;
-    }
-
-    setSyncing(true);
-    try {
-      const kidProfile = await StorageService.loginKidWithCode(code, claimCodeInput.trim() || undefined);
-      if (kidProfile) {
-        setProfile(kidProfile);
-        setSubscribed(true);
-        setCookieCodeInput('');
-        setClaimCodeInput('');
-        setClaimCodeNeeded(false);
-        showAlert("Welcome! 🍪", `Logged in as ${kidProfile.name}!`, [
-          { text: "OK", onPress: () => { router.push('/chat'); } }
-        ]);
-      } else {
-        showAlert(
-          "Profile Not Found",
-          "Could not find a kid profile with this Cookie Code. Please verify the code in the parent dashboard."
-        );
-      }
-    } catch (e) {
-      if (e instanceof Error && e.message === 'DEVICE_MISMATCH') {
-        showAlert(
-          "Already Logged In Elsewhere",
-          "This Cookie Code is already active on another device. If this is your kid's new phone, ask a parent to deactivate the old device from the Parent Area."
-        );
-      } else if (e instanceof Error && e.message === 'CLAIM_CODE_REQUIRED') {
-        setClaimCodeNeeded(true);
-        showAlert(
-          "Activation Code Needed",
-          "This Cookie Code was freed up from another device. Ask a parent for the one-time Activation Code shown in the Parent Area, then enter it below and try again."
-        );
-      } else if (e instanceof Error && e.message === 'CLAIM_CODE_INVALID') {
-        showAlert(
-          "Invalid or Expired Code",
-          "That Activation Code is wrong or has expired. Ask a parent to deactivate the old device again to get a fresh one."
-        );
-      } else {
-        showAlert("Connection Error", "Could not connect to the database. Please check your network.");
-      }
-    } finally {
-      setSyncing(false);
-    }
-  };
-
   const handleOnboardingDone = async () => {
     setOnboardingVisible(false);
     await StorageService.setOnboardingSeen();
-  };
-
-  const handleLogout = () => {
-    showAlert(
-      "Log Out?",
-      "Are you sure you want to log out of your Cookie Jar?",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Log Out",
-          style: "destructive",
-          onPress: async () => {
-            await StorageService.logoutKid();
-            setProfile(null);
-            setSubscribed(false);
-          }
-        }
-      ]
-    );
   };
 
   if (loading) {
@@ -213,97 +151,80 @@ export default function WelcomeScreen() {
             </View>
           </View>
 
-          {/* Dynamic Action Card */}
+          {/* Dynamic Action Card — exactly one of profile (a kid) or parentActive can be true at
+              a time (see activateKidOnThisDevice/activateParentOnDevice). There is no self-service
+              login or logout here: activating OR deactivating anyone on this device is a Parent
+              Area action only, to prevent an accidental one-tap deactivation from this screen. */}
           <View style={[styles.card, { backgroundColor: colors.cardBg, borderColor: colors.border, shadowColor: colors.textSecondary }]}>
-            {profile && (
-              <TouchableOpacity
-                style={{ position: 'absolute', top: s(12), right: s(12), padding: s(4), zIndex: 10 }}
-                onPress={handleLogout}
-              >
-                <Ionicons name="log-out-outline" size={s(20)} color="#D32F2F" />
-              </TouchableOpacity>
-            )}
             {profile ? (
               <View style={styles.cardContent}>
-                <Text style={[styles.cardEmoji, { fontSize: s(48) }]}>🍪</Text>
+                <TouchableOpacity onPress={() => setAvatarPickerVisible(true)}>
+                  <Text style={[styles.cardEmoji, { fontSize: s(48) }]}>{profile.avatarEmoji || '🍪'}</Text>
+                </TouchableOpacity>
                 <Text style={[styles.cardTitle, { fontSize: s(22), color: colors.text }]}>Hey, {profile.name}!</Text>
                 <Text style={[styles.cardText, { fontSize: s(14), lineHeight: s(20), color: colors.textSecondary }]}>
                   Your cookie jar is ready. Jump in to chat with your friends!
                 </Text>
-                <TouchableOpacity 
+                <TouchableOpacity
                   style={[styles.primaryButton, { backgroundColor: colors.primaryBtn }]}
                   onPress={() => router.push('/chat')}
                 >
                   <Text style={[styles.primaryButtonText, { fontSize: s(18), color: colors.primaryBtnText }]}>Enter Cookie Jar 🍪</Text>
                 </TouchableOpacity>
               </View>
+            ) : parentActive ? (
+              <View style={styles.cardContent}>
+                <TouchableOpacity style={{ marginBottom: s(12) }} onPress={parentAvatarPicker.openPicker}>
+                  <AdultAvatar uri={parentAvatarUrl || undefined} emoji={parentAvatarEmoji || undefined} size={s(64)} />
+                </TouchableOpacity>
+                <Text style={[styles.cardTitle, { fontSize: s(22), color: colors.text }]}>Welcome back{parentName ? `, ${parentName}` : ''}!</Text>
+                <Text style={[styles.cardText, { fontSize: s(14), lineHeight: s(20), color: colors.textSecondary }]}>
+                  You&apos;re active on this device. Jump in to chat with your kids or paired parents!
+                </Text>
+                <TouchableOpacity
+                  style={[styles.primaryButton, { backgroundColor: colors.primaryBtn }]}
+                  onPress={() => router.push('/parent/chat')}
+                >
+                  <Text style={[styles.primaryButtonText, { fontSize: s(18), color: colors.primaryBtnText }]}>Enter 🍪</Text>
+                </TouchableOpacity>
+              </View>
             ) : (
               <View style={[styles.cardContent, { width: '100%' }]}>
                 <Text style={[styles.cardEmoji, { fontSize: s(48) }]}>🍪</Text>
-                <Text style={[styles.cardTitle, { fontSize: s(22), color: colors.text }]}>Ready to start chatting?</Text>
+                <Text style={[styles.cardTitle, { fontSize: s(22), color: colors.text }]}>No one&apos;s active here yet</Text>
                 <Text style={[styles.cardText, { fontSize: s(14), lineHeight: s(20), color: colors.textSecondary }]}>
-                  Log in as a kid using the Cookie Code provided by your parent.
+                  Ask a parent to open the Parent Area below and activate a user on this device.
                 </Text>
-                <TextInput
-                  style={[styles.input, { width: '100%', marginBottom: s(16), fontSize: s(16), backgroundColor: colors.inputBg, color: colors.inputText, borderColor: colors.borderStrong }]}
-                  placeholder="Cookie Code (e.g. CRUM-123-456)"
-                  placeholderTextColor={colors.textSecondary}
-                  autoCapitalize="characters"
-                  autoCorrect={false}
-                  value={cookieCodeInput}
-                  onChangeText={setCookieCodeInput}
-                />
-                {claimCodeNeeded && (
-                  <TextInput
-                    style={[styles.input, { width: '100%', marginBottom: s(16), fontSize: s(16), backgroundColor: colors.inputBg, color: colors.inputText, borderColor: colors.borderStrong }]}
-                    placeholder="Activation Code from a parent"
-                    placeholderTextColor={colors.textSecondary}
-                    autoCapitalize="characters"
-                    autoCorrect={false}
-                    value={claimCodeInput}
-                    onChangeText={setClaimCodeInput}
-                  />
-                )}
-                <TouchableOpacity
-                  style={[styles.primaryButton, { backgroundColor: colors.primaryBtn }]}
-                  onPress={handleKidLogin}
-                  disabled={syncing}
-                >
-                  {syncing ? (
-                    <ActivityIndicator color={colors.primaryBtnText} />
-                  ) : (
-                    <Text style={[styles.primaryButtonText, { fontSize: s(18), color: colors.primaryBtnText }]}>Kid Login 🍪</Text>
-                  )}
-                </TouchableOpacity>
               </View>
             )}
           </View>
 
-          {/* Footer Area for parents — flex:1 fills the remaining space below the card and
-              centers within it, so it sits midway to the bottom rather than hugging the card.
-              Hidden while the keyboard is open so it doesn't get squeezed above it. */}
-          {!keyboardVisible && (
-            <View style={[styles.footer, { flex: 1, justifyContent: 'center' }]}>
+          {/* Footer Area for parents — flex:1 fills the remaining space below the card, with the
+              button centered in that space (so it sits midway between the card and the privacy
+              text below) rather than the two being stacked tight against each other. */}
+          <View style={[styles.footer, { flex: 1, justifyContent: 'space-between' }]}>
+            <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', width: '100%' }}>
               <TouchableOpacity
-                style={[styles.secondaryButton, { backgroundColor: colors.actionBtnSecondaryBg, borderColor: colors.borderStrong }]}
+                style={[styles.secondaryButton, { backgroundColor: colors.primaryBtnFaded, borderColor: colors.primaryBtn }]}
                 onPress={() => router.push('/parent/gate')}
               >
-                <Text style={[styles.secondaryButtonText, { fontSize: s(14), color: colors.actionBtnSecondaryText }]}>Parents Area (Setup & Controls)</Text>
+                {/* Text was colors.primaryBtn (golden yellow) on primaryBtnFaded (pale yellow) —
+                    low-contrast yellow-on-near-white-yellow. colors.text is the same dark brown
+                    used for headings, readable against the faded background in both themes. */}
+                <Text style={[styles.secondaryButtonText, { fontSize: s(15), color: colors.text }]}>Parents Area (Setup & Controls)</Text>
               </TouchableOpacity>
-              <Text style={[styles.privacyText, { fontSize: s(11), color: colors.textSecondary }]}>
-                Privacy promise: No child data will ever be collected or stored.
-              </Text>
             </View>
-          )}
+            <Text style={[styles.privacyText, { fontSize: s(11), color: colors.textSecondary }]}>
+              Privacy promise: No child data will ever be collected or stored.
+            </Text>
+            {APP_VERSION && (
+              <Text style={[styles.versionText, { fontSize: s(10), color: colors.textSecondary }]}>
+                v{APP_VERSION}
+              </Text>
+            )}
+          </View>
         </ScrollView>
       </KeyboardAvoidingView>
-      <CustomAlertModal
-        visible={alertConfig.visible}
-        title={alertConfig.title}
-        message={alertConfig.message}
-        buttons={alertConfig.buttons}
-        onClose={() => setAlertConfig(prev => ({ ...prev, visible: false }))}
-      />
       <AppSettingsModal
         visible={settingsVisible}
         onClose={() => setSettingsVisible(false)}
@@ -311,6 +232,30 @@ export default function WelcomeScreen() {
       <OnboardingModal
         visible={onboardingVisible}
         onDone={handleOnboardingDone}
+      />
+      <AvatarPickerModal
+        visible={avatarPickerVisible}
+        currentEmoji={profile?.avatarEmoji}
+        onClose={() => setAvatarPickerVisible(false)}
+        onSelect={handleKidAvatarSelect}
+      />
+      <CustomAlertModal
+        visible={alertConfig.visible}
+        title={alertConfig.title}
+        message={alertConfig.message}
+        buttons={alertConfig.buttons}
+        onClose={() => setAlertConfig(prev => ({ ...prev, visible: false }))}
+      />
+      <AdultAvatarPickerModal
+        visible={parentAvatarPicker.pickerVisible}
+        currentAvatarUrl={parentAvatarUrl}
+        currentAvatarEmoji={parentAvatarEmoji}
+        uploading={parentAvatarPicker.uploading}
+        onClose={parentAvatarPicker.closePicker}
+        onTakePhoto={parentAvatarPicker.takePhoto}
+        onChooseFromGallery={parentAvatarPicker.chooseFromGallery}
+        onRemovePhoto={parentAvatarPicker.removePhoto}
+        onSelectPreset={parentAvatarPicker.selectPreset}
       />
     </SafeAreaView>
   );
@@ -422,10 +367,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   secondaryButtonText: {
-    fontWeight: '700',
+    fontWeight: '800',
   },
   privacyText: {
     fontSize: 11,
+    color: '#A1887F',
+    textAlign: 'center',
+    fontWeight: '600',
+  },
+  versionText: {
+    fontSize: 10,
     color: '#A1887F',
     textAlign: 'center',
     fontWeight: '600',

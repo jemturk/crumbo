@@ -18,14 +18,18 @@ import { Ionicons } from '@expo/vector-icons';
 import { StorageService, KidProfile } from '@/services/storage';
 import { supabase } from '@/services/supabase';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import AdultAvatar from '@/components/AdultAvatar';
+import AdultAvatarPickerModal from '@/components/AdultAvatarPickerModal';
+import ChatMediaBubble, { parseMediaMessage } from '@/components/ChatMediaBubble';
+import VoiceMessageBubble from '@/components/VoiceMessageBubble';
 import CustomAlertModal, { AlertButton } from '@/components/CustomAlertModal';
 import OnboardingModal from '@/components/OnboardingModal';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import QRCode from 'react-native-qrcode-svg';
 import { useDisplayScale } from '@/hooks/use-display-scale';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import { useParentAvatarPicker } from '@/hooks/use-parent-avatar-picker';
 import { useSettings } from '@/context/settings-context';
-import { Image } from 'expo-image';
 
 // Mirrors CALL_LOG_COLORS in chat/[friendId].tsx — kept in sync so a parent reviewing logs
 // sees the exact same call-type colors a kid sees in their own chat.
@@ -68,9 +72,14 @@ export default function ParentDashboard() {
   // State
   const [subscribed, setSubscribed] = useState(false);
   const [emailInput, setEmailInput] = useState('');
-  const [profile, setProfile] = useState<KidProfile | null>(null);
   const [parentEmail, setParentEmail] = useState<string | null>(null);
+  const [parentName, setParentName] = useState<string | null>(null);
+  const [parentAvatarUrl, setParentAvatarUrl] = useState<string | null>(null);
+  const [parentAvatarEmoji, setParentAvatarEmoji] = useState<string | null>(null);
   const [kidsList, setKidsList] = useState<KidProfile[]>([]);
+  const [parentActiveOnDevice, setParentActiveOnDevice] = useState(false);
+  const [biometricEnabled, setBiometricEnabledState] = useState(false);
+  const [thisDeviceId, setThisDeviceId] = useState<string | null>(null);
 
   // Accordion Toggles
   const [childrenExpanded, setChildrenExpanded] = useState(true);
@@ -87,6 +96,8 @@ export default function ParentDashboard() {
   const [syncing, setSyncing] = useState(false);
   const [newFriendName, setNewFriendName] = useState('');
   const [newFriendCode, setNewFriendCode] = useState('');
+  const [newRelativeName, setNewRelativeName] = useState('');
+  const [newRelativeEmail, setNewRelativeEmail] = useState('');
   const [pairingStatuses, setPairingStatuses] = useState<Record<string, 'paired' | 'pending'>>({});
 
   // QR Code Pairing State
@@ -116,6 +127,12 @@ export default function ParentDashboard() {
   const [selectedBuddyForLogs, setSelectedBuddyForLogs] = useState<any | null>(null);
   const [chatLogs, setChatLogs] = useState<any[]>([]);
   const [loadingLogs, setLoadingLogs] = useState(false);
+
+  const avatarPicker = useParentAvatarPicker({
+    onAvatarUrlChange: setParentAvatarUrl,
+    onAvatarEmojiChange: setParentAvatarEmoji,
+    showAlert,
+  });
 
   useEffect(() => {
     loadSettings();
@@ -169,13 +186,23 @@ export default function ParentDashboard() {
     try {
       const isSub = await StorageService.isSubscribed();
       const pEmail = await StorageService.getParentEmail();
-      const kidProf = await StorageService.getKidProfile();
+      const pName = await StorageService.getParentName();
+      const pAvatarUrl = await StorageService.getParentAvatarUrl();
+      const pAvatarEmoji = await StorageService.getParentAvatarEmoji();
       const list = await StorageService.getKidsList();
+      const parentActive = await StorageService.isParentActiveOnDevice();
+      const deviceId = await StorageService.getDeviceId();
+      const biometric = await StorageService.isBiometricEnabled();
 
       setSubscribed(isSub);
       setParentEmail(pEmail);
-      setProfile(kidProf);
+      setParentName(pName);
+      setParentAvatarUrl(pAvatarUrl);
+      setParentAvatarEmoji(pAvatarEmoji);
       setKidsList(list);
+      setParentActiveOnDevice(parentActive);
+      setThisDeviceId(deviceId);
+      setBiometricEnabledState(biometric);
 
       if (pEmail) {
         setEmailInput(pEmail);
@@ -201,20 +228,43 @@ export default function ParentDashboard() {
     }
   };
 
+  const handleToggleBiometric = async (enabled: boolean) => {
+    await StorageService.setBiometricEnabled(enabled);
+    setBiometricEnabledState(enabled);
+  };
+
   const handleLogout = () => {
     showAlert(
       "Log Out",
-      "Are you sure you want to log out of the Parent Area? Your child's active chat session will remain active.",
+      "Are you sure you want to log out of the Parent Area? You'll need to sign in again to manage settings, but any active chat session on this device (yours or your child's) stays active.",
       [
         { text: "Cancel", style: "cancel" },
-        { 
+        {
           text: "Log Out",
           style: "destructive",
           onPress: async () => {
-            await supabase.auth.signOut();
-            await StorageService.saveParentEmail('');
-            await StorageService.clearManagedKidsCache();
-            setParentEmail(null);
+            const biometricOn = await StorageService.isBiometricEnabled();
+            if (!biometricOn) {
+              // No biometric to resume later — a real sign-out, matching what "Log Out" implies.
+              await supabase.auth.signOut();
+            }
+            // If biometric IS enabled, deliberately skip signOut(): the whole point of turning it
+            // on is that Face ID/fingerprint stands in for the password on the NEXT sign-in too,
+            // not just for staying in the current app session — so the underlying Supabase
+            // session stays alive on this device for handleBiometricSignIn to resume, gated by
+            // the OS's own biometric prompt, the same way a banking app's "log out" works.
+            //
+            // Deliberately does NOT clear PARENT_EMAIL, PARENT_ACTIVE_ON_DEVICE, or the local
+            // KIDS_LIST cache — this "Log Out" only ever gates re-entry into Parent Area's OWN
+            // settings/dashboard (always reached through gate.tsx, which requires either a live
+            // session or a fresh password), not whether this device stays "active" for chat.
+            // Clearing the email/active flag used to leave them mismatched (silently broke the
+            // Chats screen — see parent/chat/index.tsx's own defensive check); clearing KIDS_LIST
+            // was worse — any later syncParentData() call from this now-signed-out-but-still-
+            // active device (e.g. uploading an avatar photo) would rebuild the server's kids[]
+            // from this now-empty local cache, wiping every real kid. gate.tsx's own sign-in
+            // already unconditionally refreshes KIDS_LIST from the server on every real sign-in
+            // (see fetchAndRestoreParentData), so clearing it here was always redundant anyway.
             router.replace('/');
           }
         }
@@ -306,10 +356,20 @@ export default function ParentDashboard() {
 
     try {
       setSyncing(true);
-      await StorageService.createKidProfile(name);
+      const newKid = await StorageService.createKidProfile(name);
       setAddKidModalVisible(false);
       await StorageService.syncParentData();
-      await loadSettings();
+      // createKidProfile auto-activates the very first kid on an account locally (if nothing
+      // else is active on this device yet) — claim the matching server-side device lock too, now
+      // that the kid is actually synced up, so Managed Users' status badge and any other device's
+      // activateKidOnThisDevice check both see it consistently.
+      const active = await StorageService.getKidProfile();
+      if (active && active.cookieCode === newKid.cookieCode) {
+        await StorageService.activateKidOnThisDevice(newKid.cookieCode);
+        await refreshKidsFromServer();
+      } else {
+        await loadSettings();
+      }
       setSyncing(false);
       showAlert("Profile Created!", `Child profile for ${name} has been added.`);
     } catch (e) {
@@ -334,31 +394,6 @@ export default function ParentDashboard() {
             await loadSettings();
             setSyncing(false);
             showAlert("Deleted", "Profile successfully deleted.");
-          }
-        }
-      ]
-    );
-  };
-
-  const handleRegenerateCode = (cookieCode: string, name: string) => {
-    showAlert(
-      "Generate New Code?",
-      `${name}'s current Cookie Code will stop working immediately on any device — including their own. Only do this if they're switching to a new phone, or you suspect someone else has their code.`,
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Generate New Code",
-          style: "destructive",
-          onPress: async () => {
-            setSyncing(true);
-            const newCode = await StorageService.regenerateKidCode(cookieCode);
-            await loadSettings();
-            setSyncing(false);
-            if (newCode) {
-              showAlert("New Code Generated 🍪", `${name}'s new Cookie Code is ${newCode}. They'll need to enter this to log back in.`);
-            } else {
-              showAlert("Error", "Could not generate a new code. Please check your connection and try again.");
-            }
           }
         }
       ]
@@ -406,6 +441,59 @@ export default function ParentDashboard() {
       showAlert("Success", `${name} added to buddy list!`);
     } catch (e) {
       showAlert("Error", "Could not add buddy.");
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  const handleAddRelativeToKid = async () => {
+    if (!selectedKidForLogs) return;
+    const name = newRelativeName.trim();
+    const email = newRelativeEmail.trim().toLowerCase();
+
+    if (!name) {
+      showAlert("Name Required", "Please enter a name for this relative (e.g. \"Grandma\", \"Uncle Bob\").");
+      return;
+    }
+    if (!email || !email.includes('@')) {
+      showAlert("Invalid Email", "Please enter a valid email address.");
+      return;
+    }
+    if (email === parentEmail) {
+      showAlert("Invalid Email", "That's your own email address!");
+      return;
+    }
+
+    setSyncing(true);
+    try {
+      const result = await StorageService.addRelativeToKidByEmail(
+        selectedKidForLogs.cookieCode,
+        selectedKidForLogs.name,
+        selectedKidForLogs.avatarEmoji,
+        email,
+        name
+      );
+
+      if (result === 'error') {
+        showAlert("Error", "Could not add this relative. Please check your connection and try again.");
+        return;
+      }
+
+      const freshKids = await StorageService.getKidsList();
+      setKidsList(freshKids);
+      const updatedKid = freshKids.find(k => k.cookieCode === selectedKidForLogs.cookieCode) || null;
+      setSelectedKidForLogs(updatedKid);
+
+      setNewRelativeName('');
+      setNewRelativeEmail('');
+
+      if (result === 'linked') {
+        showAlert("Success", `${name} can now chat with ${selectedKidForLogs.name}!`);
+      } else {
+        showAlert("Invite Sent 📬", `${name} doesn't have a Crumbo account yet — we've sent them an email invite. Once they sign up, they'll be able to chat with ${selectedKidForLogs.name}.`);
+      }
+    } catch (e) {
+      showAlert("Error", "Could not add this relative.");
     } finally {
       setSyncing(false);
     }
@@ -464,7 +552,8 @@ export default function ParentDashboard() {
       callingDisabled: nextCallingDisabled,
       videoCallingDisabled: nextVideoCallingDisabled,
       photosDisabled: !!kid.photosDisabled,
-      drawingDisabled: !!kid.drawingDisabled
+      drawingDisabled: !!kid.drawingDisabled,
+      voiceMessagesDisabled: !!kid.voiceMessagesDisabled
     });
     await StorageService.syncParentData().catch(e => console.error(e));
     await loadSettings();
@@ -488,7 +577,8 @@ export default function ParentDashboard() {
       callingDisabled: nextCallingDisabled,
       videoCallingDisabled: nextVideoCallingDisabled,
       photosDisabled: !!kid.photosDisabled,
-      drawingDisabled: !!kid.drawingDisabled
+      drawingDisabled: !!kid.drawingDisabled,
+      voiceMessagesDisabled: !!kid.voiceMessagesDisabled
     });
     await StorageService.syncParentData().catch(e => console.error(e));
     await loadSettings();
@@ -510,7 +600,8 @@ export default function ParentDashboard() {
       callingDisabled: nextCallingDisabled,
       videoCallingDisabled: nextVideoCallingDisabled,
       photosDisabled: !!kid.photosDisabled,
-      drawingDisabled: !!kid.drawingDisabled
+      drawingDisabled: !!kid.drawingDisabled,
+      voiceMessagesDisabled: !!kid.voiceMessagesDisabled
     });
     await StorageService.syncParentData().catch(e => console.error(e));
     await loadSettings();
@@ -524,7 +615,8 @@ export default function ParentDashboard() {
       callingDisabled: !!kid.callingDisabled,
       videoCallingDisabled: !!kid.videoCallingDisabled,
       photosDisabled: !kid.photosDisabled,
-      drawingDisabled: !!kid.drawingDisabled
+      drawingDisabled: !!kid.drawingDisabled,
+      voiceMessagesDisabled: !!kid.voiceMessagesDisabled
     });
     await StorageService.syncParentData().catch(e => console.error(e));
     await loadSettings();
@@ -536,7 +628,21 @@ export default function ParentDashboard() {
       callingDisabled: !!kid.callingDisabled,
       videoCallingDisabled: !!kid.videoCallingDisabled,
       photosDisabled: !!kid.photosDisabled,
-      drawingDisabled: !kid.drawingDisabled
+      drawingDisabled: !kid.drawingDisabled,
+      voiceMessagesDisabled: !!kid.voiceMessagesDisabled
+    });
+    await StorageService.syncParentData().catch(e => console.error(e));
+    await loadSettings();
+  };
+
+  const handleToggleVoiceMessages = async (kid: KidProfile) => {
+    await StorageService.updateKidSettingsForProfile(kid.cookieCode, {
+      chatDisabled: !!kid.chatDisabled,
+      callingDisabled: !!kid.callingDisabled,
+      videoCallingDisabled: !!kid.videoCallingDisabled,
+      photosDisabled: !!kid.photosDisabled,
+      drawingDisabled: !!kid.drawingDisabled,
+      voiceMessagesDisabled: !kid.voiceMessagesDisabled
     });
     await StorageService.syncParentData().catch(e => console.error(e));
     await loadSettings();
@@ -572,11 +678,48 @@ export default function ParentDashboard() {
     );
   };
 
-  const handleDeactivateThisDevice = () => {
-    if (!profile) return;
+  // activateKidOnThisDevice/deactivateKidOnThisDevice update boundDeviceId on the SERVER row —
+  // loadSettings() alone re-reads the local KIDS_LIST cache, which only ever gets refreshed from
+  // the server at sign-in time, so every card's Active/Inactive badge would just keep showing
+  // whatever was cached back then, drifting further from reality with each activate/deactivate.
+  // Pulling a fresh copy down first is what actually keeps the list honest.
+  const refreshKidsFromServer = async () => {
+    if (parentEmail) {
+      await StorageService.fetchAndRestoreParentData(parentEmail);
+    }
+    await loadSettings();
+  };
+
+  const handleActivateKid = (kid: KidProfile) => {
     showAlert(
-      "Deactivate on This Device?",
-      `${profile.name}'s Cookie Code will be freed up, but their Cookie Code alone won't be enough to claim it — you'll get a one-time Activation Code to enter on the new phone, valid for 15 minutes. This device will stop showing ${profile.name} as active.`,
+      `Activate ${kid.name} on This Device?`,
+      `${kid.name} will become the active user on this device. Anyone else currently active here (a different kid, or you as parent) will be deactivated first.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Activate",
+          onPress: async () => {
+            setSyncing(true);
+            const result = await StorageService.activateKidOnThisDevice(kid.cookieCode);
+            await refreshKidsFromServer();
+            setSyncing(false);
+            if (!result.success) {
+              if (result.error === 'ALREADY_ACTIVE_ELSEWHERE') {
+                showAlert("Active on Another Device", `${kid.name} is already active on a different device. Deactivate them there first (tap Deactivate on ${kid.name}'s card here), then activate them on this device.`);
+              } else {
+                showAlert("Error", "Could not activate this profile. Please check your connection and try again.");
+              }
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  const handleDeactivateKid = (kid: KidProfile) => {
+    showAlert(
+      `Deactivate ${kid.name}?`,
+      `${kid.name} will no longer be active on any device. They can be activated again here or on any other device afterward.`,
       [
         { text: "Cancel", style: "cancel" },
         {
@@ -584,21 +727,33 @@ export default function ParentDashboard() {
           style: "destructive",
           onPress: async () => {
             setSyncing(true);
-            const result = await StorageService.deactivateKidDevice(profile.cookieCode);
+            const result = await StorageService.deactivateKidOnThisDevice(kid.cookieCode);
+            await refreshKidsFromServer();
             setSyncing(false);
-            if (result.success && result.claimCode) {
-              setProfile(null);
-              showAlert(
-                "Activation Code",
-                `On the new phone, enter Cookie Code ${profile.cookieCode} and Activation Code ${result.claimCode}. This code expires in 15 minutes and works once.`
-              );
-            } else {
-              showAlert("Error", "Could not deactivate this device. Please check your connection and try again.");
+            if (!result.success) {
+              showAlert("Error", "Could not deactivate this profile. Please check your connection and try again.");
             }
           }
         }
       ]
     );
+  };
+
+  const handleActivateParent = async () => {
+    setSyncing(true);
+    // Activating the parent can also release a previously-active kid's SERVER-side device lock
+    // (see activateParentOnDevice) — refreshKidsFromServer (not plain loadSettings) is what
+    // actually picks that up, same reasoning as the kid activate/deactivate handlers above.
+    await StorageService.activateParentOnDevice();
+    await refreshKidsFromServer();
+    setSyncing(false);
+  };
+
+  const handleDeactivateParent = async () => {
+    setSyncing(true);
+    await StorageService.deactivateParentOnDevice();
+    await loadSettings();
+    setSyncing(false);
   };
 
   const handleDeleteServerData = () => {
@@ -647,7 +802,7 @@ export default function ParentDashboard() {
 
       <ScrollView contentContainerStyle={[styles.scrollContent, { padding: s(16), gap: s(16) }]}>
         
-        {/* Accordion 1: Managed Children */}
+        {/* Accordion 1: Managed Users */}
         <View style={[styles.card, { backgroundColor: colors.cardBg, borderColor: colors.border, borderRadius: s(24) }]}>
           <TouchableOpacity 
             style={[styles.cardHeader, { paddingHorizontal: s(16), paddingVertical: s(14) }]} 
@@ -656,7 +811,7 @@ export default function ParentDashboard() {
           >
             <View style={styles.cardHeaderLeft}>
               <Ionicons name="people-outline" size={s(24)} color={colors.cardHeaderLeftIcon} style={styles.cardIcon} />
-              <Text style={[styles.cardTitle, { color: colors.text, fontSize: s(16) }]}>Managed Children</Text>
+              <Text style={[styles.cardTitle, { color: colors.text, fontSize: s(16) }]}>Managed Users</Text>
             </View>
             <Ionicons 
               name={childrenExpanded ? "chevron-up" : "chevron-down"} 
@@ -667,6 +822,43 @@ export default function ParentDashboard() {
 
           {childrenExpanded && (
             <View style={[styles.cardBody, { borderTopColor: colors.border }]}>
+              {/* Parent card — pinned first, distinctly styled so it never reads as "just
+                  another kid": gold border/badge instead of a kid's avatar-style row, and no
+                  delete/regenerate-code controls (removing the account lives in Device &
+                  Account Data instead). Exactly one of this card or a kid card below can show
+                  "Active on this device" at a time. */}
+              <View style={[styles.childContainer, { borderColor: '#FFC93C', borderWidth: 2, padding: s(16), borderRadius: s(20), backgroundColor: isDark ? colors.inputBg : '#FFFDF8', marginBottom: s(12) }]}>
+                <View style={{ position: 'absolute', top: s(-1), right: s(-1), backgroundColor: '#FFC93C', borderTopRightRadius: s(18), borderBottomLeftRadius: s(12), paddingHorizontal: s(10), paddingVertical: s(4) }}>
+                  <Text style={{ fontSize: s(11), fontWeight: '800', color: '#4E342E' }}>PARENT</Text>
+                </View>
+                <View style={[styles.childMetaRow, { paddingRight: s(64) }]}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: s(8), flexShrink: 1 }}>
+                    <TouchableOpacity onPress={avatarPicker.openPicker}>
+                      <AdultAvatar uri={parentAvatarUrl || undefined} emoji={parentAvatarEmoji || undefined} size={s(36)} />
+                    </TouchableOpacity>
+                    <View style={{ flexShrink: 1 }}>
+                      <Text style={[styles.childName, { color: colors.text, fontSize: s(16) }]} numberOfLines={1}>{parentName || parentEmail}</Text>
+                      {parentName && (
+                        <Text style={[styles.infoText, { color: colors.textSecondary, fontSize: s(12) }]} numberOfLines={1}>{parentEmail}</Text>
+                      )}
+                    </View>
+                  </View>
+                </View>
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: s(10) }}>
+                  <Text style={[styles.infoText, { color: parentActiveOnDevice ? '#2E7D32' : colors.textSecondary, fontSize: s(13), fontWeight: '700' }]}>
+                    {parentActiveOnDevice ? 'Active on this device' : 'Not active on this device'}
+                  </Text>
+                  <TouchableOpacity
+                    style={[styles.actionBtnSecondary, { backgroundColor: colors.actionBtnSecondaryBg, borderColor: parentActiveOnDevice ? '#D32F2F' : colors.border, height: s(38), borderRadius: s(12), paddingHorizontal: s(14) }]}
+                    onPress={parentActiveOnDevice ? handleDeactivateParent : handleActivateParent}
+                  >
+                    <Text style={[styles.actionBtnSecondaryText, { color: parentActiveOnDevice ? '#D32F2F' : colors.actionBtnSecondaryText, fontSize: s(13) }]}>
+                      {parentActiveOnDevice ? 'Deactivate' : 'Activate'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+
               {kidsList.length > 0 ? (
                 kidsList.map((kid) => {
                   // Sending photos/drawings happens IN the chat, so with chat off they're
@@ -675,15 +867,36 @@ export default function ParentDashboard() {
                   // photosDisabled/drawingDisabled already was, since it was never mutated.
                   const photosEffectivelyDisabled = kid.chatDisabled || kid.photosDisabled;
                   const drawingEffectivelyDisabled = kid.chatDisabled || kid.drawingDisabled;
+                  const voiceMessagesEffectivelyDisabled = kid.chatDisabled || kid.voiceMessagesDisabled;
+                  const activeHere = !!kid.boundDeviceId && kid.boundDeviceId === thisDeviceId;
+                  const activeElsewhere = !!kid.boundDeviceId && kid.boundDeviceId !== thisDeviceId;
+                  const statusLabel = activeHere ? 'Active on this device' : activeElsewhere ? 'Active on another device' : 'Inactive';
+                  const statusColor = activeHere ? '#2E7D32' : activeElsewhere ? '#B8860B' : colors.textSecondary;
                   return (
                     <View key={kid.cookieCode} style={[styles.childContainer, { borderColor: colors.border, padding: s(16), borderRadius: s(20), backgroundColor: isDark ? colors.inputBg : '#FFFDF8' }]}>
                       {/* Name and Delete Row */}
                       <View style={styles.childMetaRow}>
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: s(8) }}>
+                          <View style={{ width: s(36), height: s(36), borderRadius: s(18), backgroundColor: isDark ? colors.inputBg : '#FFFDF0', borderWidth: 2, borderColor: colors.borderStrong, justifyContent: 'center', alignItems: 'center' }}>
+                            <Text style={{ fontSize: s(18) }}>{kid.avatarEmoji || '🍪'}</Text>
+                          </View>
                           <Text style={[styles.childName, { color: colors.text, fontSize: s(18) }]}>{kid.name}</Text>
                         </View>
                         <TouchableOpacity style={styles.deleteChildBtn} onPress={() => handleDeleteChild(kid.cookieCode, kid.name)}>
                           <Ionicons name="trash" size={s(18)} color="#D32F2F" />
+                        </TouchableOpacity>
+                      </View>
+
+                      {/* Activation Status Row */}
+                      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: s(4), marginBottom: s(8) }}>
+                        <Text style={[styles.infoText, { color: statusColor, fontSize: s(13), fontWeight: '700' }]}>{statusLabel}</Text>
+                        <TouchableOpacity
+                          style={[styles.actionBtnSecondary, { backgroundColor: colors.actionBtnSecondaryBg, borderColor: activeHere ? '#D32F2F' : colors.border, height: s(36), borderRadius: s(12), paddingHorizontal: s(14) }]}
+                          onPress={() => (activeHere || activeElsewhere ? handleDeactivateKid(kid) : handleActivateKid(kid))}
+                        >
+                          <Text style={[styles.actionBtnSecondaryText, { color: activeHere ? '#D32F2F' : colors.actionBtnSecondaryText, fontSize: s(13) }]}>
+                            {activeHere || activeElsewhere ? 'Deactivate' : 'Activate'}
+                          </Text>
                         </TouchableOpacity>
                       </View>
 
@@ -696,13 +909,6 @@ export default function ParentDashboard() {
                         
                         <TouchableOpacity style={[styles.qrBtn, { width: s(36), height: s(36), borderRadius: s(18), backgroundColor: isDark ? '#3D2A1D' : '#FFFDF5' }]} onPress={() => { setSelectedKidForLogs(kid); setQrCodeVisible(true); }}>
                           <Ionicons name="qr-code-outline" size={s(16)} color="#8D6E63" />
-                        </TouchableOpacity>
-
-                        <TouchableOpacity
-                          style={[styles.qrBtn, { width: s(36), height: s(36), borderRadius: s(18), backgroundColor: isDark ? '#3D2A1D' : '#FFFDF5' }]}
-                          onPress={() => handleRegenerateCode(kid.cookieCode, kid.name)}
-                        >
-                          <Ionicons name="refresh-outline" size={s(16)} color="#8D6E63" />
                         </TouchableOpacity>
                       </View>
 
@@ -757,6 +963,16 @@ export default function ParentDashboard() {
                           >
                             <Ionicons name="brush" size={s(20)} color="#FFFFFF" />
                             {drawingEffectivelyDisabled && <View style={styles.slashOverlay} />}
+                          </TouchableOpacity>
+
+                          {/* Voice Messages Toggle */}
+                          <TouchableOpacity
+                            style={[styles.toggleCircle, { width: s(40), height: s(40), borderRadius: s(20) }, voiceMessagesEffectivelyDisabled ? styles.toggleRedBg : styles.toggleGreenBg]}
+                            onPress={() => handleToggleVoiceMessages(kid)}
+                            activeOpacity={0.8}
+                          >
+                            <Ionicons name="mic" size={s(20)} color="#FFFFFF" />
+                            {voiceMessagesEffectivelyDisabled && <View style={styles.slashOverlay} />}
                           </TouchableOpacity>
                         </View>
 
@@ -918,6 +1134,29 @@ export default function ParentDashboard() {
                   </TouchableOpacity>
                 ))}
               </View>
+
+              <Text style={[styles.inputLabel, { color: colors.text, fontSize: s(13), marginTop: s(16) }]}>Biometric Sign-In</Text>
+              <View style={[styles.settingsRow, { gap: s(8) }]}>
+                {([{ label: 'On', value: true }, { label: 'Off', value: false }]).map((opt) => (
+                  <TouchableOpacity
+                    key={opt.label}
+                    style={[
+                      styles.settingsBtn,
+                      { height: s(48), borderRadius: s(16), borderColor: colors.borderStrong, backgroundColor: colors.cardBg },
+                      biometricEnabled === opt.value && { backgroundColor: colors.primaryBtn, borderColor: colors.primaryBtn }
+                    ]}
+                    onPress={() => handleToggleBiometric(opt.value)}
+                  >
+                    <Text style={[
+                      styles.settingsBtnText,
+                      { color: colors.textSecondary, fontSize: s(14), fontWeight: '800' },
+                      biometricEnabled === opt.value && { color: colors.primaryBtnText }
+                    ]}>
+                      {opt.label}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
             </View>
           )}
         </View>
@@ -942,31 +1181,6 @@ export default function ParentDashboard() {
 
           {cacheExpanded && (
             <View style={[styles.cardBodyPadding, { gap: s(12) }]}>
-              {/* Sub-section: active kid on this device */}
-              <View style={[styles.deviceDataSection, { backgroundColor: colors.bg, borderColor: colors.border }]}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: s(8), marginBottom: s(8) }}>
-                  <Ionicons name="person-circle-outline" size={s(18)} color={colors.textSecondary} />
-                  <Text style={[styles.inputLabel, { color: colors.text, fontSize: s(13) }]}>Active Kid on This Device</Text>
-                </View>
-                {profile ? (
-                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <Text style={[styles.infoText, { color: colors.textSecondary, fontSize: s(14), fontWeight: '700' }]}>
-                      {profile.name} ({profile.cookieCode})
-                    </Text>
-                    <TouchableOpacity
-                      style={[styles.actionBtnSecondary, { backgroundColor: colors.actionBtnSecondaryBg, borderColor: '#D32F2F', height: s(40), borderRadius: s(12), paddingHorizontal: s(12) }]}
-                      onPress={handleDeactivateThisDevice}
-                    >
-                      <Text style={[styles.actionBtnSecondaryText, { color: '#D32F2F', fontSize: s(13) }]}>Deactivate</Text>
-                    </TouchableOpacity>
-                  </View>
-                ) : (
-                  <Text style={[styles.infoText, { color: colors.textSecondary, fontSize: s(13) }]}>
-                    No kid is currently active on this device.
-                  </Text>
-                )}
-              </View>
-
               {/* Sub-section: local data erasure */}
               <View style={[styles.deviceDataSection, { backgroundColor: colors.bg, borderColor: colors.border }]}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: s(8), marginBottom: s(8) }}>
@@ -1112,18 +1326,36 @@ export default function ParentDashboard() {
                           );
                         }
 
-                        const isImage = msg.text.startsWith('[IMAGE:');
-                        const isDrawing = msg.text.startsWith('[DRAWING:');
+                        const media = parseMediaMessage(msg.text);
 
-                        if (isImage || isDrawing) {
-                          const url = msg.text.replace(isImage ? '[IMAGE:' : '[DRAWING:', '').replace(/\]$/, '');
+                        if (media && media.kind === 'voice') {
+                          const isMeVoice = msg.sender === 'me';
+                          return (
+                            <View
+                              key={msg.id}
+                              style={[styles.logMessageBubble, isMeVoice ? styles.logMsgKid : styles.logMsgBuddy]}
+                            >
+                              <Text style={styles.logMsgSender}>
+                                {isMeVoice ? selectedKidForLogs?.name : selectedBuddyForLogs?.name}
+                              </Text>
+                              <View style={{ marginTop: 2 }}>
+                                <VoiceMessageBubble uri={media.url} durationSeconds={media.durationSeconds} isMe={isMeVoice} />
+                              </View>
+                              <Text style={styles.logMsgTime}>{formatTime(msg.timestamp)}</Text>
+                            </View>
+                          );
+                        }
+
+                        if (media) {
                           const isMeMedia = msg.sender === 'me';
                           return (
                             <View key={msg.id} style={[styles.logCallWrapper, isMeMedia ? styles.logRowMe : styles.logRowThem]}>
                               <Text style={styles.logMsgSender}>
                                 {isMeMedia ? selectedKidForLogs?.name : selectedBuddyForLogs?.name}
                               </Text>
-                              <Image source={{ uri: url }} style={styles.logMediaImage} contentFit="cover" transition={150} />
+                              <View style={{ marginTop: 2 }}>
+                                <ChatMediaBubble uri={media.url} size={s(160)} borderRadius={s(16)} />
+                              </View>
                               <Text style={styles.logMsgTime}>{formatTime(msg.timestamp)}</Text>
                             </View>
                           );
@@ -1249,6 +1481,44 @@ export default function ParentDashboard() {
                     </TouchableOpacity>
                   </View>
                 </View>
+
+                {/* Add Relative Section — a grandparent, aunt/uncle, second parent, etc. who
+                    isn't one of this kid's own registered parents, added by email instead of a
+                    Cookie Code (they likely don't have the kid's code on hand, and may not even
+                    have a Crumbo account yet). */}
+                <View style={styles.addBuddySection}>
+                  <Text style={styles.addBuddyTitle}>Add a Relative</Text>
+                  <Text style={styles.addRelativeHint}>
+                    For grandparents, aunts/uncles, or a second parent — connects by email instead of a Cookie Code.
+                  </Text>
+
+                  <TextInput
+                    style={styles.buddyInput}
+                    placeholder="Relative's Name (e.g. Grandma)"
+                    placeholderTextColor="#A1887F"
+                    value={newRelativeName}
+                    onChangeText={setNewRelativeName}
+                  />
+
+                  <TextInput
+                    style={styles.buddyInput}
+                    placeholder="Relative's Email Address"
+                    placeholderTextColor="#A1887F"
+                    keyboardType="email-address"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    value={newRelativeEmail}
+                    onChangeText={setNewRelativeEmail}
+                  />
+
+                  <TouchableOpacity style={styles.addBuddySubmitBtn} onPress={handleAddRelativeToKid} disabled={syncing}>
+                    {syncing ? (
+                      <ActivityIndicator color="#4E342E" />
+                    ) : (
+                      <Text style={styles.addBuddySubmitText}>Add Relative by Email</Text>
+                    )}
+                  </TouchableOpacity>
+                </View>
               </>
             )}
           </View>
@@ -1298,7 +1568,10 @@ export default function ParentDashboard() {
         onRequestClose={() => setQrScannerVisible(false)}
       >
         <SafeAreaView style={styles.scannerContainer}>
-          <View style={styles.scannerHeader}>
+          {/* react-native's own SafeAreaView (imported above) only insets on iOS — Android needs
+              this padding computed explicitly, same as every other header in the app, or this
+              title sits directly under the status bar. */}
+          <View style={[styles.scannerHeader, { paddingTop: Platform.OS === 'android' ? insets.top + 14 : 14 }]}>
             <TouchableOpacity onPress={() => setQrScannerVisible(false)} style={styles.scannerBackBtn}>
               <Ionicons name="arrow-back" size={28} color="#FFFFFF" />
             </TouchableOpacity>
@@ -1419,6 +1692,17 @@ export default function ParentDashboard() {
       <OnboardingModal
         visible={onboardingVisible}
         onDone={() => setOnboardingVisible(false)}
+      />
+      <AdultAvatarPickerModal
+        visible={avatarPicker.pickerVisible}
+        currentAvatarUrl={parentAvatarUrl}
+        currentAvatarEmoji={parentAvatarEmoji}
+        uploading={avatarPicker.uploading}
+        onClose={avatarPicker.closePicker}
+        onTakePhoto={avatarPicker.takePhoto}
+        onChooseFromGallery={avatarPicker.chooseFromGallery}
+        onRemovePhoto={avatarPicker.removePhoto}
+        onSelectPreset={avatarPicker.selectPreset}
       />
     </SafeAreaView>
   );
@@ -1915,6 +2199,14 @@ const styles = StyleSheet.create({
     color: '#4E342E',
     marginBottom: 12,
   },
+  addRelativeHint: {
+    fontSize: 12,
+    color: '#8D6E63',
+    fontWeight: '600',
+    marginTop: -6,
+    marginBottom: 12,
+    lineHeight: 16,
+  },
   buddyInput: {
     backgroundColor: '#FFFDF5',
     borderWidth: 1.5,
@@ -2049,12 +2341,6 @@ const styles = StyleSheet.create({
     color: '#8D6E63',
     marginLeft: 6,
     fontWeight: '600',
-  },
-  logMediaImage: {
-    width: 160,
-    height: 160,
-    borderRadius: 16,
-    marginTop: 2,
   },
   // QR Dialog & Scanner Styles
   qrCodeDialog: {

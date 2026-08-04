@@ -75,7 +75,7 @@ function ParentSetupVisual({ s, colors }: VisualProps) {
     <MockFrame s={s} colors={colors}>
       <View style={[styles.mockHeaderRow, { gap: s(6) }]}>
         <Ionicons name="people-outline" size={s(16)} color={colors.textSecondary} />
-        <Text style={[styles.mockHeaderText, { color: colors.text, fontSize: s(13) }]}>Managed Children</Text>
+        <Text style={[styles.mockHeaderText, { color: colors.text, fontSize: s(13) }]}>Managed Users</Text>
       </View>
       <View style={[styles.mockDashedBtn, { borderColor: colors.primaryBtn, borderRadius: s(14), paddingVertical: s(10), gap: s(8) }]}>
         <Ionicons name="add-circle" size={s(18)} color={colors.text} />
@@ -99,14 +99,45 @@ function CookieCodeVisual({ s, colors }: VisualProps) {
   );
 }
 
-function KidLoginVisual({ s, colors }: VisualProps) {
+function ActivateKidVisual({ s, colors }: VisualProps) {
+  return (
+    <MockFrame s={s} colors={colors}>
+      <View style={[styles.mockHeaderRow, { gap: s(8), width: '100%', justifyContent: 'space-between' }]}>
+        <Text style={[styles.mockHeaderText, { color: colors.text, fontSize: s(14) }]}>🍪 Alex</Text>
+        <View style={[styles.mockToggle, { width: s(30), height: s(30), borderRadius: s(15), backgroundColor: colors.successText }]}>
+          <Ionicons name="checkmark" size={s(16)} color="#FFFFFF" />
+        </View>
+      </View>
+      <MockBadge s={s} colors={colors} tone="good" icon="checkmark-circle" label="Active on this device" />
+    </MockFrame>
+  );
+}
+
+function ParentChatVisual({ s, colors }: VisualProps) {
+  return (
+    <MockFrame s={s} colors={colors}>
+      <View style={[styles.mockHeaderRow, { gap: s(6) }]}>
+        <Ionicons name="chatbubbles-outline" size={s(16)} color={colors.textSecondary} />
+        <Text style={[styles.mockHeaderText, { color: colors.text, fontSize: s(13) }]}>Parent Chats</Text>
+      </View>
+      <View style={[styles.mockBubbleThem, { backgroundColor: colors.inputBg, borderRadius: s(14), paddingVertical: s(8), paddingHorizontal: s(12) }]}>
+        <Text style={{ color: colors.text, fontSize: s(13) }}>Can Adam come over? 🍪</Text>
+      </View>
+      <View style={[styles.mockBubbleMe, { backgroundColor: colors.primaryBtn, borderRadius: s(14), paddingVertical: s(8), paddingHorizontal: s(12) }]}>
+        <Text style={{ color: colors.primaryBtnText, fontSize: s(13) }}>Sure, Saturday! 👍</Text>
+      </View>
+    </MockFrame>
+  );
+}
+
+function RelativeInviteVisual({ s, colors }: VisualProps) {
   return (
     <MockFrame s={s} colors={colors}>
       <View style={[styles.mockInput, { backgroundColor: colors.inputBg, borderColor: colors.borderStrong, borderRadius: s(14), paddingVertical: s(10), paddingHorizontal: s(12) }]}>
-        <Text style={[styles.mockInputText, { color: colors.textSecondary, fontSize: s(13) }]}>CRUM-482-917</Text>
+        <Text style={[styles.mockInputText, { color: colors.textSecondary, fontSize: s(13) }]}>Grandma · grandma@email.com</Text>
       </View>
       <View style={[styles.mockPrimaryBtn, { backgroundColor: colors.primaryBtn, borderRadius: s(14), paddingVertical: s(10) }]}>
-        <Text style={[styles.mockPrimaryBtnText, { color: colors.primaryBtnText, fontSize: s(13) }]}>Kid Login 🍪</Text>
+        <Text style={[styles.mockPrimaryBtnText, { color: colors.primaryBtnText, fontSize: s(13) }]}>Add Relative by Email</Text>
       </View>
     </MockFrame>
   );
@@ -195,18 +226,18 @@ const SLIDES = [
   },
   {
     title: 'A grown-up sets up first',
-    body: 'In the Parents Area, tap "Add Child Profile" to create a cookie jar for each kid.',
+    body: 'In the Parents Area, tap "Add Child Profile" to create a cookie jar for each kid — they\'ll appear in Managed Users alongside the parent account.',
     Visual: ParentSetupVisual,
   },
   {
     title: 'Everyone gets a Cookie Code',
-    body: 'Each kid gets their own Cookie Code, like CRUM-482-917. Copy it or show its QR code from the Parents Area.',
+    body: 'Each kid gets their own Cookie Code, like CRUM-482-917 — used for adding buddies, not for logging in. Copy it or show its QR code from the Parents Area.',
     Visual: CookieCodeVisual,
   },
   {
-    title: 'Kids log in with the code',
-    body: 'On the main screen, type that Cookie Code into "Kid Login" to open your own cookie jar.',
-    Visual: KidLoginVisual,
+    title: 'A parent activates each device',
+    body: 'In Managed Users, a parent taps "Activate" next to a kid to make them the active user on that device — no code to type, and only a parent signed in can do it.',
+    Visual: ActivateKidVisual,
   },
   {
     title: 'Adding buddies by code',
@@ -224,8 +255,18 @@ const SLIDES = [
     Visual: ChatVisual,
   },
   {
+    title: 'Parents can chat too!',
+    body: 'A parent can message their own kids directly, and pair with other parents by QR code to chat with each other.',
+    Visual: ParentChatVisual,
+  },
+  {
+    title: 'Add grandparents & other relatives',
+    body: 'From "Friends & Logs", add a relative by email — grandparents, aunts, uncles, or a second parent. If they don\'t have Crumbo yet, they\'ll get an email invite to join and chat with your kid.',
+    Visual: RelativeInviteVisual,
+  },
+  {
     title: 'A grown-up is in charge',
-    body: 'A parent sets everything up and can pause chat, calls, photos, or drawing any time from the Parents Area.',
+    body: 'A parent sets everything up, decides who\'s active on each device, and can pause chat, calls, photos, or drawing any time from the Parents Area.',
     Visual: ControlVisual,
   },
 ];

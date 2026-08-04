@@ -193,3 +193,51 @@ export function subscribeToCallSignals(
     supabase.removeChannel(channel);
   };
 }
+
+/**
+ * Parent-side counterpart to subscribeToCallSignals — a parent's contacts (their own kids,
+ * paired parents, relatives) are never cached in the kid-oriented getFriends() list that
+ * function resolves against, so its friendId would always come back null for a parent receiver
+ * and the call would be silently dropped. A parent's conversations are already addressed
+ * directly by raw cookie code everywhere else (see parent/chat/[code].tsx) — same here: the
+ * "otherCode" handed to onSignal is just the sender's cookie code as-is, no lookup needed.
+ */
+export function subscribeToParentCallSignals(
+  myCookieCode: string,
+  onSignal: (payload: CallSignalPayload & { senderCode: string }, otherCode: string) => void
+): () => void {
+  const channelId = Math.random().toString(36).substring(2, 9);
+  const channel = supabase
+    .channel(`call_signals:${myCookieCode}:${channelId}`)
+    .on(
+      'postgres_changes',
+      {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'call_signals',
+        filter: `receiver_code=eq.${myCookieCode}`,
+      },
+      (event) => {
+        const row = event.new as Record<string, any>;
+        const senderCode: string = row.sender_code;
+
+        onSignal(
+          {
+            type: row.type as CallSignalType,
+            callUUID: row.call_uuid,
+            roomName: row.room_name || undefined,
+            callerName: row.sender_name || undefined,
+            friendName: row.sender_name || undefined,
+            isVideo: !!row.is_video,
+            senderCode,
+          },
+          senderCode
+        );
+      }
+    )
+    .subscribe();
+
+  return () => {
+    supabase.removeChannel(channel);
+  };
+}

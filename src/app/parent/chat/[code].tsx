@@ -2,10 +2,14 @@ import ConversationView from '@/components/ConversationView';
 import { useConversation } from '@/hooks/use-conversation';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 
-export default function ChatScreen() {
+export default function ParentChatScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{
-    friendId: string;
+    code: string;
+    name?: string;
+    isOwnKid?: string;
+    avatarEmoji?: string;
+    avatarUrl?: string;
     incomingCall?: string;
     callType?: string;
     roomName?: string;
@@ -13,13 +17,17 @@ export default function ChatScreen() {
     acceptCallImmediately?: string;
     callUUID?: string;
     declineCall?: string;
-    /** Set when navigated here from a quick-call button on the Cookie Jar list. */
+    /** Set when navigated here from a quick-call button on the parent Chats list. */
     autoStartCall?: string;
   }>();
 
   const conversation = useConversation({
-    mode: 'kid',
-    friendId: params.friendId,
+    mode: 'adult',
+    otherCode: decodeURIComponent(params.code),
+    otherName: params.name,
+    otherAvatarEmoji: params.avatarEmoji || undefined,
+    otherAvatarUrl: params.avatarUrl || undefined,
+    isOwnKid: params.isOwnKid === '1',
     incomingCall: params.incomingCall,
     callType: params.callType,
     roomName: params.roomName,
@@ -30,5 +38,5 @@ export default function ChatScreen() {
     autoStartCall: params.autoStartCall,
   });
 
-  return <ConversationView conversation={conversation} onBack={() => router.replace('/chat')} />;
+  return <ConversationView conversation={conversation} onBack={() => router.replace('/parent/chat')} />;
 }

@@ -10,8 +10,8 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 
 // Mirrors gate.tsx's requirement exactly, so a reset password is held to the same bar as a
 // newly-registered one.
-const PASSWORD_COMPLEXITY_REGEX = /^(?=.*[A-Za-z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$/;
-const PASSWORD_REQUIREMENTS_TEXT = 'Password must be at least 8 characters and include a letter, a number, and a special character.';
+const PASSWORD_COMPLEXITY_REGEX = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$/;
+const PASSWORD_REQUIREMENTS_TEXT = 'Password must be at least 8 characters and include an uppercase letter, a lowercase letter, a number, and a special character.';
 
 type ExchangeStatus = 'exchanging' | 'ready' | 'error';
 

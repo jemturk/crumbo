@@ -159,11 +159,15 @@ enabled = true
 # app.json's "scheme": "crumbo") is the closest equivalent. Left at the CLI's 127.0.0.1:3000
 # placeholder, every auth email's link (confirmation, recovery) redirects to that unreachable
 # localhost address instead of back into the app — parent/gate.tsx's signUp/resetPasswordForEmail
-# calls pass `crumbo://` / `crumbo://reset-password` as redirectTo, but Supabase silently ignores
-# any redirectTo not on this allow-list and falls back to site_url.
+# calls pass `crumbo://parent/gate` / `crumbo://reset-password` as redirectTo, but Supabase
+# silently ignores any redirectTo not on this allow-list and falls back to site_url.
 site_url = "crumbo://"
 # A list of *exact* URLs that auth providers are permitted to redirect to post authentication.
-additional_redirect_urls = ["crumbo://", "crumbo://reset-password"]
+# NOTE: this file only governs a local `supabase start` emulator. The live project's allow-list is
+# configured separately, in the Supabase Dashboard under Authentication → URL Configuration — add
+# crumbo://parent/gate there too, or the confirmation email will keep landing on the unconfigured
+# fallback instead of the sign-in screen.
+additional_redirect_urls = ["crumbo://", "crumbo://parent/gate", "crumbo://reset-password"]
 # How long tokens are valid for, in seconds. Defaults to 3600 (1 hour), maximum 604,800 (1 week).
 jwt_expiry = 3600
 # JWT issuer URL. If not set, defaults to auth.external_url.
@@ -402,6 +406,15 @@ deno_version = 2
 
 # [edge_runtime.secrets]
 # secret_key = "env(SECRET_VALUE)"
+
+# verify-email and reset-password-web are hit by a bare browser GET from an email link (no
+# Authorization header at all) — the platform's default JWT check would reject the request
+# before the function code ever runs, so both need it disabled explicitly.
+[functions.verify-email]
+verify_jwt = false
+
+[functions.reset-password-web]
+verify_jwt = false
 
 [analytics]
 enabled = true

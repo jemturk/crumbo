@@ -2,16 +2,42 @@ import React, { useEffect, useState } from 'react';
 import { View, Text, StyleSheet, TextInput, TouchableOpacity, SafeAreaView, Platform, ActivityIndicator, KeyboardAvoidingView, ScrollView } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import * as LocalAuthentication from 'expo-local-authentication';
+import Svg, { Path } from 'react-native-svg';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StorageService } from '@/services/storage';
-import { supabase } from '@/services/supabase';
+import { supabase, supabaseUrl } from '@/services/supabase';
+import { signInWithGoogle } from '@/services/googleAuth';
 import CustomAlertModal, { AlertButton } from '@/components/CustomAlertModal';
 import { useDisplayScale } from '@/hooks/use-display-scale';
 import { useAppTheme } from '@/hooks/use-app-theme';
 
-// At least 8 characters, one letter, one number, one special character.
-const PASSWORD_COMPLEXITY_REGEX = /^(?=.*[A-Za-z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$/;
-const PASSWORD_REQUIREMENTS_TEXT = 'Password must be at least 8 characters and include a letter, a number, and a special character.';
+// At least 8 characters, one uppercase letter, one lowercase letter, one number, one special character.
+const PASSWORD_COMPLEXITY_REGEX = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$/;
+const PASSWORD_REQUIREMENTS_TEXT = 'Password must be at least 8 characters and include an uppercase letter, a lowercase letter, a number, and a special character.';
+
+// Web fallbacks (see supabase/functions/verify-email and reset-password-web) for whoever opens
+// the confirmation/reset email on a device without the app installed — these pages verify/reset
+// there in the browser, then best-effort redirect into the app if it turns out to be installed
+// after all. Replaces pointing straight at the crumbo:// scheme, which just silently failed with
+// no fallback on a device (or a PC) that doesn't have the app.
+const VERIFY_EMAIL_REDIRECT_URL = `${supabaseUrl}/functions/v1/verify-email`;
+const RESET_PASSWORD_REDIRECT_URL = `${supabaseUrl}/functions/v1/reset-password-web`;
+
+// Google's official multi-color "G" mark — everything else on this button follows Crumbo's own
+// theme, but the mark itself is required to stay full-color per Google's sign-in button branding
+// guidelines, so it's the one un-themed element here. Rendered locally from the standard path
+// data rather than fetched as an image, same reasoning as the QR codes elsewhere in this app.
+function GoogleGLogo({ size }: { size: number }) {
+  return (
+    <Svg width={size} height={size} viewBox="0 0 48 48">
+      <Path fill="#FFC107" d="M43.611,20.083H42V20H24v8h11.303c-1.649,4.657-6.08,8-11.303,8c-6.627,0-12-5.373-12-12c0-6.627,5.373-12,12-12c3.059,0,5.842,1.154,7.961,3.039l5.657-5.657C34.046,6.053,29.268,4,24,4C12.955,4,4,12.955,4,24c0,11.045,8.955,20,20,20c11.045,0,20-8.955,20-20C44,22.659,43.862,21.35,43.611,20.083z" />
+      <Path fill="#FF3D00" d="M6.306,14.691l6.571,4.819C14.655,15.108,18.961,12,24,12c3.059,0,5.842,1.154,7.961,3.039l5.657-5.657C34.046,6.053,29.268,4,24,4C16.318,4,9.656,8.337,6.306,14.691z" />
+      <Path fill="#4CAF50" d="M24,44c5.166,0,9.86-1.977,13.409-5.192l-6.19-5.238C29.211,35.091,26.715,36,24,36c-5.202,0-9.619-3.317-11.283-7.946l-6.522,5.025C9.505,39.556,16.227,44,24,44z" />
+      <Path fill="#1976D2" d="M43.611,20.083H42V20H24v8h11.303c-0.792,2.237-2.231,4.166-4.087,5.571c0.001-0.001,0.002-0.001,0.003-0.002l6.19,5.238C36.971,39.205,44,34,44,24C44,22.659,43.862,21.35,43.611,20.083z" />
+    </Svg>
+  );
+}
 
 export default function ParentGate() {
   const router = useRouter();
@@ -24,10 +50,16 @@ export default function ParentGate() {
   
   const [emailInput, setEmailInput] = useState('');
   const [passwordInput, setPasswordInput] = useState('');
+  const [nameInput, setNameInput] = useState('');
   const [showPassword, setShowPassword] = useState(false);
 
   const [error, setError] = useState(false);
   const [loading, setLoading] = useState(false);
+
+  // Biometric sign-in is opt-in (see BIOMETRIC_ENABLED) and only ever resumes an ALREADY
+  // persisted Supabase session — it never substitutes for a fresh password sign-in, and holds no
+  // credential of its own.
+  const [biometricAvailable, setBiometricAvailable] = useState(false);
 
   // Custom Alert State
   const [alertConfig, setAlertConfig] = useState<{
@@ -47,6 +79,7 @@ export default function ParentGate() {
 
   useEffect(() => {
     prefillEmail();
+    checkBiometric();
   }, []);
 
   const prefillEmail = async () => {
@@ -57,6 +90,55 @@ export default function ParentGate() {
       }
     } catch (e) {
       console.error("Error prefilling email", e);
+    }
+  };
+
+  const checkBiometric = async () => {
+    try {
+      const hasHardware = await LocalAuthentication.hasHardwareAsync();
+      const isEnrolled = await LocalAuthentication.isEnrolledAsync();
+      const enabled = await StorageService.isBiometricEnabled();
+      const available = hasHardware && isEnrolled && enabled;
+      setBiometricAvailable(available);
+      if (available) {
+        // Auto-attempt on arrival — the whole point of opting in is not having to also tap a
+        // button every time — but the manual "Use Biometrics" button (rendered whenever
+        // biometricAvailable is true) covers a dismissed/cancelled prompt without a full remount.
+        handleBiometricSignIn();
+      }
+    } catch (e) {
+      console.error("Error checking biometric availability", e);
+    }
+  };
+
+  const handleBiometricSignIn = async () => {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.user?.email) {
+      // Nothing to resume — the parent must have signed out, or the session genuinely expired.
+      // Not an error worth interrupting them with; the password form below still works.
+      return;
+    }
+
+    const result = await LocalAuthentication.authenticateAsync({
+      promptMessage: 'Sign in to Crumbo',
+      cancelLabel: 'Use Password',
+    });
+    if (!result.success) return; // cancelled or failed — just fall back to the manual form
+
+    const email = session.user.email;
+    setLoading(true);
+    try {
+      await StorageService.saveParentEmail(email);
+      const restored = await StorageService.fetchAndRestoreParentData(email);
+      if (!restored) {
+        await StorageService.setSubscribed(true);
+        await StorageService.createParentAccount(email);
+      }
+      setLoading(false);
+      router.replace('/parent/dashboard');
+    } catch (e) {
+      setLoading(false);
+      showAlert("Connection Error", "Could not restore your account data. Please check your network.");
     }
   };
 
@@ -106,17 +188,90 @@ export default function ParentGate() {
     }
 
     try {
-      await StorageService.saveParentEmail(email);
-      const restored = await StorageService.fetchAndRestoreParentData(email);
-      if (!restored) {
-        // Signed in but no data row yet (shouldn't normally happen — register creates one).
-        // Set subscribed first — createParentAccount bakes the CURRENT isSubscribed() flag into
-        // the row it creates, so setting it after would create the row as subscribed:false.
-        await StorageService.setSubscribed(true);
-        await StorageService.createParentAccount(email);
-      }
+      await completeSignedInFlow(email);
+    } catch (e) {
       setLoading(false);
-      router.replace('/parent/dashboard');
+      showAlert("Connection Error", "Could not restore your account data. Please check your network.");
+    }
+  };
+
+  /**
+   * Shared by every path that ends with a real Supabase session established (password sign-in,
+   * biometric resume, Google sign-in/register) — restores or creates this account's server row,
+   * then either offers to enable biometric sign-in or goes straight to the dashboard.
+   * `fallbackName` is used only for a brand-new account with no row yet (e.g. Google provides a
+   * display name for free, sparing a first-time Google user the Preferred Name field).
+   */
+  const completeSignedInFlow = async (email: string, fallbackName?: string) => {
+    await StorageService.saveParentEmail(email);
+    const restored = await StorageService.fetchAndRestoreParentData(email);
+    if (!restored) {
+      // Signed in but no data row yet (shouldn't normally happen for password sign-in — register
+      // creates one — but is the normal case for a brand-new Google account, or a relative
+      // completing an invite for the very first time).
+      if (fallbackName) {
+        await StorageService.saveParentName(fallbackName);
+      }
+      // Set subscribed first — createParentAccount bakes the CURRENT isSubscribed() flag into
+      // the row it creates, so setting it after would create the row as subscribed:false.
+      await StorageService.setSubscribed(true);
+      await StorageService.createParentAccount(email);
+      // First-time registration (Google, or a relative's first invite completion) — activate
+      // the parent right away rather than leaving them signed in but inactive until they find
+      // the manual "Activate" toggle in Parent Area.
+      await StorageService.activateParentOnDevice();
+    }
+
+    // A relative invited via addRelativeToKidByEmail carries the pending kid link in their own
+    // auth user_metadata until they actually finish signing up — complete it here, on every
+    // sign-in, since this is the first point after ANY sign-in method where a real session (and
+    // thus this metadata) is available. Idempotent and cheap when there's nothing pending.
+    const { data: userData } = await supabase.auth.getUser();
+    const pendingLinks = userData?.user?.user_metadata?.pendingRelativeLinks as
+      { cookieCode: string; name: string; avatarEmoji?: string }[] | undefined;
+    if (pendingLinks && pendingLinks.length > 0) {
+      await StorageService.completePendingRelativeLinks(email, pendingLinks);
+      await supabase.auth.updateUser({ data: { pendingRelativeLinks: null } });
+    }
+
+    setLoading(false);
+
+    const alreadyEnabled = await StorageService.isBiometricEnabled();
+    const hasHardware = await LocalAuthentication.hasHardwareAsync();
+    const isEnrolled = await LocalAuthentication.isEnrolledAsync();
+    if (!alreadyEnabled && hasHardware && isEnrolled) {
+      showAlert("Enable Biometric Sign-In?", "Use Face ID or your fingerprint to sign in next time instead of typing your password.", [
+        { text: "Not Now", style: "cancel", onPress: () => router.replace('/parent/dashboard') },
+        {
+          text: "Enable", onPress: async () => {
+            await StorageService.setBiometricEnabled(true);
+            router.replace('/parent/dashboard');
+          }
+        },
+      ]);
+      return;
+    }
+
+    router.replace('/parent/dashboard');
+  };
+
+  const handleGoogleAuth = async () => {
+    setLoading(true);
+    setError(false);
+
+    const result = await signInWithGoogle();
+    if (result.status === 'cancelled') {
+      setLoading(false);
+      return;
+    }
+    if (result.status === 'error') {
+      setLoading(false);
+      showAlert("Google Sign-In Failed", result.message);
+      return;
+    }
+
+    try {
+      await completeSignedInFlow(result.email, result.name || undefined);
     } catch (e) {
       setLoading(false);
       showAlert("Connection Error", "Could not restore your account data. Please check your network.");
@@ -132,7 +287,7 @@ export default function ParentGate() {
 
     setLoading(true);
     const { error: resetError } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: 'crumbo://reset-password',
+      redirectTo: RESET_PASSWORD_REDIRECT_URL,
     });
     setLoading(false);
 
@@ -153,9 +308,14 @@ export default function ParentGate() {
   const handleRegister = async () => {
     const email = emailInput.trim().toLowerCase();
     const pwd = passwordInput.trim();
+    const name = nameInput.trim();
 
     if (!email || !email.includes('@')) {
       showAlert("Invalid Email", "Please enter a valid parent email address.");
+      return;
+    }
+    if (!name) {
+      showAlert("Name Required", "Please enter a preferred name.");
       return;
     }
     if (!PASSWORD_COMPLEXITY_REGEX.test(pwd)) {
@@ -170,7 +330,11 @@ export default function ParentGate() {
       const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
         email,
         password: pwd,
-        options: { emailRedirectTo: 'crumbo://' },
+        // Points the confirmation email's link at the verify-email web page, which itself
+        // redirects into the app on a device that has it (see VERIFY_EMAIL_REDIRECT_URL's own
+        // comment) — landing back on this sign-in screen either way (this route defaults to
+        // mode: 'signin').
+        options: { emailRedirectTo: VERIFY_EMAIL_REDIRECT_URL },
       });
 
       if (signUpError) {
@@ -202,6 +366,7 @@ export default function ParentGate() {
       }
 
       await StorageService.saveParentEmail(email);
+      await StorageService.saveParentName(name);
       // A brand-new account has no kids of its own — clear any previous account's cached kids
       // list rather than leaving it in place (see clearManagedKidsCache).
       await StorageService.clearManagedKidsCache();
@@ -217,6 +382,11 @@ export default function ParentGate() {
         // data (an old subscribed:false, an old kids list, etc.) sitting on the server.
         await StorageService.syncParentData();
       }
+
+      // Activate right away rather than leaving them registered-but-inactive until they find the
+      // manual "Activate" toggle in Parent Area. Purely local, so it's fine to set even if email
+      // confirmation is still pending below — by the time they actually sign in, it's already set.
+      await StorageService.activateParentOnDevice();
 
       setLoading(false);
 
@@ -327,9 +497,41 @@ export default function ParentGate() {
                   <Text style={[styles.verifyButtonText, { fontSize: s(16), color: colors.primaryBtnText }]}>Sign In</Text>
                 )}
               </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.googleButton, { borderColor: colors.borderStrong, backgroundColor: colors.cardBg, borderRadius: s(20), paddingVertical: s(14), marginTop: s(12) }]}
+                onPress={handleGoogleAuth}
+                disabled={loading}
+              >
+                <View style={{ marginRight: s(8) }}>
+                  <GoogleGLogo size={s(18)} />
+                </View>
+                <Text style={[styles.googleButtonText, { fontSize: s(15), color: colors.text }]}>Sign in with Google</Text>
+              </TouchableOpacity>
+
+              {biometricAvailable && (
+                <TouchableOpacity
+                  style={[styles.biometricButton, { borderColor: colors.borderStrong, borderRadius: s(20), paddingVertical: s(14), marginTop: s(12) }]}
+                  onPress={handleBiometricSignIn}
+                  disabled={loading}
+                >
+                  <Ionicons name="finger-print" size={s(20)} color={colors.text} style={{ marginRight: s(8) }} />
+                  <Text style={[styles.biometricButtonText, { fontSize: s(15), color: colors.text }]}>Use Biometrics</Text>
+                </TouchableOpacity>
+              )}
             </View>
           ) : (
             <View style={styles.formWidth}>
+              {/* Preferred Name Input */}
+              <TextInput
+                style={[styles.input, { backgroundColor: colors.inputBg, color: colors.inputText, borderColor: colors.borderStrong, height: s(52), borderRadius: s(20), fontSize: s(16), paddingHorizontal: s(20), marginBottom: s(14) }, error && styles.inputError]}
+                placeholder="Preferred Name"
+                placeholderTextColor={colors.textSecondary}
+                autoCapitalize="words"
+                value={nameInput}
+                onChangeText={setNameInput}
+              />
+
               {/* Email Input */}
               <TextInput
                 style={[styles.input, { backgroundColor: colors.inputBg, color: colors.inputText, borderColor: colors.borderStrong, height: s(52), borderRadius: s(20), fontSize: s(16), paddingHorizontal: s(20), marginBottom: s(14) }, error && styles.inputError]}
@@ -370,6 +572,17 @@ export default function ParentGate() {
                 ) : (
                   <Text style={[styles.verifyButtonText, { fontSize: s(16), color: colors.primaryBtnText }]}>Register & Subscribe</Text>
                 )}
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.googleButton, { borderColor: colors.borderStrong, backgroundColor: colors.cardBg, borderRadius: s(20), paddingVertical: s(14), marginTop: s(12) }]}
+                onPress={handleGoogleAuth}
+                disabled={loading}
+              >
+                <View style={{ marginRight: s(8) }}>
+                  <GoogleGLogo size={s(18)} />
+                </View>
+                <Text style={[styles.googleButtonText, { fontSize: s(15), color: colors.text }]}>Register with Google</Text>
               </TouchableOpacity>
             </View>
           )}
@@ -523,5 +736,25 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '800',
     color: '#4E342E',
+  },
+  biometricButton: {
+    flexDirection: 'row',
+    width: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.5,
+  },
+  biometricButtonText: {
+    fontWeight: '700',
+  },
+  googleButton: {
+    flexDirection: 'row',
+    width: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.5,
+  },
+  googleButtonText: {
+    fontWeight: '700',
   },
 });

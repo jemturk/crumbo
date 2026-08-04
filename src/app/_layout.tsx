@@ -1,5 +1,5 @@
 import { SettingsProvider, useSettings } from '@/context/settings-context';
-import { isStartSignal, subscribeToCallSignals } from '@/services/callSignaling';
+import { isStartSignal, subscribeToCallSignals, subscribeToParentCallSignals } from '@/services/callSignaling';
 import { callKeepManager } from '@/services/callkeep';
 import { StorageService } from '@/services/storage';
 import { Stack, useGlobalSearchParams, useRouter, useSegments } from 'expo-router';
@@ -32,21 +32,58 @@ function NavigationLayout() {
   }, [theme]);
 
   // Global incoming-call listener. call_signals is filtered per-receiver, so we (re)subscribe
-  // with the active kid's cookie code and refresh it whenever the logged-in kid changes.
+  // with whichever identity is active on this device — exactly one of a kid or a parent, per the
+  // app's own "single active user per device" rule (see activateKidOnThisDevice/
+  // activateParentOnDevice) — and refresh it whenever that changes.
   const callSubRef = useRef<() => void>(() => {});
   const subscribedCodeRef = useRef<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const profile = await StorageService.getKidProfile();
-      const code = profile?.cookieCode ?? null;
+      const kidProfile = await StorageService.getKidProfile();
+      const parentActive = !kidProfile && (await StorageService.isParentActiveOnDevice());
+      const parentCode = parentActive ? await StorageService.getMyParentCode() : null;
+      const code = kidProfile?.cookieCode ?? parentCode ?? null;
+
       if (cancelled || code === subscribedCodeRef.current) return;
 
       callSubRef.current(); // tear down previous subscription
       subscribedCodeRef.current = code;
       if (!code) {
         callSubRef.current = () => {};
+        return;
+      }
+
+      if (parentCode) {
+        // A parent's contacts are addressed directly by raw cookie code everywhere (see
+        // parent/chat/[code].tsx) — no local Friend.id indirection to resolve, unlike the kid
+        // path below.
+        callSubRef.current = subscribeToParentCallSignals(parentCode, (payload, otherCode) => {
+          if (!isStartSignal(payload.type) || !otherCode) return;
+
+          const currentSegments = segmentsRef.current as string[];
+          const isCurrentlyInThisParentChat =
+            Array.isArray(currentSegments) &&
+            currentSegments.length >= 3 &&
+            currentSegments[0] === 'parent' &&
+            currentSegments[1] === 'chat' &&
+            decodeURIComponent(currentSegments[2]) === otherCode;
+
+          if (isCurrentlyInThisParentChat) return; // that screen's own hook handles it
+
+          console.log(`[GlobalCallListener] Incoming parent call from ${otherCode}. Redirecting...`);
+          router.push({
+            pathname: `/parent/chat/${encodeURIComponent(otherCode)}`,
+            params: {
+              incomingCall: 'true',
+              callType: payload.type === 'START_VIDEO_CALL' ? 'video' : 'audio',
+              roomName: payload.roomName || '',
+              friendName: payload.callerName || payload.friendName || 'Contact',
+              callUUID: payload.callUUID || '',
+            },
+          });
+        });
         return;
       }
 
@@ -94,6 +131,8 @@ function NavigationLayout() {
         <Stack.Screen name="reset-password" />
         <Stack.Screen name="chat/index" />
         <Stack.Screen name="chat/[friendId]" />
+        <Stack.Screen name="parent/chat/index" />
+        <Stack.Screen name="parent/chat/[code]" />
       </Stack>
       <StatusBar style={colors.statusBar} />
     </>

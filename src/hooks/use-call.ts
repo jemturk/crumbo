@@ -6,11 +6,29 @@ import {
   sendCallSignal,
   subscribeToCallSignals,
 } from '@/services/callSignaling';
-import { Friend, KidProfile, Message, StorageService } from '@/services/storage';
+import { Message } from '@/services/storage';
 import { Camera } from 'expo-camera';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState, Vibration } from 'react-native';
 import IncomingCall from '../../modules/incoming-call';
+
+// Minimal shapes this hook actually needs — KidProfile and Friend both satisfy CallerIdentity/
+// CallParty structurally already (extra fields are just ignored), so chat/[friendId].tsx keeps
+// passing those directly with no changes. parent/chat/[code].tsx (which has neither a KidProfile
+// nor a Friend — just route params and a live-fetched contact) builds these plain objects instead.
+// A parent is never locked out of calling, so callingDisabled/videoCallingDisabled are optional
+// and simply treated as false when omitted.
+export interface CallerIdentity {
+  cookieCode: string;
+  name: string;
+  callingDisabled?: boolean;
+  videoCallingDisabled?: boolean;
+}
+
+export interface CallParty {
+  cookieCode: string;
+  name: string;
+}
 
 // 'idle' = no call in progress at all — distinct from 'ringing', which used to double as both
 // "actually ringing" AND "just mounted, nothing has happened yet" (they were the same value).
@@ -35,12 +53,26 @@ export interface IncomingCallParams {
 
 interface UseCallOptions {
   friendId: string;
-  friend: Friend | null;
-  profile: KidProfile | null;
+  friend: CallParty | null;
+  profile: CallerIdentity | null;
   incomingParams: IncomingCallParams;
   clearIncomingParams: () => void;
   onCallLog: (msg: Message) => void;
   showAlert: (title: string, message: string) => void;
+  // How to actually persist a [CALL_LOG:...] entry — the kid side goes through
+  // StorageService.sendCallLogMessage (local cache + outbox, keyed by a Friend's id), the parent
+  // side just does a live StorageService.sendParentMessage insert (no local cache at all, see
+  // that function's own comment) — the hook itself doesn't need to know which.
+  sendCallLog: (text: string) => Promise<Message>;
+  // How to listen for signals addressed to `myCode`, and how the resulting "other party"
+  // identifier compares against this hook's own `friendId`. Defaults to the kid-oriented
+  // subscribeToCallSignals (resolves to a local Friend.id) so chat/[friendId].tsx needs no
+  // changes; parent/chat/[code].tsx passes subscribeToParentCallSignals instead (resolves to the
+  // other party's raw cookie code, since a parent's contacts have no local Friend.id at all).
+  subscribeToSignals?: (
+    myCode: string,
+    onSignal: (payload: CallSignalPayload & { senderCode: string }, otherId: string | null) => void
+  ) => () => void;
 }
 
 // How long an unanswered call rings before auto-ending (WhatsApp rings ~45-60s).
@@ -68,6 +100,8 @@ export function useCall({
   clearIncomingParams,
   onCallLog,
   showAlert,
+  sendCallLog,
+  subscribeToSignals = subscribeToCallSignals,
 }: UseCallOptions) {
   const [callModalVisible, setCallModalVisible] = useState(false);
   const [callTypeVideo, setCallTypeVideo] = useState(false);
@@ -194,13 +228,13 @@ export function useCall({
   const writeCallLog = useCallback(
     async (text: string) => {
       try {
-        const logMsg = await StorageService.sendCallLogMessage(friendId, text);
+        const logMsg = await sendCallLog(text);
         if (isMounted.current) onCallLog(logMsg);
       } catch (e) {
         console.error('Failed to save call log:', e);
       }
     },
-    [friendId, onCallLog]
+    [sendCallLog, onCallLog]
   );
 
   // --- Outgoing --------------------------------------------------------------
@@ -451,11 +485,11 @@ export function useCall({
   // Subscribe to call signals for this conversation.
   useEffect(() => {
     if (!profile) return;
-    const unsubscribe = subscribeToCallSignals(profile.cookieCode, (payload, signalFriendId) => {
+    const unsubscribe = subscribeToSignals(profile.cookieCode, (payload, signalFriendId) => {
       if (signalFriendId === friendId) handleSignal(payload);
     });
     return () => unsubscribe();
-  }, [profile, friendId, handleSignal]);
+  }, [profile, friendId, handleSignal, subscribeToSignals]);
 
   // --- Incoming call route params (deep link / push answer) ------------------
   const initialParamsHandled = useRef(false);

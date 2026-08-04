@@ -28,16 +28,19 @@ export interface Friend {
   name: string;
   cookieCode: string;
   avatarEmoji: string;
+  // Only ever set for an adult contact (a parent or a relative added by email) who's uploaded a
+  // real photo — takes rendering priority over avatarEmoji when present. Kids stick to the emoji
+  // picker and never set this.
+  avatarUrl?: string;
 }
 
 // Adding a new per-kid lock flag? There's no single source of truth for KidProfile — it's
 // manually reconstructed at every one of these sites, so a new flag must be added to all of
 // them or it'll silently fail to persist/sync: createKidProfile, buildParentPushTokenPayload,
 // fetchAndRestoreParentData, deleteKidProfile's reactivation, updateKidSettingsForProfile's
-// (and updateKidSettings's) settings type, activateKidProfile, loginKidWithCode, and
-// syncKidProfileAndFriends (the most important one — it's what delivers a parent's toggle to
-// the kid's device). Also: every settings-object literal passed to updateKidSettingsForProfile
-// in dashboard.tsx.
+// (and updateKidSettings's) settings type, activateKidOnThisDevice, and syncKidProfileAndFriends
+// (the most important one — it's what delivers a parent's toggle to the kid's device). Also:
+// every settings-object literal passed to updateKidSettingsForProfile in dashboard.tsx.
 export interface KidProfile {
   name: string;
   cookieCode: string;
@@ -47,12 +50,21 @@ export interface KidProfile {
   videoCallingDisabled?: boolean;
   photosDisabled?: boolean;
   drawingDisabled?: boolean;
+  voiceMessagesDisabled?: boolean;
   friends?: any[];
+  // Which physical device currently has this kid activated (see activateKidOnThisDevice /
+  // deactivateKidOnThisDevice). Only meaningful on the KIDS_LIST entries a parent's device
+  // caches from the server — the device's own KID_PROFILE (this kid's local, active-on-THIS-
+  // device copy) doesn't need it, since being present in KID_PROFILE at all already implies it.
+  boundDeviceId?: string | null;
 }
 
 // Storage keys
 const KEYS = {
   PARENT_EMAIL: 'crumbo_parent_email',
+  PARENT_NAME: 'crumbo_parent_name',
+  PARENT_AVATAR_URL: 'crumbo_parent_avatar_url',
+  PARENT_AVATAR_EMOJI: 'crumbo_parent_avatar_emoji',
   IS_SUBSCRIBED: 'crumbo_is_subscribed',
   KID_PROFILE: 'crumbo_kid_profile',
   FRIENDS: 'crumbo_friends',
@@ -61,14 +73,34 @@ const KEYS = {
   KIDS_LIST: 'crumbo_parent_kids_list',
   HAS_SEEN_ONBOARDING: 'crumbo_has_seen_onboarding',
   DEVICE_ID: 'crumbo_device_id',
+  // Whether the PARENT (as opposed to one of their kids) is the active user on this device.
+  // Mutually exclusive with KID_PROFILE by construction — activateParentOnDevice/
+  // activateKidOnThisDevice each clear the other slot before setting their own.
+  PARENT_ACTIVE_ON_DEVICE: 'crumbo_parent_active_on_device',
+  // Opt-in: this device may use Face ID/fingerprint to resume an already-persisted Supabase
+  // session on gate.tsx, instead of typing the password again. Never gates a FRESH sign-in —
+  // there's no session to resume if the parent has actually signed out, or never signed in here.
+  BIOMETRIC_ENABLED: 'crumbo_biometric_enabled',
 };
 
 // Default setup — also the pool the avatar picker UI offers (see AvatarPickerModal).
-export const DEFAULT_EMOJIS = ['🍪', '🧁', '🍩', '🍫', '🍧', '🍰', '🍭', '🍓', '🍒', '🦕', '🐱', '🐼', '🐨', '🦊', '🦁'];
+export const DEFAULT_EMOJIS = ['🍪', '🧁', '🍩', '🍫', '🍧', '🍰', '🍭', '🍓', '🍒', '🦕', '🐱', '🐼', '🐨', '🦊', '🦁', '🐶', '🐰', '🐸', '🦄', '🐧'];
 
 function randomAvatarEmoji(): string {
   return DEFAULT_EMOJIS[Math.floor(Math.random() * DEFAULT_EMOJIS.length)];
 }
+
+// The adult-avatar picker's family-role presets (see AdultAvatarPickerModal) — an alternative to
+// an uploaded photo, not a kid's food/animal-style pick. Aunt/uncle deliberately use a visually
+// distinct emoji from mom/dad (not just a different label on the same glyph).
+export const ADULT_AVATAR_PRESETS: { emoji: string; label: string }[] = [
+  { emoji: '👩', label: 'Mom' },
+  { emoji: '👨', label: 'Dad' },
+  { emoji: '👵', label: 'Grandma' },
+  { emoji: '👴', label: 'Grandpa' },
+  { emoji: '👩‍🦱', label: 'Aunt' },
+  { emoji: '🧔‍♂️', label: 'Uncle' },
+];
 
 // `profiles.name` isn't used for parent rows (kid rows store the kid's real name there) — this
 // fixed marker just distinguishes a parent account row at a glance. Kept as a constant so
@@ -213,6 +245,59 @@ async function compressAndUploadImage(localUri: string, kind: 'photo' | 'drawing
   return data.publicUrl;
 }
 
+/**
+ * Uploads a recorded voice message (already-finished .m4a file from VoiceRecorderModal) to the
+ * same `kid_media` bucket used for photos/drawings — no re-encoding needed, expo-audio's
+ * recorder output is used as-is. Used by sendVoiceMessage, which embeds the URL (and duration,
+ * so the player bubble can show a length before the audio itself has loaded) in the message
+ * text as `[VOICE:<durationSeconds>|<url>]`.
+ */
+async function uploadAudioMessage(localUri: string, senderCookieCode: string): Promise<string> {
+  const file = new File(localUri);
+  const bytes = await file.arrayBuffer();
+  const path = `${senderCookieCode}/voice_${Crypto.randomUUID()}.m4a`;
+
+  const { error } = await supabase.storage
+    .from('kid_media')
+    .upload(path, bytes, { contentType: 'audio/m4a' });
+
+  if (error) {
+    throw new Error(error.message || 'Failed to upload voice message');
+  }
+
+  const { data } = supabase.storage.from('kid_media').getPublicUrl(path);
+  return data.publicUrl;
+}
+
+/**
+ * Uploads an adult's avatar photo to the (separate, dedicated) `avatars` bucket. Unlike
+ * compressAndUploadImage's random per-message filenames, this always writes to the SAME path per
+ * account — re-uploading just overwrites it, no orphaned files pile up. A `?t=<timestamp>` query
+ * param is appended to the returned URL purely to cache-bust: the underlying object path never
+ * changes, so without it clients could keep showing a stale cached copy after a re-upload.
+ */
+async function compressAndUploadAvatar(localUri: string, pathKey: string): Promise<string> {
+  const manipulated = await ImageManipulator.manipulate(localUri)
+    .resize({ width: 400, height: 400 })
+    .renderAsync()
+    .then(image => image.saveAsync({ compress: 0.7, format: SaveFormat.JPEG }));
+
+  const file = new File(manipulated.uri);
+  const bytes = await file.arrayBuffer();
+  const path = `${pathKey}/avatar.jpg`;
+
+  const { error } = await supabase.storage
+    .from('avatars')
+    .upload(path, bytes, { contentType: 'image/jpeg', upsert: true });
+
+  if (error) {
+    throw new Error(error.message || 'Failed to upload avatar');
+  }
+
+  const { data } = supabase.storage.from('avatars').getPublicUrl(path);
+  return `${data.publicUrl}?t=${Date.now()}`;
+}
+
 function randomCookieCode(): string {
   const part1 = Math.floor(100 + Math.random() * 900);
   const part2 = Math.floor(100 + Math.random() * 900);
@@ -253,11 +338,11 @@ async function generateUniqueCookieCode(): Promise<string> {
   return randomCookieCode();
 }
 
-// A Cookie Code alone used to be the entire kid credential — no password, no device check —
-// so anyone who obtained a code (guessed, leaked, shoulder-surfed) could log in as that kid from
-// anywhere. This device ID is generated once and cached locally; loginKidWithCode binds a code
-// to the first device that successfully uses it, and rejects the same code from any other
-// device afterward (see loginKidWithCode / regenerateKidCode below).
+// A Cookie Code alone used to be the entire kid credential — no password, no device check — so
+// anyone who obtained a code (guessed, leaked, shoulder-surfed) could log in as that kid from
+// anywhere. There's no self-service login at all anymore (see activateKidOnThisDevice): this
+// device ID is generated once and cached locally, and is set as a kid's boundDeviceId only by an
+// authenticated parent's own activation action, never by anyone presenting a code.
 async function getDeviceId(): Promise<string> {
   const existing = await AsyncStorage.getItem(KEYS.DEVICE_ID);
   if (existing) return existing;
@@ -272,8 +357,114 @@ export const StorageService = {
     return await AsyncStorage.getItem(KEYS.PARENT_EMAIL);
   },
 
+  // The parent's own stable chat identity — their profiles.cookie_code, `PARENT:<email>` — for
+  // sendParentMessage/subscribeToParentMessages. Kept behind this helper so the UI layer doesn't
+  // need to know the `PARENT:` prefix convention itself.
+  async getMyParentCode(): Promise<string | null> {
+    const email = await this.getParentEmail();
+    return email ? `PARENT:${email}` : null;
+  },
+
   async saveParentEmail(email: string): Promise<void> {
     await AsyncStorage.setItem(KEYS.PARENT_EMAIL, email);
+  },
+
+  // The parent's own preferred display name — shown in Managed Users and used as the "name" a
+  // paired parent sees for this account (see pairParentsViaQRCode/getParentContacts), in place of
+  // the raw email. Synced up via buildParentPushTokenPayload and restored by
+  // fetchAndRestoreParentData, same as displaySize/theme.
+  async getParentName(): Promise<string | null> {
+    return await AsyncStorage.getItem(KEYS.PARENT_NAME);
+  },
+
+  async saveParentName(name: string): Promise<void> {
+    await AsyncStorage.setItem(KEYS.PARENT_NAME, name);
+  },
+
+  async getParentAvatarUrl(): Promise<string | null> {
+    return await AsyncStorage.getItem(KEYS.PARENT_AVATAR_URL);
+  },
+
+  async saveParentAvatarUrl(url: string | null): Promise<void> {
+    if (url) {
+      await AsyncStorage.setItem(KEYS.PARENT_AVATAR_URL, url);
+    } else {
+      await AsyncStorage.removeItem(KEYS.PARENT_AVATAR_URL);
+    }
+  },
+
+  async getParentAvatarEmoji(): Promise<string | null> {
+    return await AsyncStorage.getItem(KEYS.PARENT_AVATAR_EMOJI);
+  },
+
+  async saveParentAvatarEmoji(emoji: string | null): Promise<void> {
+    if (emoji) {
+      await AsyncStorage.setItem(KEYS.PARENT_AVATAR_EMOJI, emoji);
+    } else {
+      await AsyncStorage.removeItem(KEYS.PARENT_AVATAR_EMOJI);
+    }
+  },
+
+  /**
+   * Picks one of the family-role preset avatars (see ADULT_AVATAR_PRESETS) instead of an
+   * uploaded photo. Mutually exclusive with the photo — picking a preset clears any uploaded
+   * photo the same way uploading a new photo clears any picked preset (AdultAvatar only ever
+   * shows one: the photo if present, else the emoji, else a plain "G").
+   */
+  async setParentAvatarEmoji(emoji: string): Promise<boolean> {
+    try {
+      await this.saveParentAvatarEmoji(emoji);
+      await this.saveParentAvatarUrl(null);
+      await this.syncParentData();
+      return true;
+    } catch (e) {
+      console.error("Error setting parent avatar emoji:", e);
+      return false;
+    }
+  },
+
+  /**
+   * Uploads a new avatar photo for the signed-in parent, saves it locally, and syncs it to the
+   * server so it's what a kid/paired parent/relative sees for this account going forward. Note:
+   * anyone who already has this parent cached as a Friend (a kid's own friends[] entry, a paired
+   * parent's, etc.) won't see the change until THEIR next resync of that entry — there's no live
+   * avatar-push the way kid buddies get via checkFriendPairingStatus's piggybacked avatar fetch.
+   */
+  async uploadParentAvatar(localUri: string): Promise<string | null> {
+    const email = await this.getParentEmail();
+    if (!email) return null;
+    try {
+      // Pass the RAW email, not encodeURIComponent(email) — compressAndUploadAvatar's own
+      // getPublicUrl() call already percent-encodes the path when building the URL. Pre-encoding
+      // here too made the object actually get stored under a key containing a literal "%40" (3
+      // characters) instead of "@", while the returned URL then encoded THAT "%" again into
+      // "%25" — a URL that 404s/400s against the real key, so the photo silently failed to load
+      // anywhere it was used.
+      const url = await compressAndUploadAvatar(localUri, email);
+      await this.saveParentAvatarUrl(url);
+      // Mutually exclusive with a picked preset (see setParentAvatarEmoji) — a real photo always
+      // wins once one is uploaded.
+      await this.saveParentAvatarEmoji(null);
+      await this.syncParentData();
+      return url;
+    } catch (e) {
+      console.error("Error uploading parent avatar:", e);
+      return null;
+    }
+  },
+
+  async removeParentAvatar(): Promise<void> {
+    const email = await this.getParentEmail();
+    await this.saveParentAvatarUrl(null);
+    if (email) {
+      try {
+        // Raw email, matching the (now-fixed) raw key uploadParentAvatar actually stores under.
+        await supabase.storage.from('avatars').remove([`${email}/avatar.jpg`]);
+      } catch (e) {
+        console.error("Error removing avatar file:", e);
+      }
+      await this.syncParentData();
+    }
   },
 
   /**
@@ -346,7 +537,24 @@ export const StorageService = {
     // e.g. CRUM-123-456 — checked against the server for an existing collision first (bug #2).
     const cookieCode = await generateUniqueCookieCode();
 
+    // A kid's own parent is a chat contact from the moment they exist — no pairing needed, same
+    // as the parent's own side already auto-including every kid they manage (getParentContacts).
+    // Uses the same PARENT:<email> address/Friend-entry convention as everything else that
+    // addresses a parent as a chat contact (pairParentsViaQRCode, addRelativeToKidByEmail).
     const initialFriends: Friend[] = [];
+    const parentEmail = await this.getParentEmail();
+    if (parentEmail) {
+      const parentName = (await this.getParentName()) || parentEmail;
+      const parentAvatarUrl = await this.getParentAvatarUrl();
+      const parentAvatarEmoji = await this.getParentAvatarEmoji();
+      initialFriends.push({
+        id: Crypto.randomUUID(),
+        name: parentName,
+        cookieCode: `PARENT:${parentEmail}`,
+        avatarEmoji: parentAvatarEmoji || '👪',
+        avatarUrl: parentAvatarUrl || undefined
+      });
+    }
 
     const profile: KidProfile = {
       name,
@@ -357,19 +565,28 @@ export const StorageService = {
       videoCallingDisabled: false,
       photosDisabled: false,
       drawingDisabled: false,
+      voiceMessagesDisabled: false,
       friends: initialFriends
     };
 
     // Add to kids list
     const kids = await this.getKidsList();
+    const isFirstKidEver = kids.length === 0;
     kids.push(profile);
     await this.saveKidsList(kids);
 
-    // If no active profile, set this one as active
-    const active = await this.getKidProfile();
-    if (!active) {
-      await AsyncStorage.setItem(KEYS.KID_PROFILE, JSON.stringify(profile));
-      await AsyncStorage.setItem(KEYS.FRIENDS, JSON.stringify(initialFriends));
+    // The very first kid on a brand-new account becomes active on this device automatically
+    // (the common "just registered, immediately added my kid" setup flow) — but only if this
+    // device has no one else already active, so it never silently swaps out an existing kid or
+    // parent session. The caller (dashboard.tsx's handleCreateProfile) still needs to claim the
+    // server-side device lock via activateKidOnThisDevice once this kid has been synced up.
+    if (isFirstKidEver) {
+      const activeKid = await this.getKidProfile();
+      const parentActive = await this.isParentActiveOnDevice();
+      if (!activeKid && !parentActive) {
+        await AsyncStorage.setItem(KEYS.KID_PROFILE, JSON.stringify(profile));
+        await AsyncStorage.setItem(KEYS.FRIENDS, JSON.stringify(initialFriends));
+      }
     }
 
     return profile;
@@ -533,6 +750,133 @@ export const StorageService = {
       console.error("Failed to query parent chat logs:", e);
     }
     return [];
+  },
+
+  /**
+   * The parent's own chat contacts: every kid they manage (automatic — no pairing needed, it's
+   * literally their own account) plus any other parents they've paired with (see
+   * pairParentsViaQRCode) — stored as a top-level `friends` field on the parent's own payload,
+   * sibling to `kids` rather than nested inside any one kid's own friends list.
+   */
+  async getParentContacts(): Promise<{ code: string; name: string; avatarEmoji?: string; avatarUrl?: string; isOwnKid: boolean }[]> {
+    const email = await this.getParentEmail();
+    if (!email) return [];
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('cookie_code', `PARENT:${email}`)
+        .single();
+
+      if (error || !data || !data.push_token) return [];
+      const payload = JSON.parse(data.push_token);
+
+      const ownKids = (payload.kids || []).map((k: any) => ({
+        code: k.cookieCode,
+        name: k.name,
+        avatarEmoji: k.avatarEmoji,
+        isOwnKid: true,
+      }));
+      const pairedParents = (payload.friends || []).map((f: any) => ({
+        code: f.cookieCode,
+        name: f.name,
+        avatarEmoji: f.avatarEmoji,
+        avatarUrl: f.avatarUrl,
+        isOwnKid: false,
+      }));
+      return [...ownKids, ...pairedParents];
+    } catch (e) {
+      console.error("Error fetching parent contacts:", e);
+      return [];
+    }
+  },
+
+  /**
+   * Sending as the parent uses their own `PARENT:<email>` cookie_code as sender_code — already
+   * guaranteed unique (it's the row's own key) and never collides with a kid's CRUM-###-### format,
+   * so this needs no new column or migration, just a different sender identity than sendMessage's
+   * (which always derives it from getKidProfile()). No local cache/outbox here (unlike
+   * sendMessage) — the parent's contact list and conversations are always read live from the
+   * server rather than cached offline, matching getParentContacts/getChatLogsForParent.
+   */
+  async sendParentMessage(myCode: string, receiverCode: string, text: string): Promise<Message> {
+    const newMsg: Message = {
+      id: Crypto.randomUUID(),
+      text,
+      timestamp: new Date().toISOString(),
+      sender: 'me',
+    };
+
+    const { error } = await supabase
+      .from('messages')
+      .insert({
+        id: newMsg.id,
+        sender_code: myCode,
+        receiver_code: receiverCode,
+        text,
+        created_at: newMsg.timestamp,
+      });
+
+    if (error) {
+      throw new Error(error.message || "Failed to send message");
+    }
+    return newMsg;
+  },
+
+  /**
+   * Adult-side counterparts to sendImageMessage/sendDrawingMessage/sendVoiceMessage — same
+   * upload-then-send shape (compressAndUploadImage/uploadAudioMessage are already generic, keyed
+   * by sender cookie code rather than a kid identity), but live-only like sendParentMessage: no
+   * local cache/outbox, since adult conversations are never cached offline.
+   */
+  async sendParentImageMessage(myCode: string, receiverCode: string, localUri: string): Promise<Message> {
+    const url = await compressAndUploadImage(localUri, 'photo', myCode);
+    return this.sendParentMessage(myCode, receiverCode, `[IMAGE:${url}]`);
+  },
+
+  async sendParentDrawingMessage(myCode: string, receiverCode: string, localUri: string): Promise<Message> {
+    const url = await compressAndUploadImage(localUri, 'drawing', myCode);
+    return this.sendParentMessage(myCode, receiverCode, `[DRAWING:${url}]`);
+  },
+
+  async sendParentVoiceMessage(myCode: string, receiverCode: string, localUri: string, durationSeconds: number): Promise<Message> {
+    const url = await uploadAudioMessage(localUri, myCode);
+    return this.sendParentMessage(myCode, receiverCode, `[VOICE:${Math.round(durationSeconds)}|${url}]`);
+  },
+
+  // Realtime counterpart to sendParentMessage/getChatLogsForParent — mirrors subscribeToMessages
+  // but keyed by an explicit `myCode` (the parent's own PARENT:<email>) instead of deriving it
+  // from getKidProfile(), and dispatches by the OTHER party's raw code directly (no local
+  // Friend.id to resolve, since parent conversations aren't cached locally).
+  subscribeToParentMessages(myCode: string, onNewMessage: (msg: Message, otherCode: string) => void): () => void {
+    const channelId = Math.random().toString(36).substring(2, 9);
+    const dbChannel = supabase
+      .channel(`public:messages:${channelId}`)
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'messages' },
+        (payload) => {
+          const newRow = payload.new;
+          if (this.isCallSignalText(newRow.text)) return;
+
+          const isSentByMe = newRow.sender_code === myCode;
+          const isReceivedByMe = newRow.receiver_code === myCode;
+          if (!isSentByMe && !isReceivedByMe) return;
+
+          const msg: Message = {
+            id: newRow.id,
+            text: newRow.text,
+            timestamp: newRow.created_at,
+            sender: isSentByMe ? 'me' : 'them',
+          };
+          onNewMessage(msg, isSentByMe ? newRow.receiver_code : newRow.sender_code);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(dbChannel);
+    };
   },
 
   async sendMessage(friendId: string, text: string): Promise<Message> {
@@ -705,6 +1049,30 @@ export const StorageService = {
     const kids = await this.getKidsList();
     const activeProfile = await this.getKidProfile();
     const activeFriends = await this.getFriends();
+    const email = await this.getParentEmail();
+    const parentName = await this.getParentName();
+    const parentAvatarUrl = await this.getParentAvatarUrl();
+    const parentAvatarEmoji = await this.getParentAvatarEmoji();
+    const parentCode = email ? `PARENT:${email}` : null;
+    const parentDisplayName = parentName || email || 'Parent';
+
+    // Fetched once up front so both the `friends` preservation below AND the kids merge just
+    // after it can use the same server snapshot, rather than two separate round-trips.
+    let serverPayload: any = null;
+    if (email) {
+      try {
+        const { data } = await supabase
+          .from('profiles')
+          .select('push_token')
+          .eq('cookie_code', `PARENT:${email}`)
+          .single();
+        if (data?.push_token) {
+          serverPayload = JSON.parse(data.push_token);
+        }
+      } catch {
+        // Offline/new account — nothing to preserve yet.
+      }
+    }
 
     const kidsPayload = kids.map(k => {
       // If this is the active kid, use the latest friends list/avatar from storage — this
@@ -713,6 +1081,23 @@ export const StorageService = {
       // straight to the server but has no way to update THIS separate device's local cache).
       const isCurrentActive = activeProfile?.cookieCode === k.cookieCode;
       const friendsList = isCurrentActive ? activeFriends : (k.friends || []);
+
+      // Every kid automatically has their own parent as a chat contact (see createKidProfile) —
+      // backfilled defensively here too, for any kid created before this existed. Also keeps an
+      // EXISTING entry's name/avatarUrl in sync on every sync — without this, a kid created
+      // before the parent ever uploaded a photo keeps that parent's friend-list entry frozen at
+      // "no photo" forever, since the entry already existing short-circuited the backfill and
+      // nothing else ever goes back to refresh it (this is the one call site that runs right when
+      // the parent's own device changes its photo, so it's the most direct place to propagate it).
+      const existingParentEntry = parentCode ? friendsList.find((f: any) => f.cookieCode === parentCode) : undefined;
+      const friendsWithParent = !parentCode
+        ? friendsList
+        : !existingParentEntry
+        ? [...friendsList, { id: Crypto.randomUUID(), name: parentDisplayName, cookieCode: parentCode, avatarEmoji: parentAvatarEmoji || '👪', avatarUrl: parentAvatarUrl || undefined }]
+        : friendsList.map((f: any) =>
+            f.cookieCode === parentCode ? { ...f, name: parentDisplayName, avatarEmoji: parentAvatarEmoji || '👪', avatarUrl: parentAvatarUrl || undefined } : f
+          );
+
       const avatarEmoji = isCurrentActive && activeProfile ? activeProfile.avatarEmoji : k.avatarEmoji;
 
       return {
@@ -724,11 +1109,13 @@ export const StorageService = {
         videoCallingDisabled: !!k.videoCallingDisabled,
         photosDisabled: !!k.photosDisabled,
         drawingDisabled: !!k.drawingDisabled,
-        friends: friendsList.map((f: any) => ({
+        voiceMessagesDisabled: !!k.voiceMessagesDisabled,
+        friends: friendsWithParent.map((f: any) => ({
           id: f.id,
           name: f.name,
           cookieCode: f.cookieCode,
-          avatarEmoji: f.avatarEmoji
+          avatarEmoji: f.avatarEmoji,
+          avatarUrl: f.avatarUrl
         }))
       };
     });
@@ -736,11 +1123,35 @@ export const StorageService = {
     const displaySize = await AsyncStorage.getItem('crumbo_display_size') || 'default';
     const theme = await AsyncStorage.getItem('crumbo_theme') || 'light';
 
+    // Preserve the existing top-level `friends` field (other parents paired via
+    // pairParentsViaQRCode, sibling to `kids`) — everything above is rebuilt from local caches
+    // that don't track that list at all, so without this, ANY syncParentData() call after
+    // pairing (adding a kid, toggling a lock, etc.) would silently overwrite it away to nothing.
+    const parentFriends: unknown[] = serverPayload?.friends || [];
+
+    // Same problem, much higher stakes: this device's local getKidsList() cache can be empty or
+    // incomplete for reasons that have nothing to do with the parent actually having no kids —
+    // a device that's only ever been used for one narrow task (e.g. just uploading an avatar
+    // photo, or right after a "Log Out" that clears the local cache) may never have pulled the
+    // real kids list down at all. Blindly trusting kidsPayload here turned "upload a photo" into
+    // "silently delete every kid" the first time this happened. Any kid the SERVER still knows
+    // about that this device's local cache doesn't is carried over untouched instead of dropped —
+    // a kid genuinely deleted goes through deleteKidProfile, which removes it from the local
+    // cache AND pushes that removal itself, so it's gone from both sides in lockstep already.
+    const localCookieCodes = new Set(kidsPayload.map(k => k.cookieCode));
+    const preservedServerKids = ((serverPayload?.kids || []) as any[]).filter(
+      k => !localCookieCodes.has(k.cookieCode)
+    );
+
     return JSON.stringify({
       subscribed,
-      kids: kidsPayload,
+      kids: [...kidsPayload, ...preservedServerKids],
       displaySize,
-      theme
+      theme,
+      parentName,
+      parentAvatarUrl,
+      parentAvatarEmoji,
+      friends: parentFriends
     });
   },
 
@@ -817,38 +1228,30 @@ export const StorageService = {
           await AsyncStorage.setItem('crumbo_theme', payload.theme);
         }
 
+        if (payload.parentName) {
+          await AsyncStorage.setItem(KEYS.PARENT_NAME, payload.parentName);
+        }
+
+        if (payload.parentAvatarUrl) {
+          await AsyncStorage.setItem(KEYS.PARENT_AVATAR_URL, payload.parentAvatarUrl);
+        }
+
+        if (payload.parentAvatarEmoji) {
+          await AsyncStorage.setItem(KEYS.PARENT_AVATAR_EMOJI, payload.parentAvatarEmoji);
+        }
+
         // Always reflect THIS account's kids — even when there are none — rather than only
-        // writing KIDS_LIST/KID_PROFILE/FRIENDS when non-empty. Skipping that when empty used to
-        // leave a PREVIOUS account's kids sitting in local cache untouched, so switching accounts
-        // on the same device (sign out, then sign into or register a different email) could keep
-        // showing the old account's kids for as long as the new one had none of its own yet.
+        // writing KIDS_LIST when non-empty. Skipping that when empty used to leave a PREVIOUS
+        // account's kids sitting in local cache untouched, so switching accounts on the same
+        // device (sign out, then sign into or register a different email) could keep showing the
+        // old account's kids for as long as the new one had none of its own yet.
+        //
+        // Deliberately does NOT touch KID_PROFILE/FRIENDS (which kid, if any, is active on THIS
+        // device) — activation only ever happens via an explicit Managed Users action
+        // (activateKidOnThisDevice), never as a side effect of merely signing in. Whatever was
+        // active on this device before this call stays active after it.
         const kids = payload.kids || [];
         await AsyncStorage.setItem(KEYS.KIDS_LIST, JSON.stringify(kids));
-
-        if (kids.length > 0) {
-          // Decide which kid to activate on this device
-          const currentActive = await this.getKidProfile();
-          const matchInRestored = currentActive
-            ? kids.find((k: any) => k.cookieCode === currentActive.cookieCode)
-            : null;
-
-          const kidToActivate = matchInRestored || kids[0];
-
-          const kidProfile: KidProfile = {
-            name: kidToActivate.name,
-            cookieCode: kidToActivate.cookieCode,
-            chatDisabled: !!kidToActivate.chatDisabled,
-            callingDisabled: !!kidToActivate.callingDisabled,
-            videoCallingDisabled: !!kidToActivate.videoCallingDisabled,
-            photosDisabled: !!kidToActivate.photosDisabled,
-            drawingDisabled: !!kidToActivate.drawingDisabled
-          };
-          await AsyncStorage.setItem(KEYS.KID_PROFILE, JSON.stringify(kidProfile));
-          await AsyncStorage.setItem(KEYS.FRIENDS, JSON.stringify(kidToActivate.friends || []));
-        } else {
-          await AsyncStorage.removeItem(KEYS.KID_PROFILE);
-          await AsyncStorage.removeItem(KEYS.FRIENDS);
-        }
         return true;
       }
     } catch (e) {
@@ -857,7 +1260,7 @@ export const StorageService = {
     return false;
   },
 
-  async updateKidSettings(settings: { chatDisabled: boolean; callingDisabled: boolean; videoCallingDisabled: boolean; photosDisabled: boolean; drawingDisabled: boolean }): Promise<void> {
+  async updateKidSettings(settings: { chatDisabled: boolean; callingDisabled: boolean; videoCallingDisabled: boolean; photosDisabled: boolean; drawingDisabled: boolean; voiceMessagesDisabled: boolean }): Promise<void> {
     const profile = await this.getKidProfile();
     if (profile) {
       await this.updateKidSettingsForProfile(profile.cookieCode, settings);
@@ -958,6 +1361,50 @@ export const StorageService = {
     return newMsg;
   },
 
+  /**
+   * Sends a recorded voice message (see VoiceRecorderModal, capped at 3 minutes there). Mirrors
+   * sendMediaMessage's upload-then-send shape, but encodes duration alongside the URL —
+   * `[VOICE:<durationSeconds>|<url>]` — so a message preview or bubble can show a length
+   * immediately without first loading the audio file itself.
+   */
+  async sendVoiceMessage(friendId: string, localUri: string, durationSeconds: number): Promise<Message> {
+    const profile = await this.getKidProfile();
+    const friends = await this.getFriends();
+    const friend = friends.find(f => f.id === friendId);
+    if (!profile || !friend) {
+      throw new Error('No active profile or friend to send to');
+    }
+
+    const url = await uploadAudioMessage(localUri, profile.cookieCode);
+    const text = `[VOICE:${Math.round(durationSeconds)}|${url}]`;
+    const newMsgId = Crypto.randomUUID();
+    const newMsg: Message = {
+      id: newMsgId,
+      text,
+      timestamp: new Date().toISOString(),
+      sender: 'me',
+    };
+
+    await withMessagesLock(friendId, async () => {
+      const messages = await readCachedMessages(friendId);
+      await AsyncStorage.setItem(`${KEYS.MESSAGES_PREFIX}${friendId}`, JSON.stringify([...messages, newMsg]));
+    });
+
+    const entry: OutboxEntry = {
+      id: newMsgId,
+      senderCode: profile.cookieCode,
+      receiverCode: friend.cookieCode,
+      text,
+      createdAt: newMsg.timestamp,
+    };
+    const synced = await insertOutboxEntry(entry);
+    if (!synced) {
+      await addToOutbox(friendId, entry);
+    }
+
+    return newMsg;
+  },
+
   async deleteKidProfile(cookieCode: string): Promise<void> {
     const kids = await this.getKidsList();
     const updatedKids = kids.filter(k => k.cookieCode !== cookieCode);
@@ -975,7 +1422,8 @@ export const StorageService = {
           callingDisabled: !!nextActive.callingDisabled,
           videoCallingDisabled: !!nextActive.videoCallingDisabled,
           photosDisabled: !!nextActive.photosDisabled,
-          drawingDisabled: !!nextActive.drawingDisabled
+          drawingDisabled: !!nextActive.drawingDisabled,
+          voiceMessagesDisabled: !!nextActive.voiceMessagesDisabled
         }));
         if (nextActive.friends) {
           await AsyncStorage.setItem(KEYS.FRIENDS, JSON.stringify(nextActive.friends));
@@ -985,103 +1433,46 @@ export const StorageService = {
         await AsyncStorage.removeItem(KEYS.FRIENDS);
       }
     }
-  },
 
-  /**
-   * Issues a kid a brand-new Cookie Code and invalidates the old one everywhere — the actual
-   * incident response for "someone else has my kid's code" (see loginKidWithCode's device
-   * binding), and also how a kid moves onto a new/replacement phone. Any device currently using
-   * the old code (the kid's own included) stops working immediately; loginKidWithCode must be
-   * used again with the new code to claim it fresh. Existing pairings and chat history are
-   * carried over to the new code rather than starting over.
-   */
-  async regenerateKidCode(oldCookieCode: string): Promise<string | null> {
-    try {
-      const newCookieCode = await generateUniqueCookieCode();
-
-      // A single search for '"cookieCode":"<old>"' finds every row that mentions this code at
-      // all — both the owning parent (where it's a kid's OWN code) and any friend's parent row
-      // (where it's stored as a friend reference) — so one pass renames it everywhere it lives.
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('*')
-        .like('cookie_code', 'PARENT:%')
-        .like('push_token', `%"cookieCode":"${oldCookieCode}"%`);
-
-      if (error || !data) return null;
-
-      let ownerRenamed = false;
-      for (const parentRow of data) {
-        try {
-          const payload = JSON.parse(parentRow.push_token);
-          if (!payload?.kids) continue;
-          let changed = false;
-
-          for (const kid of payload.kids) {
-            if (kid.cookieCode === oldCookieCode) {
-              kid.cookieCode = newCookieCode;
-              kid.boundDeviceId = null; // free for a legitimate device to claim
-              // A brand-new code is a fresh secret nobody else has seen yet — safe to claim on
-              // first use same as any new kid profile, so any leftover claim gate from a prior
-              // deactivateKidDevice call on the OLD code shouldn't carry over and block it.
-              kid.pendingClaimToken = null;
-              kid.pendingClaimExpiresAt = null;
-              changed = true;
-              ownerRenamed = true;
-            }
-            if (kid.friends) {
-              for (const friend of kid.friends) {
-                if (friend.cookieCode === oldCookieCode) {
-                  friend.cookieCode = newCookieCode;
-                  changed = true;
-                }
-              }
-            }
-          }
-
-          if (changed) {
-            await supabase
-              .from('profiles')
-              .upsert({ cookie_code: parentRow.cookie_code, push_token: JSON.stringify(payload), name: parentRow.name });
-          }
-        } catch {}
+    // Removed from the SERVER's kids[] directly too, rather than leaving it to some later
+    // syncParentData() call to notice it's missing from the local list — buildParentPushTokenPayload
+    // deliberately preserves any kid the server still has that this device's local cache doesn't
+    // (see its own comment), specifically so an incomplete/stale local cache can never silently wipe
+    // out a kid it simply hasn't synced down yet. Without this direct removal, that exact protection
+    // would just as happily un-delete a kid that actually was deleted a moment ago on this device.
+    const email = await this.getParentEmail();
+    if (email) {
+      try {
+        const { data } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('cookie_code', `PARENT:${email}`)
+          .single();
+        if (data?.push_token) {
+          const payload = JSON.parse(data.push_token);
+          payload.kids = (payload.kids || []).filter((k: any) => k.cookieCode !== cookieCode);
+          await supabase
+            .from('profiles')
+            .upsert({ cookie_code: data.cookie_code, push_token: JSON.stringify(payload), name: data.name });
+        }
+      } catch (e) {
+        console.error("Error removing kid from server:", e);
       }
-
-      if (!ownerRenamed) return null; // never actually found the kid itself — don't touch messages
-
-      // Chat history is addressed by cookie code (messages.sender_code/receiver_code have no
-      // foreign key to a kid, just plain text matching) — repoint existing rows to the new code
-      // so history stays intact under the new identity instead of becoming unreachable.
-      await supabase.from('messages').update({ sender_code: newCookieCode }).eq('sender_code', oldCookieCode);
-      await supabase.from('messages').update({ receiver_code: newCookieCode }).eq('receiver_code', oldCookieCode);
-
-      // Reflect the rename in this (parent) device's own local cache too, so the dashboard
-      // doesn't show the stale code until its next full resync.
-      const kids = await this.getKidsList();
-      await this.saveKidsList(kids.map(k => (k.cookieCode === oldCookieCode ? { ...k, cookieCode: newCookieCode } : k)));
-
-      return newCookieCode;
-    } catch (e) {
-      console.error("Error regenerating kid code:", e);
-      return null;
     }
   },
 
   /**
-   * Releases this Cookie Code's device lock WITHOUT issuing a new code (see regenerateKidCode
-   * above for that heavier alternative) — the fix for "kid needs to log in on a new phone but
-   * this code says it's already active elsewhere": a parent opens the OLD phone's Parent Area
-   * (account-based, works from any device) and deactivates it there, freeing the code for the
-   * new phone's loginKidWithCode to claim. If the device calling this is the one that had the
-   * kid active locally, it's logged out here too so this device's own UI reflects the change.
+   * Clears this kid's device binding server-side. Callable from any device the parent happens
+   * to be signed into Parent Area on — it's a pure server-side mutation, not tied to physical
+   * possession of the kid's old phone. If the device calling this happens to be the one that had
+   * the kid active locally, it's logged out here too so this device's own UI reflects the change
+   * immediately.
    *
-   * Freeing boundDeviceId alone would turn the (long-lived, possibly-seen-by-others) Cookie Code
-   * back into a bare bearer secret — anyone with it could win the race to claim the freed slot,
-   * not just the phone the parent actually intends. So this also mints a short-lived, one-time
-   * claim code that loginKidWithCode requires alongside the Cookie Code to complete that claim;
-   * only the authenticated parent ever sees it, and it expires in 15 minutes or on first use.
+   * There's no self-service reclaim path anymore (see activateKidOnThisDevice) — freeing this
+   * binding doesn't hand the code back out as a bearer secret the way it used to, since claiming
+   * it again always requires the parent to activate it from Managed Users.
    */
-  async deactivateKidDevice(cookieCode: string): Promise<{ success: boolean; claimCode?: string }> {
+  async deactivateKidOnThisDevice(cookieCode: string): Promise<{ success: boolean }> {
     try {
       const { data, error } = await supabase
         .from('profiles')
@@ -1098,15 +1489,7 @@ export const StorageService = {
           const kidIndex = payload.kids.findIndex((k: any) => k.cookieCode === cookieCode);
           if (kidIndex === -1) continue;
 
-          const claimCode = Crypto.randomUUID().slice(0, 8).toUpperCase();
-          const claimExpiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
-
-          payload.kids[kidIndex] = {
-            ...payload.kids[kidIndex],
-            boundDeviceId: null,
-            pendingClaimToken: claimCode,
-            pendingClaimExpiresAt: claimExpiresAt
-          };
+          payload.kids[kidIndex] = { ...payload.kids[kidIndex], boundDeviceId: null };
           await supabase
             .from('profiles')
             .upsert({ cookie_code: parentRow.cookie_code, push_token: JSON.stringify(payload), name: parentRow.name });
@@ -1115,19 +1498,106 @@ export const StorageService = {
           if (active && active.cookieCode === cookieCode) {
             await this.logoutKid();
           }
-          return { success: true, claimCode };
+          return { success: true };
         } catch {}
       }
       return { success: false };
     } catch (e) {
-      console.error("Error deactivating kid device:", e);
+      console.error("Error deactivating kid on this device:", e);
+      return { success: false };
+    }
+  },
+
+  /**
+   * The ONLY way a kid ever becomes active on a device — always called from the authenticated
+   * Parent Area (Managed Users), never by the kid themselves. There is no code-entry login
+   * anymore; a Cookie Code identifies a kid for cross-family friend pairing only.
+   *
+   * Enforces "no other device can activate the same kid" (boundDeviceId must be unset or already
+   * this device before claiming), and — per the single-active-user-per-device rule — clears
+   * whatever else was active on this device first (a different kid, or the parent) so activating
+   * a new user is always a one-step swap.
+   */
+  async activateKidOnThisDevice(cookieCode: string): Promise<{ success: boolean; error?: 'ALREADY_ACTIVE_ELSEWHERE' | 'NOT_FOUND' }> {
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('*')
+        .like('cookie_code', 'PARENT:%')
+        .like('push_token', `%"cookieCode":"${cookieCode}"%`);
+
+      if (error || !data) return { success: false, error: 'NOT_FOUND' };
+
+      let targetKid = null;
+      let owningRow = null;
+      let owningPayload: any = null;
+      for (const parentProfile of data) {
+        try {
+          const payload = JSON.parse(parentProfile.push_token);
+          const found = payload?.kids?.find((k: any) => k.cookieCode === cookieCode);
+          if (found) {
+            targetKid = found;
+            owningRow = parentProfile;
+            owningPayload = payload;
+            break;
+          }
+        } catch {}
+      }
+
+      if (!targetKid) return { success: false, error: 'NOT_FOUND' };
+
+      const deviceId = await getDeviceId();
+      if (targetKid.boundDeviceId && targetKid.boundDeviceId !== deviceId) {
+        return { success: false, error: 'ALREADY_ACTIVE_ELSEWHERE' };
+      }
+
+      const kidIndex = owningPayload.kids.findIndex((k: any) => k.cookieCode === cookieCode);
+      owningPayload.kids[kidIndex] = { ...owningPayload.kids[kidIndex], boundDeviceId: deviceId };
+      await supabase
+        .from('profiles')
+        .upsert({
+          cookie_code: owningRow!.cookie_code,
+          push_token: JSON.stringify(owningPayload),
+          name: owningRow!.name
+        });
+
+      // Exactly one active user per device: free whichever OTHER kid was locally active here
+      // (their own boundDeviceId lock, server-side), and drop the parent-active flag too.
+      const previouslyActive = await this.getKidProfile();
+      if (previouslyActive && previouslyActive.cookieCode !== cookieCode) {
+        await this.deactivateKidOnThisDevice(previouslyActive.cookieCode);
+      }
+      await this.deactivateParentOnDevice();
+
+      // Writes KID_PROFILE/FRIENDS straight from the payload just fetched and patched above,
+      // rather than going through activateKidProfile (which re-reads this device's own
+      // getKidsList() cache) — that cache can be stale enough to not contain this kid at all yet
+      // (e.g. the very first activation on a device that never synced before), silently leaving
+      // KID_PROFILE unset even though the server-side boundDeviceId claim just succeeded.
+      const target = owningPayload.kids[kidIndex];
+      await AsyncStorage.setItem(KEYS.KID_PROFILE, JSON.stringify({
+        name: target.name,
+        cookieCode: target.cookieCode,
+        avatarEmoji: target.avatarEmoji,
+        chatDisabled: !!target.chatDisabled,
+        callingDisabled: !!target.callingDisabled,
+        videoCallingDisabled: !!target.videoCallingDisabled,
+        photosDisabled: !!target.photosDisabled,
+        drawingDisabled: !!target.drawingDisabled,
+        voiceMessagesDisabled: !!target.voiceMessagesDisabled
+      }));
+      await AsyncStorage.setItem(KEYS.FRIENDS, JSON.stringify(target.friends || []));
+
+      return { success: true };
+    } catch (e) {
+      console.error("Error activating kid on this device:", e);
       return { success: false };
     }
   },
 
   async updateKidSettingsForProfile(
     cookieCode: string, 
-    settings: { chatDisabled: boolean; callingDisabled: boolean; videoCallingDisabled: boolean; photosDisabled: boolean; drawingDisabled: boolean }
+    settings: { chatDisabled: boolean; callingDisabled: boolean; videoCallingDisabled: boolean; photosDisabled: boolean; drawingDisabled: boolean; voiceMessagesDisabled: boolean }
   ): Promise<void> {
     const kids = await this.getKidsList();
     const updatedKids = kids.map(k => {
@@ -1151,137 +1621,6 @@ export const StorageService = {
     }
   },
 
-  async activateKidProfile(cookieCode: string): Promise<void> {
-    const kids = await this.getKidsList();
-    const target = kids.find(k => k.cookieCode === cookieCode);
-    if (target) {
-      await AsyncStorage.setItem(KEYS.KID_PROFILE, JSON.stringify({
-        name: target.name,
-        cookieCode: target.cookieCode,
-        chatDisabled: !!target.chatDisabled,
-        callingDisabled: !!target.callingDisabled,
-        videoCallingDisabled: !!target.videoCallingDisabled,
-        photosDisabled: !!target.photosDisabled,
-        drawingDisabled: !!target.drawingDisabled
-      }));
-      if (target.friends) {
-        await AsyncStorage.setItem(KEYS.FRIENDS, JSON.stringify(target.friends));
-      } else {
-        await AsyncStorage.setItem(KEYS.FRIENDS, JSON.stringify([]));
-      }
-    }
-  },
-
-
-
-  async loginKidWithCode(cookieCode: string, claimCode?: string): Promise<KidProfile | null> {
-    try {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('*')
-        .like('cookie_code', 'PARENT:%')
-        .like('push_token', `%"cookieCode":"${cookieCode}"%`);
-
-      if (error) {
-        throw new Error(error.message || "Failed to query database");
-      }
-
-      if (!data || data.length === 0) {
-        return null;
-      }
-
-      // Find the parent profile that actually OWNS this kid
-      let targetKid = null;
-      let owningRow = null;
-      let owningPayload: any = null;
-      for (const parentProfile of data) {
-        try {
-          const payload = JSON.parse(parentProfile.push_token);
-          if (payload && payload.kids) {
-            const found = payload.kids.find((k: any) => k.cookieCode === cookieCode);
-            if (found) {
-              targetKid = found;
-              owningRow = parentProfile;
-              owningPayload = payload;
-              break;
-            }
-          }
-        } catch {}
-      }
-
-      if (targetKid) {
-        const deviceId = await getDeviceId();
-
-        if (targetKid.boundDeviceId && targetKid.boundDeviceId !== deviceId) {
-          // Someone else's device already claimed this code — a leaked/guessed code alone is no
-          // longer enough. Thrown (not returned null) so callers can show a specific message
-          // instead of the generic "code not found" one.
-          throw new Error('DEVICE_MISMATCH');
-        }
-
-        if (!targetKid.boundDeviceId) {
-          // A code freed by deactivateKidDevice (as opposed to one that's simply never been
-          // claimed yet) carries a one-time claim code — without this gate, freeing the slot
-          // would make the bare Cookie Code a sufficient bearer secret again, letting ANYONE who
-          // has it win the race to claim it, not just the device the parent actually intended.
-          if (targetKid.pendingClaimToken) {
-            const expired = !targetKid.pendingClaimExpiresAt || Date.parse(targetKid.pendingClaimExpiresAt) < Date.now();
-            if (!claimCode) {
-              throw new Error('CLAIM_CODE_REQUIRED');
-            }
-            if (expired || claimCode.trim().toUpperCase() !== targetKid.pendingClaimToken) {
-              throw new Error('CLAIM_CODE_INVALID');
-            }
-          }
-
-          // First-ever login for this code, or a freed one whose claim code just checked out —
-          // claim this device. Written directly to the owning parent row (same cross-family-write
-          // pattern as setKidAvatar below), since this kid's device has no local parent
-          // credentials to sync through.
-          const kidIndex = owningPayload.kids.findIndex((k: any) => k.cookieCode === cookieCode);
-          owningPayload.kids[kidIndex] = {
-            ...owningPayload.kids[kidIndex],
-            boundDeviceId: deviceId,
-            pendingClaimToken: null,
-            pendingClaimExpiresAt: null
-          };
-          await supabase
-            .from('profiles')
-            .upsert({
-              cookie_code: owningRow!.cookie_code,
-              push_token: JSON.stringify(owningPayload),
-              name: owningRow!.name
-            });
-        }
-
-        const kidProfile: KidProfile = {
-          name: targetKid.name,
-          cookieCode: targetKid.cookieCode,
-          avatarEmoji: targetKid.avatarEmoji,
-          chatDisabled: !!targetKid.chatDisabled,
-          callingDisabled: !!targetKid.callingDisabled,
-          videoCallingDisabled: !!targetKid.videoCallingDisabled,
-          photosDisabled: !!targetKid.photosDisabled,
-          drawingDisabled: !!targetKid.drawingDisabled
-        };
-        await AsyncStorage.setItem(KEYS.KID_PROFILE, JSON.stringify(kidProfile));
-        await AsyncStorage.setItem(KEYS.IS_SUBSCRIBED, 'true');
-
-        if (targetKid.friends) {
-          await AsyncStorage.setItem(KEYS.FRIENDS, JSON.stringify(targetKid.friends));
-        } else {
-          await AsyncStorage.setItem(KEYS.FRIENDS, JSON.stringify([]));
-        }
-
-        return kidProfile;
-      }
-    } catch (e) {
-      console.error("Error logging in kid with code:", e);
-      throw e;
-    }
-    return null;
-  },
-
   async logoutKid(): Promise<void> {
     await AsyncStorage.removeItem(KEYS.KID_PROFILE);
     await AsyncStorage.removeItem(KEYS.FRIENDS);
@@ -1297,6 +1636,86 @@ export const StorageService = {
     if (!parentEmail) {
       await AsyncStorage.removeItem(KEYS.IS_SUBSCRIBED);
     }
+  },
+
+  async isParentActiveOnDevice(): Promise<boolean> {
+    const value = await AsyncStorage.getItem(KEYS.PARENT_ACTIVE_ON_DEVICE);
+    return value === 'true';
+  },
+
+  // Exposes the module-private device id so Managed Users can tell "active on THIS device"
+  // apart from "active on some other device" for each kid's boundDeviceId.
+  async getDeviceId(): Promise<string> {
+    return getDeviceId();
+  },
+
+  async isBiometricEnabled(): Promise<boolean> {
+    const value = await AsyncStorage.getItem(KEYS.BIOMETRIC_ENABLED);
+    return value === 'true';
+  },
+
+  async setBiometricEnabled(enabled: boolean): Promise<void> {
+    if (enabled) {
+      await AsyncStorage.setItem(KEYS.BIOMETRIC_ENABLED, 'true');
+    } else {
+      await AsyncStorage.removeItem(KEYS.BIOMETRIC_ENABLED);
+    }
+  },
+
+  /**
+   * Makes the PARENT (rather than any of their kids) the active user on this device — purely
+   * local, no server call, since a signed-in parent isn't device-locked the way a kid is (they
+   * can be "active" — i.e. using their own chat — on more than one device at once; only a KID's
+   * identity is restricted to a single bound device). Clears any locally-active kid first so the
+   * two states stay mutually exclusive.
+   */
+  async activateParentOnDevice(): Promise<void> {
+    // deactivateKidOnThisDevice clears that kid's SERVER-side boundDeviceId too — without it, a
+    // kid who was active here would keep showing as "active on this device" everywhere (and stay
+    // wrongly blocked from being activated on any OTHER device) even after the parent takes over
+    // this device. A plain logoutKid() call afterward guarantees the LOCAL half of this always
+    // happens even if that server call fails (e.g. offline) — better to be locally consistent now
+    // and let the next successful sync reconcile the server side, than leave both parent and kid
+    // looking simultaneously "active" on this one device.
+    const previouslyActiveKid = await this.getKidProfile();
+    if (previouslyActiveKid) {
+      await this.deactivateKidOnThisDevice(previouslyActiveKid.cookieCode);
+    }
+
+    // Belt-and-suspenders check straight against the server's own kids[], not just this
+    // device's local KID_PROFILE cache — the two can drift (e.g. a kid claimed on a device whose
+    // local kids[] cache didn't have them yet used to leave KID_PROFILE unset even though the
+    // server-side boundDeviceId claim succeeded), which could leave a kid's Managed Users card
+    // stuck showing "Active on this device" even after a parent activated here. Only checks
+    // kids owned by THIS parent's own account — a kid active here via a different owning
+    // account (e.g. an invited relative) is already covered by the local check above.
+    const deviceId = await getDeviceId();
+    const email = await this.getParentEmail();
+    if (email) {
+      try {
+        const { data } = await supabase
+          .from('profiles')
+          .select('*')
+          .eq('cookie_code', `PARENT:${email}`)
+          .single();
+        if (data?.push_token) {
+          const payload = JSON.parse(data.push_token);
+          const boundKid = (payload.kids || []).find((k: any) => k.boundDeviceId === deviceId);
+          if (boundKid) {
+            await this.deactivateKidOnThisDevice(boundKid.cookieCode);
+          }
+        }
+      } catch (e) {
+        console.error("Error checking for a kid still bound to this device:", e);
+      }
+    }
+
+    await this.logoutKid();
+    await AsyncStorage.setItem(KEYS.PARENT_ACTIVE_ON_DEVICE, 'true');
+  },
+
+  async deactivateParentOnDevice(): Promise<void> {
+    await AsyncStorage.removeItem(KEYS.PARENT_ACTIVE_ON_DEVICE);
   },
 
   async syncKidProfileAndFriends(): Promise<KidProfile | null> {
@@ -1317,6 +1736,7 @@ export const StorageService = {
 
       // Find the parent profile that actually OWNS this kid
       let targetKid = null;
+      let owningRow: any = null;
       let owningPayload: any = null;
       if (data) {
         for (const parentProfile of data) {
@@ -1326,6 +1746,7 @@ export const StorageService = {
               const found = payload.kids.find((k: any) => k.cookieCode === active.cookieCode);
               if (found) {
                 targetKid = found;
+                owningRow = parentProfile;
                 owningPayload = payload;
                 break;
               }
@@ -1336,11 +1757,50 @@ export const StorageService = {
 
       if (!targetKid) {
         // The query succeeded but no parent row's kids[] contains this cookie code anymore —
-        // this kid was removed, or (see regenerateKidCode) their code was rotated out from under
-        // this exact device. Unlike a network hiccup, this genuinely means "you don't exist here
-        // anymore" — thrown so the caller can force a real logout instead of silently continuing
-        // to operate on stale local cache.
+        // this kid was removed. Unlike a network hiccup, this genuinely means "you don't exist
+        // here anymore" — thrown so the caller can force a real logout instead of silently
+        // continuing to operate on stale local cache.
         throw new Error('KID_NOT_FOUND');
+      }
+
+      // Self-heal: make sure this kid's OWN current owning parent is in their friends list, AND
+      // that an existing entry's name/avatarUrl match the parent's current ones.
+      // buildParentPushTokenPayload's own backfill only ever runs when the PARENT's device calls
+      // syncParentData() — merely activating a parent/kid on a device never does, so a kid added
+      // to a parent's kids[] by any other path (or whose parent hasn't synced since, e.g. they
+      // uploaded a new photo while this kid's own entry already existed) can be stuck without
+      // their own parent as a contact, or stuck showing a stale/missing photo, indefinitely.
+      // Checked on every focus-triggered sync here instead, so it corrects itself the next time
+      // the kid's own device looks, regardless of what the parent's device has or hasn't done.
+      const ownerCode = owningRow.cookie_code;
+      const existingFriends: any[] = targetKid.friends || [];
+      const existingOwnerEntry = existingFriends.find((f: any) => f.cookieCode === ownerCode);
+      const ownerName = owningPayload.parentName || ownerCode.replace('PARENT:', '');
+      const ownerAvatarEmoji = owningPayload.parentAvatarEmoji || '👪';
+      const isStale = existingOwnerEntry
+        && (existingOwnerEntry.name !== ownerName
+          || existingOwnerEntry.avatarUrl !== (owningPayload.parentAvatarUrl || undefined)
+          || existingOwnerEntry.avatarEmoji !== ownerAvatarEmoji);
+      if (!existingOwnerEntry || isStale) {
+        const updatedFriends = !existingOwnerEntry
+          ? [...existingFriends, {
+              id: Crypto.randomUUID(),
+              name: ownerName,
+              cookieCode: ownerCode,
+              avatarEmoji: ownerAvatarEmoji,
+              avatarUrl: owningPayload.parentAvatarUrl || undefined,
+            }]
+          : existingFriends.map((f: any) =>
+              f.cookieCode === ownerCode ? { ...f, name: ownerName, avatarEmoji: ownerAvatarEmoji, avatarUrl: owningPayload.parentAvatarUrl || undefined } : f
+            );
+        const kidIndex = owningPayload.kids.findIndex((k: any) => k.cookieCode === active.cookieCode);
+        owningPayload.kids[kidIndex] = { ...owningPayload.kids[kidIndex], friends: updatedFriends };
+        const { error: upsertError } = await supabase
+          .from('profiles')
+          .upsert({ cookie_code: owningRow.cookie_code, push_token: JSON.stringify(owningPayload), name: owningRow.name });
+        if (!upsertError) {
+          targetKid = owningPayload.kids[kidIndex];
+        }
       }
 
       const updatedProfile: KidProfile = {
@@ -1351,7 +1811,8 @@ export const StorageService = {
         callingDisabled: !!targetKid.callingDisabled,
         videoCallingDisabled: !!targetKid.videoCallingDisabled,
         photosDisabled: !!targetKid.photosDisabled,
-        drawingDisabled: !!targetKid.drawingDisabled
+        drawingDisabled: !!targetKid.drawingDisabled,
+        voiceMessagesDisabled: !!targetKid.voiceMessagesDisabled
       };
       await AsyncStorage.setItem(KEYS.KID_PROFILE, JSON.stringify(updatedProfile));
       if (targetKid.friends) {
@@ -1429,12 +1890,16 @@ export const StorageService = {
   },
 
   async addFriendToKidProfile(kidCookieCode: string, friendName: string, friendCookieCode: string): Promise<Friend> {
-    const randomEmoji = randomAvatarEmoji();
+    // A PARENT:-prefixed code here is an adult relative (see addRelativeToKidByEmail), not
+    // another kid buddy — a random food/animal emoji doesn't fit a grown-up. Plain "silhouette"
+    // default until/unless that relative picks one of their own adult avatar presets, which then
+    // reaches this entry the same self-healing way a kid's OWN parent's avatar does.
+    const isAdult = friendCookieCode.startsWith('PARENT:');
     const newFriend: Friend = {
       id: Crypto.randomUUID(),
       name: friendName,
       cookieCode: friendCookieCode,
-      avatarEmoji: randomEmoji
+      avatarEmoji: isAdult ? '👤' : randomAvatarEmoji()
     };
 
     // 1. Update friends list in the KIDS_LIST array
@@ -1499,6 +1964,15 @@ export const StorageService = {
     kidCookieCode: string,
     friendCookieCode: string
   ): Promise<{ status: 'paired' | 'pending'; avatarEmoji?: string }> {
+    // A relative adult (see addRelativeToKidByEmail) is addressed by their own PARENT:<email>
+    // code, not a CRUM code nested inside some other parent's kids[] — the lookup below would
+    // never find them there and would wrongly report "pending" forever. That relationship has no
+    // pending/request-response step to begin with (same as pairParentsViaQRCode), so it's always
+    // paired once it exists as a friend entry at all.
+    if (friendCookieCode.startsWith('PARENT:')) {
+      return { status: 'paired' };
+    }
+
     const { data, error } = await supabase
       .from('profiles')
       .select('*')
@@ -1634,6 +2108,189 @@ export const StorageService = {
     } catch (e) {
       console.error("Error in QR pairing:", e);
       return false;
+    }
+  },
+
+  /**
+   * Parent-to-parent counterpart to pairKidsViaQRCode, simpler because a parent's PARENT:<email>
+   * code IS their profiles row's own key — no .like() scan into a nested kids[] array needed,
+   * just a direct fetch of both rows. Writes both sides' top-level `friends` field (sibling to
+   * `kids`, not nested inside any one kid) in one call, always mutually — there's no one-sided
+   * "pending" state to track the way the kid's manual add-by-code path has.
+   */
+  async pairParentsViaQRCode(myEmail: string, myName: string, friendParentCode: string, friendName: string): Promise<boolean> {
+    try {
+      const myCode = `PARENT:${myEmail}`;
+      if (friendParentCode === myCode) return false;
+
+      const { data: myRow, error: myError } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('cookie_code', myCode)
+        .single();
+      const { data: friendRow, error: friendError } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('cookie_code', friendParentCode)
+        .single();
+
+      if (myError || !myRow || friendError || !friendRow) {
+        console.error("Could not find one or both parent profiles for pairing");
+        return false;
+      }
+
+      const myPayload = JSON.parse(myRow.push_token);
+      const friendPayload = JSON.parse(friendRow.push_token);
+
+      if (!(myPayload.friends || []).some((f: any) => f.cookieCode === friendParentCode)) {
+        myPayload.friends = [...(myPayload.friends || []), {
+          id: Crypto.randomUUID(),
+          name: friendName,
+          cookieCode: friendParentCode,
+          avatarEmoji: friendPayload.parentAvatarEmoji || '👤',
+          avatarUrl: friendPayload.parentAvatarUrl || undefined
+        }];
+      }
+      if (!(friendPayload.friends || []).some((f: any) => f.cookieCode === myCode)) {
+        friendPayload.friends = [...(friendPayload.friends || []), {
+          id: Crypto.randomUUID(),
+          name: myName,
+          cookieCode: myCode,
+          avatarEmoji: myPayload.parentAvatarEmoji || '👤',
+          avatarUrl: myPayload.parentAvatarUrl || undefined
+        }];
+      }
+
+      const { error: myUpsertError } = await supabase
+        .from('profiles')
+        .upsert({ cookie_code: myRow.cookie_code, push_token: JSON.stringify(myPayload), name: myRow.name });
+      if (myUpsertError) {
+        console.error("Failed to update my own parent profile:", myUpsertError);
+        return false;
+      }
+
+      const { error: friendUpsertError } = await supabase
+        .from('profiles')
+        .upsert({ cookie_code: friendRow.cookie_code, push_token: JSON.stringify(friendPayload), name: friendRow.name });
+      if (friendUpsertError) {
+        console.error("Failed to update the other parent's profile:", friendUpsertError);
+        return false;
+      }
+
+      return true;
+    } catch (e) {
+      console.error("Error in parent QR pairing:", e);
+      return false;
+    }
+  },
+
+  /**
+   * Connects a kid directly with a relative adult (grandparent, aunt/uncle, a second parent who
+   * doesn't manage this kid's account, etc.) by email — someone who isn't one of this kid's OWN
+   * registered parents, but should still be able to chat with them directly. Reuses the exact
+   * same mechanism as pairParentsViaQRCode: the relative's `PARENT:<email>` code goes straight
+   * into the kid's own `friends[]` (the same field used for cross-family kid buddies — the kid's
+   * existing chat screens address any friend by raw cookieCode already, so this needs no changes
+   * there beyond treating a `PARENT:`-prefixed friend as always paired, no request/response step).
+   *
+   * If the relative already has an account, both sides are linked immediately, mirroring
+   * pairParentsViaQRCode's always-symmetric write. If not, sends them a real invite email (via
+   * the invite-relative Edge Function, which needs the service-role key) and reflects the
+   * relationship on the kid's side right away regardless — the relative's own side completes
+   * later, via completePendingRelativeLinks, once they actually finish signing up.
+   */
+  async addRelativeToKidByEmail(
+    kidCookieCode: string,
+    kidName: string,
+    kidAvatarEmoji: string | undefined,
+    relativeEmail: string,
+    relativeDisplayName: string
+  ): Promise<'linked' | 'invited' | 'error'> {
+    try {
+      const relativeCode = `PARENT:${relativeEmail}`;
+
+      const { data: relativeRow } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('cookie_code', relativeCode)
+        .single();
+
+      if (relativeRow && relativeRow.push_token) {
+        const relativePayload = JSON.parse(relativeRow.push_token);
+        if (!(relativePayload.friends || []).some((f: any) => f.cookieCode === kidCookieCode)) {
+          relativePayload.friends = [...(relativePayload.friends || []), {
+            id: Crypto.randomUUID(),
+            name: kidName,
+            cookieCode: kidCookieCode,
+            avatarEmoji: kidAvatarEmoji
+          }];
+          const { error: upsertError } = await supabase
+            .from('profiles')
+            .upsert({ cookie_code: relativeRow.cookie_code, push_token: JSON.stringify(relativePayload), name: relativeRow.name });
+          if (upsertError) {
+            console.error("Failed to update relative's profile:", upsertError);
+            return 'error';
+          }
+        }
+
+        await this.addFriendToKidProfile(kidCookieCode, relativeDisplayName, relativeCode);
+        await this.syncParentData();
+        return 'linked';
+      }
+
+      const { error: inviteError } = await supabase.functions.invoke('invite-relative', {
+        body: { email: relativeEmail, kidCookieCode, kidName, kidAvatarEmoji, relativeDisplayName },
+      });
+      if (inviteError) {
+        console.error("Error inviting relative:", inviteError);
+        return 'error';
+      }
+
+      await this.addFriendToKidProfile(kidCookieCode, relativeDisplayName, relativeCode);
+      await this.syncParentData();
+      return 'invited';
+    } catch (e) {
+      console.error("Error adding relative to kid:", e);
+      return 'error';
+    }
+  },
+
+  /**
+   * Completes the OTHER side of addRelativeToKidByEmail's invited-relative case — called from
+   * gate.tsx right after a successful sign-in, whenever that account's own user_metadata still
+   * carries pendingRelativeLinks (set by the invite-relative Edge Function). Idempotent: only
+   * appends links not already present, so it's safe to call on every sign-in.
+   */
+  async completePendingRelativeLinks(
+    myEmail: string,
+    pendingLinks: { cookieCode: string; name: string; avatarEmoji?: string }[]
+  ): Promise<void> {
+    try {
+      const myCode = `PARENT:${myEmail}`;
+      const { data: myRow } = await supabase
+        .from('profiles')
+        .select('*')
+        .eq('cookie_code', myCode)
+        .single();
+      if (!myRow) return;
+
+      const payload = JSON.parse(myRow.push_token || '{}');
+      const existingFriends = payload.friends || [];
+      let changed = false;
+      for (const link of pendingLinks) {
+        if (!existingFriends.some((f: any) => f.cookieCode === link.cookieCode)) {
+          existingFriends.push({ id: Crypto.randomUUID(), name: link.name, cookieCode: link.cookieCode, avatarEmoji: link.avatarEmoji });
+          changed = true;
+        }
+      }
+      if (changed) {
+        payload.friends = existingFriends;
+        await supabase
+          .from('profiles')
+          .upsert({ cookie_code: myRow.cookie_code, push_token: JSON.stringify(payload), name: myRow.name });
+      }
+    } catch (e) {
+      console.error("Error completing pending relative links:", e);
     }
   },
 
