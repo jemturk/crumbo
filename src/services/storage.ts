@@ -65,6 +65,7 @@ const KEYS = {
   PARENT_NAME: 'crumbo_parent_name',
   PARENT_AVATAR_URL: 'crumbo_parent_avatar_url',
   PARENT_AVATAR_EMOJI: 'crumbo_parent_avatar_emoji',
+  PARENT_PUSH_TOKEN: 'crumbo_parent_push_token',
   IS_SUBSCRIBED: 'crumbo_is_subscribed',
   KID_PROFILE: 'crumbo_kid_profile',
   FRIENDS: 'crumbo_friends',
@@ -402,6 +403,35 @@ export const StorageService = {
       await AsyncStorage.setItem(KEYS.PARENT_AVATAR_EMOJI, emoji);
     } else {
       await AsyncStorage.removeItem(KEYS.PARENT_AVATAR_EMOJI);
+    }
+  },
+
+  async getParentPushToken(): Promise<string | null> {
+    return await AsyncStorage.getItem(KEYS.PARENT_PUSH_TOKEN);
+  },
+
+  async saveParentPushToken(token: string | null): Promise<void> {
+    if (token) {
+      await AsyncStorage.setItem(KEYS.PARENT_PUSH_TOKEN, token);
+    } else {
+      await AsyncStorage.removeItem(KEYS.PARENT_PUSH_TOKEN);
+    }
+  },
+
+  /**
+   * Adult counterpart to registerPushToken — a parent's `profiles.push_token` column already
+   * holds their whole kids/friends JSON payload (see buildParentPushTokenPayload), not a raw
+   * Expo token, so this can't just overwrite that column directly the way the kid version does.
+   * Instead the token is cached locally (like parentName/parentAvatarEmoji) and nested into the
+   * payload as a `pushToken` field on the next sync — see notify-call/index.ts's matching
+   * branch, which knows to look in either place depending on which kind of row it finds.
+   */
+  async registerParentPushToken(token: string | null): Promise<void> {
+    try {
+      await this.saveParentPushToken(token);
+      await this.syncParentData();
+    } catch (e) {
+      console.error("Error registering parent push token on Supabase", e);
     }
   },
 
@@ -1053,6 +1083,7 @@ export const StorageService = {
     const parentName = await this.getParentName();
     const parentAvatarUrl = await this.getParentAvatarUrl();
     const parentAvatarEmoji = await this.getParentAvatarEmoji();
+    const pushToken = await this.getParentPushToken();
     const parentCode = email ? `PARENT:${email}` : null;
     const parentDisplayName = parentName || email || 'Parent';
 
@@ -1151,6 +1182,7 @@ export const StorageService = {
       parentName,
       parentAvatarUrl,
       parentAvatarEmoji,
+      pushToken,
       friends: parentFriends
     });
   },

@@ -18,7 +18,7 @@ export default function ParentChatDashboard() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { s } = useDisplayScale();
-  const { rows, reload } = useContactList('adult');
+  const { rows, loading, reload } = useContactList('adult');
 
   const [myCode, setMyCode] = useState<string | null>(null);
   const [myName, setMyName] = useState<string | null>(null);
@@ -117,6 +117,7 @@ export default function ParentChatDashboard() {
         { key: 'logout', icon: 'log-out-outline', onPress: () => router.replace('/') },
       ]}
       rows={rows}
+      loading={loading}
       emptyEmoji="🍪"
       emptyTitle="No chats yet"
       emptySubtitle="Add a kid from the Parent Area to start chatting with them here, or tap the scan icon above to pair with another parent."

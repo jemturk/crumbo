@@ -4,7 +4,7 @@ import { useAppTheme } from '@/hooks/use-app-theme';
 import { useDisplayScale } from '@/hooks/use-display-scale';
 import { Ionicons } from '@expo/vector-icons';
 import React from 'react';
-import { FlatList, Platform, SafeAreaView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, FlatList, Platform, SafeAreaView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 export interface ContactListHeaderAction {
@@ -20,6 +20,9 @@ interface ContactListViewProps {
   headerTitle: string;
   headerActions: ContactListHeaderAction[];
   rows: ContactListRow[];
+  /** While true, an empty `rows` is treated as "still loading" rather than "no chats" — avoids
+   *  flashing the empty state before the first fetch has actually come back. */
+  loading?: boolean;
   emptyEmoji: string;
   emptyTitle: string;
   emptySubtitle: string;
@@ -38,6 +41,7 @@ export default function ContactListView({
   headerTitle,
   headerActions,
   rows,
+  loading,
   emptyEmoji,
   emptyTitle,
   emptySubtitle,
@@ -124,7 +128,11 @@ export default function ContactListView({
         </View>
       </View>
 
-      {rows.length === 0 ? (
+      {rows.length === 0 && loading ? (
+        <View style={styles.emptyContainer}>
+          <ActivityIndicator size="large" color={colors.primaryBtn} />
+        </View>
+      ) : rows.length === 0 ? (
         <View style={styles.emptyContainer}>
           <Text style={[styles.emptyEmoji, { fontSize: s(72) }]}>{emptyEmoji}</Text>
           <Text style={[styles.emptyText, { fontSize: s(22), color: colors.text }]}>{emptyTitle}</Text>

@@ -350,6 +350,7 @@ export function useConversation(params: UseConversationParams) {
     friendId: mode === 'kid' ? (friendId || '') : (otherCode || ''),
     friend: callFriendParty,
     profile: callProfile,
+    chatMode: mode === 'kid' ? 'kid' : 'adult',
     incomingParams: useMemo(
       () => ({ incomingCall, callType, roomName, friendName, acceptCallImmediately, callUUID, declineCall }),
       [incomingCall, callType, roomName, friendName, acceptCallImmediately, callUUID, declineCall]

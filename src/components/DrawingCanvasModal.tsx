@@ -96,12 +96,23 @@ export default function DrawingCanvasModal({ visible, onClose, onSend }: Drawing
       <GestureHandlerRootView style={{ flex: 1 }}>
         <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
           <View style={styles.header}>
-            <TouchableOpacity onPress={handleClose} style={styles.headerBtn}>
-              <Text style={[styles.headerBtnText, { color: colors.textSecondary, fontSize: s(15) }]}>Cancel</Text>
+            <TouchableOpacity
+              onPress={handleClose}
+              style={[styles.headerBtn, { backgroundColor: colors.actionBtnSecondaryBg, borderColor: colors.borderStrong, borderRadius: s(16), paddingHorizontal: s(14), paddingVertical: s(8) }]}
+            >
+              <Text style={[styles.headerBtnText, { color: colors.actionBtnSecondaryText, fontSize: s(14) }]}>Cancel</Text>
             </TouchableOpacity>
             <Text style={[styles.title, { color: colors.text, fontSize: s(17) }]}>Draw a Picture</Text>
-            <TouchableOpacity onPress={handleSend} style={styles.headerBtn} disabled={paths.length === 0}>
-              <Text style={[styles.headerBtnText, { color: paths.length === 0 ? colors.textSecondary : colors.primaryBtn, fontSize: s(15), fontWeight: '800' }]}>
+            <TouchableOpacity
+              onPress={handleSend}
+              style={[
+                styles.headerBtn,
+                { backgroundColor: colors.primaryBtn, borderColor: 'transparent', borderRadius: s(16), paddingHorizontal: s(16), paddingVertical: s(8) },
+                paths.length === 0 && styles.headerBtnDisabled,
+              ]}
+              disabled={paths.length === 0}
+            >
+              <Text style={[styles.headerBtnText, { color: colors.primaryBtnText, fontSize: s(14), fontWeight: '800' }]}>
                 Send
               </Text>
             </TouchableOpacity>
@@ -182,7 +193,10 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
   },
   headerBtn: {
-    padding: 4,
+    borderWidth: 2,
+  },
+  headerBtnDisabled: {
+    opacity: 0.5,
   },
   headerBtnText: {
     fontWeight: '700',

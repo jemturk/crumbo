@@ -12,7 +12,7 @@ import { Text } from 'react-native';
 export default function ChatDashboard() {
   const router = useRouter();
   const { s } = useDisplayScale();
-  const { rows, kidProfile } = useContactList('kid');
+  const { rows, kidProfile, loading } = useContactList('kid');
 
   const [settingsVisible, setSettingsVisible] = useState(false);
   const [avatarPickerVisible, setAvatarPickerVisible] = useState(false);
@@ -56,6 +56,7 @@ export default function ChatDashboard() {
         { key: 'logout', icon: 'log-out-outline', onPress: () => router.replace('/') },
       ]}
       rows={rows}
+      loading={loading}
       emptyEmoji="🧁"
       emptyTitle="Your cookie jar is empty!"
       emptySubtitle={`Ask your parent to add buddies for you using your Cookie Code: ${kidProfile?.cookieCode}`}

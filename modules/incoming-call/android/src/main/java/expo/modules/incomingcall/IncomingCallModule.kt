@@ -33,7 +33,8 @@ private const val RING_CHANNEL_ID = "incoming_calls_v1"
 private const val RING_TIMEOUT_MS = 45_000L
 
 private const val SCHEME = "crumbo" // app.json "scheme" — must stay in sync.
-private const val HOST = "chat" // expo-router route: app/chat/[friendId].tsx
+private const val HOST_KID = "chat" // expo-router route: app/chat/[friendId].tsx
+private const val HOST_ADULT = "parent" // expo-router route: app/parent/chat/[code].tsx (path "parent/chat/<code>")
 
 // Mirrors ShowFullScreenIncomingCallParams (modules/incoming-call/index.ts) — JS calls this
 // function with a single params object, so the Kotlin side must accept a matching Record
@@ -54,6 +55,9 @@ class ShowFullScreenIncomingCallParams : Record {
 
   @Field
   var roomName: String = ""
+
+  @Field
+  var chatMode: String = "kid"
 }
 
 /**
@@ -75,24 +79,33 @@ class IncomingCallModule : Module() {
     @Volatile
     private var activeInstance: IncomingCallModule? = null
 
-    private fun callInfo(callUUID: String, friendId: String, roomName: String, isVideo: Boolean, callerName: String) = mapOf(
+    private fun callInfo(callUUID: String, friendId: String, roomName: String, isVideo: Boolean, callerName: String, chatMode: String) = mapOf(
       "callUUID" to callUUID,
       "friendId" to friendId,
       "roomName" to roomName,
       "isVideo" to isVideo,
-      "callerName" to callerName
+      "callerName" to callerName,
+      "chatMode" to chatMode
     )
 
-    fun notifyAnswered(callUUID: String, friendId: String, roomName: String, isVideo: Boolean, callerName: String) {
-      activeInstance?.sendEvent("onAnswerFromNotification", callInfo(callUUID, friendId, roomName, isVideo, callerName))
+    fun notifyAnswered(callUUID: String, friendId: String, roomName: String, isVideo: Boolean, callerName: String, chatMode: String) {
+      activeInstance?.sendEvent("onAnswerFromNotification", callInfo(callUUID, friendId, roomName, isVideo, callerName, chatMode))
     }
 
-    fun notifyDeclined(callUUID: String, friendId: String, roomName: String, isVideo: Boolean, callerName: String) {
-      activeInstance?.sendEvent("onDeclineFromNotification", callInfo(callUUID, friendId, roomName, isVideo, callerName))
+    fun notifyDeclined(callUUID: String, friendId: String, roomName: String, isVideo: Boolean, callerName: String, chatMode: String) {
+      activeInstance?.sendEvent("onDeclineFromNotification", callInfo(callUUID, friendId, roomName, isVideo, callerName, chatMode))
     }
 
-    fun notifyMissed(callUUID: String, friendId: String, roomName: String, isVideo: Boolean, callerName: String) {
-      activeInstance?.sendEvent("onMissFromNotification", callInfo(callUUID, friendId, roomName, isVideo, callerName))
+    // True once OnCreate has run for a live module instance — i.e. the JS runtime is actually up
+    // and able to receive events, not just that the process technically exists (a BroadcastReceiver
+    // can run in a freshly spun-up process for a fully killed app without any of this ever having
+    // initialized). IncomingCallActionReceiver uses this to decide whether notifyDeclined() above
+    // is enough on its own, or whether it needs to fall back to launching the app so the decline
+    // signal still gets sent from a cold start.
+    fun isJsAlive(): Boolean = activeInstance != null
+
+    fun notifyMissed(callUUID: String, friendId: String, roomName: String, isVideo: Boolean, callerName: String, chatMode: String) {
+      activeInstance?.sendEvent("onMissFromNotification", callInfo(callUUID, friendId, roomName, isVideo, callerName, chatMode))
     }
 
     /**
@@ -138,7 +151,7 @@ class IncomingCallModule : Module() {
 
     Function("showFullScreenIncomingCall") { params: ShowFullScreenIncomingCallParams ->
       if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return@Function
-      showNotification(params.callUUID, params.callerName, params.isVideo, params.friendId, params.roomName)
+      showNotification(params.callUUID, params.callerName, params.isVideo, params.friendId, params.roomName, params.chatMode)
     }
 
     Function("dismiss") { callUUID: String ->
@@ -268,13 +281,20 @@ class IncomingCallModule : Module() {
     isVideo: Boolean,
     roomName: String,
     callerName: String,
+    chatMode: String,
     extraKey: String?,
     extraValue: String?
   ): Uri {
-    val builder = Uri.Builder()
-      .scheme(SCHEME)
-      .authority(HOST)
-      .appendPath(friendId)
+    // 'kid': crumbo://chat/<friendId> (app/chat/[friendId].tsx). 'adult': crumbo://parent/chat/<code>
+    // (app/parent/chat/[code].tsx) — an extra "chat" path segment ahead of the dynamic one, since
+    // that route lives one directory deeper than the kid one.
+    val builder = Uri.Builder().scheme(SCHEME)
+    if (chatMode == "adult") {
+      builder.authority(HOST_ADULT).appendPath("chat").appendPath(friendId)
+    } else {
+      builder.authority(HOST_KID).appendPath(friendId)
+    }
+    builder
       .appendQueryParameter("incomingCall", "true")
       .appendQueryParameter("callType", if (isVideo) "video" else "audio")
       .appendQueryParameter("roomName", roomName)
@@ -307,6 +327,7 @@ class IncomingCallModule : Module() {
     roomName: String,
     isVideo: Boolean,
     callerName: String,
+    chatMode: String,
     requestCode: Int
   ): PendingIntent {
     val intent = Intent(context, IncomingCallActionReceiver::class.java).apply {
@@ -316,6 +337,7 @@ class IncomingCallModule : Module() {
       putExtra(EXTRA_ROOM_NAME, roomName)
       putExtra(EXTRA_IS_VIDEO, isVideo)
       putExtra(EXTRA_CALLER_NAME, callerName)
+      putExtra(EXTRA_CHAT_MODE, chatMode)
     }
     val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
     return PendingIntent.getBroadcast(context, requestCode, intent, flags)
@@ -372,15 +394,15 @@ class IncomingCallModule : Module() {
     manager.createNotificationChannel(channel)
   }
 
-  private fun showNotification(callUUID: String, callerName: String, isVideo: Boolean, friendId: String, roomName: String) {
+  private fun showNotification(callUUID: String, callerName: String, isVideo: Boolean, friendId: String, roomName: String, chatMode: String) {
     clearStrayChannelNotifications()
     ensureRingChannel()
     val id = notificationId(callUUID)
 
-    val tapUri = buildDeepLink(friendId, callUUID, isVideo, roomName, callerName, null, null)
+    val tapUri = buildDeepLink(friendId, callUUID, isVideo, roomName, callerName, chatMode, null, null)
     val tapPendingIntent = activityPendingIntent(tapUri, id)
-    val answerPendingIntent = actionBroadcastPendingIntent(ACTION_ANSWER_CALL, callUUID, friendId, roomName, isVideo, callerName, id + 1)
-    val declinePendingIntent = actionBroadcastPendingIntent(ACTION_DECLINE_CALL, callUUID, friendId, roomName, isVideo, callerName, id + 2)
+    val answerPendingIntent = actionBroadcastPendingIntent(ACTION_ANSWER_CALL, callUUID, friendId, roomName, isVideo, callerName, chatMode, id + 1)
+    val declinePendingIntent = actionBroadcastPendingIntent(ACTION_DECLINE_CALL, callUUID, friendId, roomName, isVideo, callerName, chatMode, id + 2)
 
     val caller = Person.Builder()
       .setName(callerName)
@@ -417,7 +439,7 @@ class IncomingCallModule : Module() {
       // Loop the channel's ringtone until the notification is cancelled — the "ring", not a blip.
       notification.flags = notification.flags or Notification.FLAG_INSISTENT
       NotificationManagerCompat.from(context).notify(id, notification)
-      scheduleRingTimeout(callUUID, friendId, roomName, isVideo, callerName, id)
+      scheduleRingTimeout(callUUID, friendId, roomName, isVideo, callerName, chatMode, id)
     } catch (e: SecurityException) {
       // Notification permission not granted — nothing more we can do here; the realtime
       // call_signals subscription still delivers the call to a foregrounded JS instance.
@@ -437,9 +459,9 @@ class IncomingCallModule : Module() {
    * (SCHEDULE_EXACT_ALARM) — silencing an already-unanswered ring tolerates a few seconds of
    * Doze-deferral slack fine.
    */
-  private fun scheduleRingTimeout(callUUID: String, friendId: String, roomName: String, isVideo: Boolean, callerName: String, id: Int) {
+  private fun scheduleRingTimeout(callUUID: String, friendId: String, roomName: String, isVideo: Boolean, callerName: String, chatMode: String, id: Int) {
     val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as? AlarmManager ?: return
-    val pendingIntent = actionBroadcastPendingIntent(ACTION_RING_TIMEOUT, callUUID, friendId, roomName, isVideo, callerName, id + 3)
+    val pendingIntent = actionBroadcastPendingIntent(ACTION_RING_TIMEOUT, callUUID, friendId, roomName, isVideo, callerName, chatMode, id + 3)
     try {
       alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, System.currentTimeMillis() + RING_TIMEOUT_MS, pendingIntent)
     } catch (e: SecurityException) {
@@ -452,7 +474,8 @@ class IncomingCallModule : Module() {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O_MR1) return // setShowWhenLocked/setTurnScreenOn are API 27+
     val activity = appContext.currentActivity ?: return
 
-    val isIncomingCall = uri != null && uri.scheme == SCHEME && uri.host == HOST &&
+    val isIncomingCall = uri != null && uri.scheme == SCHEME &&
+      (uri.host == HOST_KID || uri.host == HOST_ADULT) &&
       uri.getQueryParameter("incomingCall") == "true"
     activity.setShowWhenLocked(isIncomingCall)
     activity.setTurnScreenOn(isIncomingCall)

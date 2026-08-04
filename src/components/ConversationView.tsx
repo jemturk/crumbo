@@ -4,6 +4,7 @@ import CallModal from '@/components/CallModal';
 import ChatMediaBubble, { parseMediaMessage } from '@/components/ChatMediaBubble';
 import CustomAlertModal from '@/components/CustomAlertModal';
 import DrawingCanvasModal from '@/components/DrawingCanvasModal';
+import PhotoConfirmModal from '@/components/PhotoConfirmModal';
 import VoiceMessageBubble from '@/components/VoiceMessageBubble';
 import VoiceRecorderModal from '@/components/VoiceRecorderModal';
 import { useAppTheme } from '@/hooks/use-app-theme';
@@ -75,6 +76,7 @@ export default function ConversationView({ conversation, onBack }: ConversationV
   const [attachmentMenuVisible, setAttachmentMenuVisible] = useState(false);
   const [drawingModalVisible, setDrawingModalVisible] = useState(false);
   const [voiceRecorderVisible, setVoiceRecorderVisible] = useState(false);
+  const [pendingPhotoUri, setPendingPhotoUri] = useState<string | null>(null);
 
   const flatListRef = useRef<FlatList>(null);
   const invertedMessages = useMemo(() => [...messages].reverse(), [messages]);
@@ -120,7 +122,7 @@ export default function ConversationView({ conversation, onBack }: ConversationV
     }
     const result = await ImagePicker.launchCameraAsync({ quality: 0.8 });
     if (result.canceled) return;
-    await sendImage(result.assets[0].uri);
+    setPendingPhotoUri(result.assets[0].uri);
   };
 
   const handleChooseFromGallery = async () => {
@@ -136,7 +138,15 @@ export default function ConversationView({ conversation, onBack }: ConversationV
     }
     const result = await ImagePicker.launchImageLibraryAsync({ quality: 0.8, mediaTypes: ['images'] });
     if (result.canceled) return;
-    await sendImage(result.assets[0].uri);
+    setPendingPhotoUri(result.assets[0].uri);
+  };
+
+  const handleCancelPendingPhoto = () => setPendingPhotoUri(null);
+
+  const handleConfirmSendPhoto = async () => {
+    const uri = pendingPhotoUri;
+    setPendingPhotoUri(null);
+    if (uri) await sendImage(uri);
   };
 
   const handleOpenDrawing = () => {
@@ -542,6 +552,12 @@ export default function ConversationView({ conversation, onBack }: ConversationV
         onClose={() => setVoiceRecorderVisible(false)}
         onSend={handleSendVoiceMessage}
         onError={(message) => conversation.showAlert('Error', message)}
+      />
+      <PhotoConfirmModal
+        visible={!!pendingPhotoUri}
+        uri={pendingPhotoUri}
+        onCancel={handleCancelPendingPhoto}
+        onSend={handleConfirmSendPhoto}
       />
       <AvatarPreviewModal
         visible={avatarPreviewVisible}

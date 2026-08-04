@@ -1,11 +1,19 @@
 import { requireOptionalNativeModule } from 'expo-modules-core';
 
+/**
+ * 'kid' addresses friendId as a local Friend id (crumbo://chat/<friendId>, app/chat/[friendId].tsx);
+ * 'adult' addresses it as the other party's raw cookie code (crumbo://parent/chat/<code>,
+ * app/parent/chat/[code].tsx) — see IncomingCallActionReceiver.kt's buildDeepLink.
+ */
+export type ChatMode = 'kid' | 'adult';
+
 export interface ShowFullScreenIncomingCallParams {
   callUUID: string;
   callerName: string;
   isVideo: boolean;
   friendId: string;
   roomName: string;
+  chatMode: ChatMode;
 }
 
 /** Payload for onAnswerFromNotification / onDeclineFromNotification — see IncomingCallActionReceiver.kt. */
@@ -15,6 +23,7 @@ export interface NotificationCallActionEvent {
   roomName: string;
   isVideo: boolean;
   callerName: string;
+  chatMode: ChatMode;
 }
 
 interface IncomingCallNativeModuleEvents {

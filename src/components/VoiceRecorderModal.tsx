@@ -47,9 +47,19 @@ export default function VoiceRecorderModal({ visible, onClose, onSend, onError }
   const [recordedUri, setRecordedUri] = useState<string | null>(null);
   const [recordedDuration, setRecordedDuration] = useState(0);
   const wasRecordingRef = useRef(false);
+  // recorderState.durationMillis resets to 0 the instant isRecording flips to false, before the
+  // effect below runs — so reading it there always captured 0. Track the last value seen WHILE
+  // still recording instead, so the 'recorded' phase shows the real length, not 0:00.
+  const lastDurationMillisRef = useRef(0);
 
   const player = useAudioPlayer(recordedUri);
   const playerStatus = useAudioPlayerStatus(player);
+
+  useEffect(() => {
+    if (recorderState.isRecording) {
+      lastDurationMillisRef.current = recorderState.durationMillis;
+    }
+  }, [recorderState.isRecording, recorderState.durationMillis]);
 
   // Catches BOTH a manual stop() and the native forDuration auto-stop at the 3-minute cap —
   // either way isRecording flips to false on its own, and this is what actually transitions the
@@ -59,7 +69,7 @@ export default function VoiceRecorderModal({ visible, onClose, onSend, onError }
       const uri = recorder.uri;
       if (uri) {
         setRecordedUri(uri);
-        setRecordedDuration(recorderState.durationMillis / 1000);
+        setRecordedDuration(lastDurationMillisRef.current / 1000);
         setPhase('recorded');
       } else {
         setPhase('idle');
@@ -148,12 +158,23 @@ export default function VoiceRecorderModal({ visible, onClose, onSend, onError }
       <View style={[styles.overlay, { backgroundColor: isDark ? 'rgba(0,0,0,0.6)' : 'rgba(78, 52, 46, 0.4)' }]}>
         <SafeAreaView style={[styles.card, { backgroundColor: colors.cardBg, borderColor: colors.borderStrong }]}>
           <View style={styles.header}>
-            <TouchableOpacity onPress={handleClose} style={styles.headerBtn}>
-              <Text style={[styles.headerBtnText, { color: colors.textSecondary, fontSize: s(15) }]}>Cancel</Text>
+            <TouchableOpacity
+              onPress={handleClose}
+              style={[styles.headerBtn, { backgroundColor: colors.actionBtnSecondaryBg, borderColor: colors.borderStrong, borderRadius: s(16), paddingHorizontal: s(14), paddingVertical: s(8) }]}
+            >
+              <Text style={[styles.headerBtnText, { color: colors.actionBtnSecondaryText, fontSize: s(14) }]}>Cancel</Text>
             </TouchableOpacity>
             <Text style={[styles.title, { color: colors.text, fontSize: s(17) }]}>Voice Message</Text>
-            <TouchableOpacity onPress={handleSend} style={styles.headerBtn} disabled={phase !== 'recorded'}>
-              <Text style={[styles.headerBtnText, { color: phase !== 'recorded' ? colors.textSecondary : colors.primaryBtn, fontSize: s(15), fontWeight: '800' }]}>
+            <TouchableOpacity
+              onPress={handleSend}
+              style={[
+                styles.headerBtn,
+                { backgroundColor: colors.primaryBtn, borderColor: 'transparent', borderRadius: s(16), paddingHorizontal: s(16), paddingVertical: s(8) },
+                phase !== 'recorded' && styles.headerBtnDisabled,
+              ]}
+              disabled={phase !== 'recorded'}
+            >
+              <Text style={[styles.headerBtnText, { color: colors.primaryBtnText, fontSize: s(14), fontWeight: '800' }]}>
                 Send
               </Text>
             </TouchableOpacity>
@@ -168,9 +189,6 @@ export default function VoiceRecorderModal({ visible, onClose, onSend, onError }
                 >
                   <Ionicons name="mic" size={s(36)} color={colors.primaryBtnText} />
                 </TouchableOpacity>
-                <Text style={[styles.hint, { color: colors.textSecondary, fontSize: s(14), marginTop: s(16) }]}>
-                  Tap to start recording (up to 3 minutes)
-                </Text>
               </>
             )}
 
@@ -199,10 +217,18 @@ export default function VoiceRecorderModal({ visible, onClose, onSend, onError }
                   <Ionicons name={playerStatus.playing ? 'pause' : 'play'} size={s(30)} color={colors.primaryBtnText} />
                 </TouchableOpacity>
                 <Text style={[styles.timer, { color: colors.text, fontSize: s(20), marginTop: s(16) }]}>
-                  {formatDuration(playerStatus.playing || playerStatus.currentTime > 0 ? playerStatus.currentTime : recordedDuration)}
+                  {formatDuration(playerStatus.didJustFinish ? 0 : playerStatus.currentTime)}
+                  <Text style={{ fontSize: s(15), color: colors.textSecondary }}> / {formatDuration(recordedDuration)}</Text>
                 </Text>
-                <TouchableOpacity onPress={handleReRecord} style={{ marginTop: s(16) }}>
-                  <Text style={[styles.hint, { color: colors.textSecondary, fontSize: s(14), textDecorationLine: 'underline' }]}>Re-record</Text>
+                <Text style={[styles.hint, { color: colors.textSecondary, fontSize: s(13), marginTop: s(4) }]}>
+                  Tap to {playerStatus.playing ? 'pause' : 'preview'}
+                </Text>
+                <TouchableOpacity
+                  onPress={handleReRecord}
+                  style={[styles.rerecordBtn, { borderColor: colors.borderStrong, borderRadius: s(14), paddingHorizontal: s(14), paddingVertical: s(8), marginTop: s(16) }]}
+                >
+                  <Ionicons name="refresh" size={s(14)} color={colors.textSecondary} />
+                  <Text style={[styles.hint, { color: colors.textSecondary, fontSize: s(14) }]}>Re-record</Text>
                 </TouchableOpacity>
               </>
             )}
@@ -232,7 +258,10 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
   },
   headerBtn: {
-    padding: 4,
+    borderWidth: 2,
+  },
+  headerBtnDisabled: {
+    opacity: 0.5,
   },
   headerBtnText: {
     fontWeight: '700',
@@ -257,5 +286,11 @@ const styles = StyleSheet.create({
   },
   timer: {
     fontWeight: '900',
+  },
+  rerecordBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    borderWidth: 2,
   },
 });

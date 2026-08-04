@@ -26,6 +26,9 @@ interface UseContactListResult {
   rows: ContactListRow[];
   /** Only populated in kid mode — the adult list has no equivalent single "own profile". */
   kidProfile: KidProfile | null;
+  /** True only until the first reload() completes — lets the empty state wait for real data
+   *  instead of flashing "No chats yet" while rows is still just its initial []. */
+  loading: boolean;
   reload: () => Promise<void>;
 }
 
@@ -37,6 +40,7 @@ export function useContactList(mode: ContactListMode): UseContactListResult {
   const router = useRouter();
   const [rows, setRows] = useState<ContactListRow[]>([]);
   const [kidProfile, setKidProfile] = useState<KidProfile | null>(null);
+  const [loading, setLoading] = useState(true);
 
   // loadKidRows only runs once per useFocusEffect mount (see below) — reading pairingStatuses
   // state directly there would always see the initial {}, never a later update. A ref keeps
@@ -83,22 +87,20 @@ export function useContactList(mode: ContactListMode): UseContactListResult {
 
     const friendsList = await StorageService.getFriends();
 
-    // Last message + pairing status per friend, both a Supabase round-trip — run concurrently
-    // rather than one friend at a time.
+    // Last message + pairing status per friend, each its own Supabase round-trip — run every
+    // friend AND both of their calls concurrently (rather than one friend at a time, and within
+    // a friend, one call at a time) so total wait time is one round-trip, not friends × 2.
     const perFriend = await Promise.all(
       friendsList.map(async (friend) => {
-        const msgs = await StorageService.getMessages(friend.id);
+        const [msgs, statusResult] = await Promise.all([
+          StorageService.getMessages(friend.id),
+          StorageService.checkFriendPairingStatus(profile.cookieCode, friend.cookieCode).catch((e) => {
+            console.error('Error checking pairing status for', friend.id, e);
+            return null;
+          }),
+        ]);
         const lastMsg = msgs.length > 0 ? msgs[msgs.length - 1] : null;
-        let status: 'paired' | 'pending' | undefined;
-        let avatarEmoji: string | undefined;
-        try {
-          const result = await StorageService.checkFriendPairingStatus(profile.cookieCode, friend.cookieCode);
-          status = result.status;
-          avatarEmoji = result.avatarEmoji;
-        } catch (e) {
-          console.error('Error checking pairing status for', friend.id, e);
-        }
-        return { friend, lastMsg, status, avatarEmoji };
+        return { friend, lastMsg, status: statusResult?.status, avatarEmoji: statusResult?.avatarEmoji };
       })
     );
 
@@ -165,6 +167,16 @@ export function useContactList(mode: ContactListMode): UseContactListResult {
       return;
     }
 
+    // Registers this device's push token against the parent identity so an incoming call can
+    // wake a backgrounded/killed app the same way it already does for a kid — see
+    // registerParentPushToken's own comment for why this can't just reuse registerPushToken.
+    registerForPushNotificationsAsync().then(async (token) => {
+      await StorageService.registerParentPushToken(token);
+    }).catch(async (err) => {
+      console.error("Parent push registration failed, syncing profile without push notifications", err);
+      await StorageService.registerParentPushToken(null);
+    });
+
     const contacts = await StorageService.getParentContacts();
     const withPreviews = await Promise.all(
       contacts.map(async (c) => {
@@ -189,10 +201,13 @@ export function useContactList(mode: ContactListMode): UseContactListResult {
     })));
   }, [goToContact, router]);
 
-  const reload = useCallback(
-    () => (mode === 'kid' ? loadKidRows() : loadAdultRows()),
-    [mode, loadKidRows, loadAdultRows]
-  );
+  const reload = useCallback(async () => {
+    try {
+      await (mode === 'kid' ? loadKidRows() : loadAdultRows());
+    } finally {
+      setLoading(false);
+    }
+  }, [mode, loadKidRows, loadAdultRows]);
 
   useFocusEffect(
     useCallback(() => {
@@ -217,5 +232,5 @@ export function useContactList(mode: ContactListMode): UseContactListResult {
     }, [mode, reload])
   );
 
-  return { rows, kidProfile, reload };
+  return { rows, kidProfile, loading, reload };
 }

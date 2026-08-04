@@ -2,9 +2,9 @@ import * as Notifications from 'expo-notifications';
 import * as TaskManager from 'expo-task-manager';
 import { Alert, AppState, Platform } from 'react-native';
 import RNCallKeep from 'react-native-callkeep';
-import IncomingCall from '../../modules/incoming-call';
+import IncomingCall, { ChatMode } from '../../modules/incoming-call';
 import { CallSignalPayload, parseCallSignalText, sendCallSignal } from './callSignaling';
-import { StorageService } from './storage';
+import { KidProfile, StorageService } from './storage';
 
 const BACKGROUND_NOTIFICATION_TASK = 'CRUMBO_CALLKEEP_BACKGROUND_NOTIFICATION_TASK';
 
@@ -35,6 +35,31 @@ interface PendingCallInfo {
   roomName?: string;
   isVideo: boolean;
   callerName: string;
+  chatMode: ChatMode;
+}
+
+type ActiveIdentity =
+  | { mode: 'kid'; profile: KidProfile }
+  | { mode: 'adult'; myCode: string }
+  | { mode: 'none' };
+
+/**
+ * Which identity (kid or parent) is active on this device — mirrors _layout.tsx's own
+ * kid-vs-parent check. The background task and the notification-response listener both need
+ * this: a kid's contacts are resolved via the local Friend list (see resolveFriendId below), but
+ * a parent's are addressed directly by raw cookie code, with a different route
+ * (/parent/chat/[code] vs /chat/[friendId]) and message-logging call (sendParentMessage vs
+ * sendCallLogMessage) on top.
+ */
+async function resolveActiveIdentity(): Promise<ActiveIdentity> {
+  const profile = await StorageService.getKidProfile();
+  if (profile) return { mode: 'kid', profile };
+  const parentActive = await StorageService.isParentActiveOnDevice();
+  if (parentActive) {
+    const myCode = await StorageService.getMyParentCode();
+    if (myCode) return { mode: 'adult', myCode };
+  }
+  return { mode: 'none' };
 }
 
 const getNotificationData = (notification: any) => {
@@ -96,6 +121,30 @@ Notifications.setNotificationHandler({
     };
   },
 });
+
+/**
+ * Foreground-only counterpart to the native missed-call notification posted directly by
+ * IncomingCallActionReceiver.kt's ring-timeout branch. That native path only ever runs when
+ * showIncomingCallUi skipped posting the ringing notification because the app was NOT active —
+ * i.e. it never fires while foregrounded — so this is the one case it can't cover, and the two
+ * can never double-post for the same missed call. `targetId` is a kid friendId or an adult's
+ * raw cookie code (same duality as chatMode everywhere else).
+ */
+export async function notifyMissedCallForeground(callerName: string, isVideo: boolean, chatMode: ChatMode, targetId: string): Promise<void> {
+  if (AppState.currentState !== 'active') return;
+  try {
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: isVideo ? 'Missed video call' : 'Missed voice call',
+        body: callerName,
+        data: { kind: 'missed_call', chatMode, targetId },
+      },
+      trigger: null,
+    });
+  } catch (e) {
+    console.error('[CallKeep] Failed to post missed-call notification:', e);
+  }
+}
 
 class CallKeepManager {
   public initialized = false;
@@ -176,7 +225,8 @@ class CallKeepManager {
     name: string,
     friendId?: string,
     roomName?: string,
-    isVideo?: boolean
+    isVideo?: boolean,
+    chatMode: ChatMode = 'kid'
   ) {
     console.log('[CRUMBO_DIAG] displayIncomingCall ENTER uuid=', uuid);
     if (Platform.OS !== 'android') return;
@@ -186,7 +236,7 @@ class CallKeepManager {
     // Self-managed mode's displayIncomingCall doesn't show anything on its own — it just
     // registers the call with Telecom and fires `showIncomingCallUi`, which we handle
     // below by presenting our own notification. Stash the details that event won't carry.
-    this.pendingCallInfo.set(uuid, { friendId, roomName, isVideo: !!isVideo, callerName: name });
+    this.pendingCallInfo.set(uuid, { friendId, roomName, isVideo: !!isVideo, callerName: name, chatMode });
 
     try {
       console.log(`[CallKeep] Displaying incoming call: ${uuid} for ${name}`);
@@ -287,6 +337,7 @@ class CallKeepManager {
           isVideo: !!info?.isVideo,
           friendId: info?.friendId || '',
           roomName: info?.roomName || '',
+          chatMode: info?.chatMode || 'kid',
         });
       } catch (err) {
         console.error('[CallKeep] Failed to show self-managed incoming call UI:', err);
@@ -404,9 +455,24 @@ class CallKeepManager {
   private registerNotificationListeners() {
     Notifications.addNotificationResponseReceivedListener(async (response) => {
       const { actionIdentifier, notification } = response;
-      const payload = getCallSignalPayload(notification);
       const { data } = getNotificationData(notification);
+      const isDefaultTap = actionIdentifier === Notifications.DEFAULT_ACTION_IDENTIFIER || actionIdentifier === 'default';
 
+      // A tap on the (separate, non-ringing) missed-call notification — see
+      // use-call.ts's missCall() foreground path, which is the only thing that ever posts one
+      // through expo-notifications (the killed/backgrounded path posts it natively in Kotlin,
+      // bypassing this listener entirely). Distinct payload shape from a call signal, checked
+      // first so it can't fall through into the call-response handling below.
+      if (isDefaultTap && data?.kind === 'missed_call') {
+        const { router } = require('expo-router');
+        const path = data.chatMode === 'adult'
+          ? `/parent/chat/${encodeURIComponent(data.targetId as string)}`
+          : `/chat/${data.targetId}`;
+        router.push({ pathname: path });
+        return;
+      }
+
+      const payload = getCallSignalPayload(notification);
       const callUUID = data?.callUUID ?? payload?.callUUID;
       const isVideo = payload?.isVideo;
       const roomName = payload?.roomName;
@@ -414,9 +480,10 @@ class CallKeepManager {
       const friendName = payload?.friendName ?? payload?.callerName;
       const senderCode = data?.sender_code || data?.senderCode || data?.sender?.code || data?.sender?.sender_code;
 
-      const resolvedFriendId = await this.resolveFriendId(friendId, senderCode);
-
-      const isDefaultTap = actionIdentifier === Notifications.DEFAULT_ACTION_IDENTIFIER || actionIdentifier === 'default';
+      const identity = await resolveActiveIdentity();
+      const targetId = identity.mode === 'kid' ? await this.resolveFriendId(friendId, senderCode) : senderCode;
+      const routePath = (id: string) =>
+        identity.mode === 'adult' ? `/parent/chat/${encodeURIComponent(id)}` : `/chat/${id}`;
 
       if (actionIdentifier === 'answer') {
         if (callUUID) {
@@ -424,10 +491,10 @@ class CallKeepManager {
         }
         if (this.onAnswerCallback) {
           this.onAnswerCallback();
-        } else if (resolvedFriendId) {
+        } else if (targetId) {
           const { router } = require('expo-router');
           router.push({
-            pathname: `/chat/${resolvedFriendId}`,
+            pathname: routePath(targetId),
             params: {
               incomingCall: 'true',
               acceptCallImmediately: 'true',
@@ -444,29 +511,41 @@ class CallKeepManager {
         }
         if (this.onRejectCallback) {
           this.onRejectCallback(true);
-        } else if (resolvedFriendId) {
+        } else if (targetId && senderCode) {
           // Background decline (app was not in a call screen): signal the caller and log it.
-          const { StorageService } = require('./storage');
-          const profile = await StorageService.getKidProfile();
-          if (profile && senderCode) {
+          const callLogText = isVideo ? '[CALL_LOG:MISSED_VIDEO]' : '[CALL_LOG:MISSED_AUDIO]';
+          const declineUUID = (callUUID as string) || Math.random().toString(36).substring(2, 15);
+          if (identity.mode === 'kid') {
             await sendCallSignal({
               type: 'DECLINE_CALL',
-              callUUID: (callUUID as string) || Math.random().toString(36).substring(2, 15),
-              senderCode: profile.cookieCode,
-              senderName: profile.name,
+              callUUID: declineUUID,
+              senderCode: identity.profile.cookieCode,
+              senderName: identity.profile.name,
               receiverCode: senderCode,
               roomName,
               isVideo,
             });
+            await StorageService.sendCallLogMessage(targetId, callLogText);
+          } else if (identity.mode === 'adult') {
+            const myCode = identity.myCode;
+            const myName = (await StorageService.getParentName()) || myCode.replace('PARENT:', '');
+            await sendCallSignal({
+              type: 'DECLINE_CALL',
+              callUUID: declineUUID,
+              senderCode: myCode,
+              senderName: myName,
+              receiverCode: senderCode,
+              roomName,
+              isVideo,
+            });
+            await StorageService.sendParentMessage(myCode, senderCode, callLogText);
           }
-          const callLogText = isVideo ? '[CALL_LOG:MISSED_VIDEO]' : '[CALL_LOG:MISSED_AUDIO]';
-          await StorageService.sendCallLogMessage(resolvedFriendId, callLogText);
         }
       } else if (isDefaultTap) {
-        if (resolvedFriendId) {
+        if (targetId) {
           const { router } = require('expo-router');
           router.push({
-            pathname: `/chat/${resolvedFriendId}`,
+            pathname: routePath(targetId),
             params: {
               incomingCall: 'true',
               callType: isVideo ? 'video' : 'audio',
@@ -521,30 +600,38 @@ TaskManager.defineTask(BACKGROUND_NOTIFICATION_TASK, async ({ data, error }) => 
   if (payload.type === 'START_AUDIO_CALL' || payload.type === 'START_VIDEO_CALL') {
     const callUUID = payload.callUUID || Math.random().toString(36).substring(2, 15);
     const isVideo = !!payload.isVideo;
-    // Push signals never carry friendId (it's a per-device id the sender/server don't know) —
-    // resolve it from sender_code so the notification's deep link routes to the right chat.
-    const resolvedFriendId = await callKeepManager.resolveFriendId(payload.friendId, payload.senderCode);
+
+    const identity = await resolveActiveIdentity();
+    if (identity.mode === 'none') return; // nobody active on this device — nothing to ring for
+
+    // Push signals never carry a local friendId (it's a per-device id the sender/server don't
+    // know) — a kid resolves it from sender_code via the local Friend list; a parent addresses
+    // contacts directly by raw cookie code, same as subscribeToParentCallSignals.
+    const targetId = identity.mode === 'kid'
+      ? await callKeepManager.resolveFriendId(payload.friendId, payload.senderCode)
+      : payload.senderCode;
 
     // A parent's lock blocks the call before it ever rings, even when this device's JS process
     // was fully killed and only woken by this push — see bug #3 in BUGS.md. Reads the locally
     // cached profile since a live server round-trip isn't worth the latency/reliability risk in
     // a background push handler; use-call.ts's own foreground check (and the chat screens'
-    // periodic re-sync) cover the case where that cache is stale.
-    const profile = await StorageService.getKidProfile();
-    const isLocked = profile && (isVideo ? profile.videoCallingDisabled : profile.callingDisabled);
+    // periodic re-sync) cover the case where that cache is stale. Adults are never locked, so
+    // this whole branch is naturally skipped in adult mode.
+    const isLocked = identity.mode === 'kid' && (isVideo ? identity.profile.videoCallingDisabled : identity.profile.callingDisabled);
     if (isLocked && payload.senderCode) {
+      const profile = (identity as { mode: 'kid'; profile: KidProfile }).profile;
       sendCallSignal({
         type: 'DECLINE_CALL',
         callUUID,
-        senderCode: profile!.cookieCode,
-        senderName: profile!.name,
+        senderCode: profile.cookieCode,
+        senderName: profile.name,
         receiverCode: payload.senderCode,
         roomName: payload.roomName,
         isVideo,
       }).catch((e) => console.error('[CallKeep Background Task] Failed to auto-decline locked call:', e));
-      if (resolvedFriendId) {
+      if (targetId) {
         const logText = isVideo ? `[CALL_LOG:MISSED_VIDEO:INCOMING:${callUUID}]` : `[CALL_LOG:MISSED_AUDIO:INCOMING:${callUUID}]`;
-        StorageService.sendCallLogMessage(resolvedFriendId, logText).catch((e) =>
+        StorageService.sendCallLogMessage(targetId, logText).catch((e) =>
           console.error('[CallKeep Background Task] Failed to log locked call:', e)
         );
       }
@@ -555,9 +642,10 @@ TaskManager.defineTask(BACKGROUND_NOTIFICATION_TASK, async ({ data, error }) => 
       callUUID,
       payload.callerName ?? payload.friendName ?? 'Crumbo Friend',
       payload.callerName ?? payload.friendName ?? 'Crumbo Friend',
-      resolvedFriendId,
+      targetId,
       payload.roomName,
       payload.isVideo,
+      identity.mode,
     );
     return;
   }

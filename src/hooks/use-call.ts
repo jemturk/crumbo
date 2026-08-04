@@ -1,5 +1,5 @@
 import { agoraManager, fetchAgoraToken, resolveCallUid } from '@/services/agora';
-import { callKeepManager } from '@/services/callkeep';
+import { callKeepManager, notifyMissedCallForeground } from '@/services/callkeep';
 import {
   CallSignalPayload,
   isStartSignal,
@@ -10,7 +10,7 @@ import { Message } from '@/services/storage';
 import { Camera } from 'expo-camera';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState, Vibration } from 'react-native';
-import IncomingCall from '../../modules/incoming-call';
+import IncomingCall, { ChatMode } from '../../modules/incoming-call';
 
 // Minimal shapes this hook actually needs — KidProfile and Friend both satisfy CallerIdentity/
 // CallParty structurally already (extra fields are just ignored), so chat/[friendId].tsx keeps
@@ -55,6 +55,10 @@ interface UseCallOptions {
   friendId: string;
   friend: CallParty | null;
   profile: CallerIdentity | null;
+  // Which conversation route an incoming call's native notification should deep-link into —
+  // see modules/incoming-call/index.ts's ChatMode doc. Defaults to 'kid' so chat/[friendId].tsx
+  // (the only caller before parent/chat/[code].tsx existed) needs no changes.
+  chatMode?: ChatMode;
   incomingParams: IncomingCallParams;
   clearIncomingParams: () => void;
   onCallLog: (msg: Message) => void;
@@ -96,6 +100,7 @@ export function useCall({
   friendId,
   friend,
   profile,
+  chatMode = 'kid',
   incomingParams,
   clearIncomingParams,
   onCallLog,
@@ -345,7 +350,10 @@ export function useCall({
     const logText = callTypeVideo ? `[CALL_LOG:MISSED_VIDEO:INCOMING:${uuid}]` : `[CALL_LOG:MISSED_AUDIO:INCOMING:${uuid}]`;
     await teardown('CANCEL_CALL', logText);
     if (isMounted.current) setCallModalVisible(false);
-  }, [callTypeVideo, teardown]);
+    // No-ops unless the app is actually foregrounded — the backgrounded/killed case is covered
+    // natively instead (see notifyMissedCallForeground's own doc).
+    notifyMissedCallForeground(friend?.name || 'Someone', callTypeVideo, chatMode, friendId).catch(() => {});
+  }, [callTypeVideo, teardown, friend, chatMode, friendId]);
 
   const endCall = useCallback(async () => {
     const wasRinging = callStatusRef.current === 'ringing';
@@ -423,7 +431,7 @@ export function useCall({
         ringHandledByNotification.current = AppState.currentState !== 'active';
 
         const callerName = payload.callerName || friend?.name || 'Friend';
-        callKeepManager.displayIncomingCall(uuid, callerName, callerName, friendId, payload.roomName || '', isVideo);
+        callKeepManager.displayIncomingCall(uuid, callerName, callerName, friendId, payload.roomName || '', isVideo, chatMode);
         if (!ringHandledByNotification.current) {
           Vibration.vibrate([1000, 1000], true);
         }
@@ -479,7 +487,7 @@ export function useCall({
         return;
       }
     },
-    [profile, friend, friendId, showAlert, writeCallLog]
+    [profile, friend, friendId, chatMode, showAlert, writeCallLog]
   );
 
   // Subscribe to call signals for this conversation.
@@ -522,7 +530,7 @@ export function useCall({
       // If the native CallKeep UI hasn't already been shown (no callUUID from push), show it.
       if (!callUUID) {
         const displayName = friendName || friend?.name || 'Crumbo Friend';
-        callKeepManager.displayIncomingCall(uuid, displayName, displayName, friendId, roomName || '', isVideo);
+        callKeepManager.displayIncomingCall(uuid, displayName, displayName, friendId, roomName || '', isVideo, chatMode);
       }
 
       if (acceptCallImmediately === 'true') {
@@ -555,7 +563,7 @@ export function useCall({
     handleIncomingParams().catch((err) => {
       console.error('[useCall] Failed to handle incoming call params:', err);
     });
-  }, [incomingParams, friend, profile, friendId, clearIncomingParams, startAgoraCall]);
+  }, [incomingParams, friend, profile, friendId, chatMode, clearIncomingParams, startAgoraCall]);
 
   // --- Quick decline from the native full-screen notification's Decline action -----
   // A cold start races loadChat()'s async profile/friend fetch, so — unlike the accept

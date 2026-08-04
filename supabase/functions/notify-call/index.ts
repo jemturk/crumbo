@@ -77,8 +77,12 @@ Deno.serve(async (req) => {
       auth: { persistSession: false },
     });
 
-    // The receiver's raw Expo push token is stored on their own profile row
-    // (StorageService.registerPushToken upserts { cookie_code, push_token }).
+    // The receiver's raw Expo push token is stored on their own profile row — for a kid row
+    // that's StorageService.registerPushToken's plain upsert (push_token IS the token). A
+    // parent/relative row's push_token column instead holds their whole kids/friends JSON
+    // payload (see buildParentPushTokenPayload), with the token nested at payload.pushToken
+    // (StorageService.registerParentPushToken) — so a row can't be identified by shape alone
+    // without trying both.
     const { data: profile, error } = await supabase
       .from("profiles")
       .select("push_token")
@@ -90,8 +94,24 @@ Deno.serve(async (req) => {
       return json({ delivered: false, reason: "no push token for receiver" });
     }
 
-    const expoToken: string = profile.push_token;
-    if (!expoToken.startsWith("ExponentPushToken") && !expoToken.startsWith("ExpoPushToken")) {
+    const raw: string = profile.push_token;
+    const isRawToken = (value: string) => value.startsWith("ExponentPushToken") || value.startsWith("ExpoPushToken");
+
+    let expoToken: string | null = null;
+    if (isRawToken(raw)) {
+      expoToken = raw;
+    } else {
+      try {
+        const payload = JSON.parse(raw);
+        if (typeof payload?.pushToken === "string" && isRawToken(payload.pushToken)) {
+          expoToken = payload.pushToken;
+        }
+      } catch {
+        // Not JSON either — genuinely not a token.
+      }
+    }
+
+    if (!expoToken) {
       return json({ delivered: false, reason: "receiver row has no Expo push token" });
     }
 
