@@ -123,15 +123,11 @@ Notifications.setNotificationHandler({
 });
 
 /**
- * Foreground-only counterpart to the native missed-call notification posted directly by
- * IncomingCallActionReceiver.kt's ring-timeout branch. That native path only ever runs when
- * showIncomingCallUi skipped posting the ringing notification because the app was NOT active —
- * i.e. it never fires while foregrounded — so this is the one case it can't cover, and the two
- * can never double-post for the same missed call. `targetId` is a kid friendId or an adult's
+ * Shared by notifyMissedCallForeground below and the background task's own missed-call branch
+ * (the caller-hangs-up-before-45s-timeout case) — `targetId` is a kid friendId or an adult's
  * raw cookie code (same duality as chatMode everywhere else).
  */
-export async function notifyMissedCallForeground(callerName: string, isVideo: boolean, chatMode: ChatMode, targetId: string): Promise<void> {
-  if (AppState.currentState !== 'active') return;
+async function postMissedCallNotification(callerName: string, isVideo: boolean, chatMode: ChatMode, targetId: string): Promise<void> {
   try {
     await Notifications.scheduleNotificationAsync({
       content: {
@@ -144,6 +140,49 @@ export async function notifyMissedCallForeground(callerName: string, isVideo: bo
   } catch (e) {
     console.error('[CallKeep] Failed to post missed-call notification:', e);
   }
+}
+
+/**
+ * Foreground-only counterpart to the native missed-call notification posted directly by
+ * IncomingCallActionReceiver.kt's ring-timeout branch. That native path only ever runs when
+ * showIncomingCallUi skipped posting the ringing notification because the app was NOT active —
+ * i.e. it never fires while foregrounded — so this is the one case it can't cover, and the two
+ * can never double-post for the same missed call.
+ */
+export async function notifyMissedCallForeground(callerName: string, isVideo: boolean, chatMode: ChatMode, targetId: string): Promise<void> {
+  if (AppState.currentState !== 'active') return;
+  await postMissedCallNotification(callerName, isVideo, chatMode, targetId);
+}
+
+/**
+ * Writes the [CALL_LOG:MISSED_*:INCOMING:...] entry and posts a missed-call notification for a
+ * call that arrived and was still ringing (native notification not yet answered/declined) when
+ * a terminal signal (typically END_CALL — a caller hanging up their own still-ringing outgoing
+ * call sends plain END_CALL, same as ending a connected one) arrived for it. Only called once
+ * IncomingCall.isShowing(callUUID) has confirmed this device never resolved the call itself —
+ * that check also means this is naturally never reached on the caller's own device (that native
+ * notification only ever exists for an incoming call).
+ */
+async function logMissedIncomingCall(payload: CallSignalPayload): Promise<void> {
+  if (!payload.callUUID) return;
+  const identity = await resolveActiveIdentity();
+  if (identity.mode === 'none') return;
+
+  const targetId = identity.mode === 'kid'
+    ? await callKeepManager.resolveFriendId(payload.friendId, payload.senderCode)
+    : payload.senderCode;
+  if (!targetId) return;
+
+  const isVideo = !!payload.isVideo;
+  const callerName = payload.callerName ?? payload.friendName ?? 'Crumbo Friend';
+  const logText = isVideo ? `[CALL_LOG:MISSED_VIDEO:INCOMING:${payload.callUUID}]` : `[CALL_LOG:MISSED_AUDIO:INCOMING:${payload.callUUID}]`;
+
+  if (identity.mode === 'kid') {
+    await StorageService.sendCallLogMessage(targetId, logText);
+  } else {
+    await StorageService.sendParentMessage(identity.myCode, targetId, logText);
+  }
+  await postMissedCallNotification(callerName, isVideo, identity.mode, targetId);
 }
 
 class CallKeepManager {
@@ -472,6 +511,23 @@ class CallKeepManager {
         return;
       }
 
+      // A tap on a regular chat message push — see send_push_notification()'s `data` field
+      // (supabase/migrations/20260805000001_add_chat_message_push_routing.sql). Without this,
+      // tapping the notification just launched the app to whatever screen it last had open,
+      // since there was nothing here to route on. senderCode is the OTHER party's cookie code
+      // regardless of which side received the push, same duality as chatMode everywhere else.
+      if (isDefaultTap && data?.kind === 'chat_message' && data?.senderCode) {
+        const { router } = require('expo-router');
+        const identity = await resolveActiveIdentity();
+        if (identity.mode === 'adult') {
+          router.push({ pathname: `/parent/chat/${encodeURIComponent(data.senderCode as string)}` });
+        } else if (identity.mode === 'kid') {
+          const friendId = await this.resolveFriendId(undefined, data.senderCode as string);
+          if (friendId) router.push({ pathname: `/chat/${friendId}` });
+        }
+        return;
+      }
+
       const payload = getCallSignalPayload(notification);
       const callUUID = data?.callUUID ?? payload?.callUUID;
       const isVideo = payload?.isVideo;
@@ -651,14 +707,36 @@ TaskManager.defineTask(BACKGROUND_NOTIFICATION_TASK, async ({ data, error }) => 
   }
 
   if (payload.type === 'DECLINE_CALL' || payload.type === 'END_CALL' || payload.type === 'CANCEL_CALL') {
+    // Must run BEFORE the dismiss below (which cancels this same notification, so isShowing
+    // would already read false afterward) — see logMissedIncomingCall's own doc for why this
+    // check is what scopes it to a genuine missed call.
+    if (payload.callUUID && IncomingCall?.isShowing(payload.callUUID)) {
+      await logMissedIncomingCall(payload).catch((e) =>
+        console.error('[CallKeep Background Task] Failed to log/notify missed call:', e)
+      );
+    }
+
     try {
       const RNCallKeepLocal = require('react-native-callkeep').default;
       RNCallKeepLocal.endAllCalls();
     } catch (err) {
       console.error('[CallKeep Background Task] Failed to end all calls:', err);
     }
-    // The CallStyle notification rings insistently until cancelled — when the caller hangs
-    // up while this app is killed/backgrounded, this is what silences it.
+    // dismissAllNotificationsAsync() alone does NOT silence the still-ringing CallStyle
+    // notification — same NotificationManager.cancelAll()-skips-ongoing-notifications issue
+    // documented on CallKeepManager.endCall(), which targets IncomingCall.dismiss(uuid)
+    // instead. Without it here too, a caller cancelling early while this app is
+    // backgrounded/killed kept ringing for the full 45s AlarmManager backstop regardless —
+    // this stops it immediately, and (via IncomingCallModule.dismiss's own
+    // cancelRingTimeout call) cancels that backstop so it can't also post a late/duplicate
+    // missed-call notification for a call that was actually just cancelled.
+    if (payload.callUUID) {
+      try {
+        IncomingCall?.dismiss(payload.callUUID);
+      } catch (err) {
+        console.error('[CallKeep Background Task] Failed to dismiss native call notification:', err);
+      }
+    }
     await Notifications.dismissAllNotificationsAsync().catch(() => {});
   }
 });

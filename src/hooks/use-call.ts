@@ -444,10 +444,24 @@ export function useCall({
         return;
       }
 
-      if (payload.type === 'DECLINE_CALL' || payload.type === 'CANCEL_CALL') {
+      if (payload.type === 'DECLINE_CALL' || payload.type === 'CANCEL_CALL' || payload.type === 'END_CALL') {
         if (payload.callUUID) {
           if (handledTerminalUuids.current.has(payload.callUUID)) return; // duplicate delivery
           handledTerminalUuids.current.add(payload.callUUID);
+        }
+        // A terminal signal from the OTHER party arriving while this device was still ringing
+        // on an incoming call it never acted on is a genuine missed call — nothing else logs
+        // this. declineCall()/missCall() only cover this device resolving its own incoming
+        // call; a caller hanging up early (endCall() while their own call is still ringing)
+        // sends plain END_CALL, same as ending a connected call, so there's no other signal
+        // type to distinguish it by. Only reachable for END_CALL in practice today (DECLINE/
+        // CANCEL are only ever sent BY the receiver, so the receiver never receives one back
+        // for its own incoming call) but keyed off local ringing state rather than signal type
+        // so it stays correct if that ever changes.
+        if (callDirectionRef.current === 'incoming' && callStatusRef.current === 'ringing') {
+          const uuid = activeCallUuidRef.current || payload.callUUID || '';
+          writeCallLog(payload.isVideo ? `[CALL_LOG:MISSED_VIDEO:INCOMING:${uuid}]` : `[CALL_LOG:MISSED_AUDIO:INCOMING:${uuid}]`);
+          notifyMissedCallForeground(friend?.name || 'Someone', !!payload.isVideo, chatMode, friendId).catch(() => {});
         }
         Vibration.cancel();
         setCallStatus('ended');
@@ -458,26 +472,6 @@ export function useCall({
         }
         if (payload.type === 'DECLINE_CALL') {
           showAlert('Call Busy', `${friend?.name || 'Friend'} is busy right now.`);
-        }
-        agoraManager.destroy();
-        setRemoteUid(null);
-        setTimeout(() => {
-          if (isMounted.current) setCallModalVisible(false);
-        }, 1500);
-        return;
-      }
-
-      if (payload.type === 'END_CALL') {
-        if (payload.callUUID) {
-          if (handledTerminalUuids.current.has(payload.callUUID)) return; // duplicate delivery
-          handledTerminalUuids.current.add(payload.callUUID);
-        }
-        Vibration.cancel();
-        setCallStatus('ended');
-        const uuid = activeCallUuidRef.current;
-        if (uuid) {
-          callKeepManager.endCall(uuid);
-          setActiveCallUuid(null);
         }
         agoraManager.destroy();
         setRemoteUid(null);
