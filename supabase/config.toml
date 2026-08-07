@@ -159,15 +159,24 @@ enabled = true
 # app.json's "scheme": "crumbo") is the closest equivalent. Left at the CLI's 127.0.0.1:3000
 # placeholder, every auth email's link (confirmation, recovery) redirects to that unreachable
 # localhost address instead of back into the app — parent/gate.tsx's signUp/resetPasswordForEmail
-# calls pass `crumbo://parent/gate` / `crumbo://reset-password` as redirectTo, but Supabase
-# silently ignores any redirectTo not on this allow-list and falls back to site_url.
+# calls pass `redirectTo: VERIFY_EMAIL_REDIRECT_URL` / `RESET_PASSWORD_REDIRECT_URL` (the
+# verify-email / reset-password-web edge functions — see their own header comments), but Supabase
+# silently ignores any redirectTo not on the allow-list below and falls back to site_url instead —
+# which is exactly why an unlisted redirectTo shows as the browser trying to open `crumbo://`
+# directly, skipping the edge function's own device-appropriate handling entirely.
 site_url = "crumbo://"
 # A list of *exact* URLs that auth providers are permitted to redirect to post authentication.
 # NOTE: this file only governs a local `supabase start` emulator. The live project's allow-list is
-# configured separately, in the Supabase Dashboard under Authentication → URL Configuration — add
-# crumbo://parent/gate there too, or the confirmation email will keep landing on the unconfigured
-# fallback instead of the sign-in screen.
-additional_redirect_urls = ["crumbo://", "crumbo://parent/gate", "crumbo://reset-password"]
+# configured separately, in the Supabase Dashboard under Authentication → URL Configuration (or via
+# `supabase config push`) — needs the two function URLs below added there too, or confirmation/
+# recovery emails keep landing on the site_url fallback instead of the web page.
+additional_redirect_urls = [
+  "crumbo://",
+  "crumbo://parent/gate",
+  "crumbo://reset-password",
+  "https://yohavizbbgchhrasuiay.supabase.co/functions/v1/verify-email",
+  "https://yohavizbbgchhrasuiay.supabase.co/functions/v1/reset-password-web",
+]
 # How long tokens are valid for, in seconds. Defaults to 3600 (1 hour), maximum 604,800 (1 week).
 jwt_expiry = 3600
 # JWT issuer URL. If not set, defaults to auth.external_url.

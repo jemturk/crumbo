@@ -1,3 +1,4 @@
+import ModalHeader from '@/components/ModalHeader';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { useDisplayScale } from '@/hooks/use-display-scale';
 import { Ionicons } from '@expo/vector-icons';
@@ -155,30 +156,14 @@ export default function VoiceRecorderModal({ visible, onClose, onSend, onError }
 
   return (
     <Modal animationType="slide" visible={visible} onRequestClose={handleClose} transparent>
-      <View style={[styles.overlay, { backgroundColor: isDark ? 'rgba(0,0,0,0.6)' : 'rgba(78, 52, 46, 0.4)' }]}>
+      <TouchableOpacity
+        style={[styles.overlay, { backgroundColor: isDark ? 'rgba(0,0,0,0.6)' : 'rgba(78, 52, 46, 0.4)' }]}
+        activeOpacity={1}
+        onPress={handleClose}
+      >
+        <TouchableOpacity activeOpacity={1} onPress={() => {}} style={styles.cardWrapper}>
         <SafeAreaView style={[styles.card, { backgroundColor: colors.cardBg, borderColor: colors.borderStrong }]}>
-          <View style={styles.header}>
-            <TouchableOpacity
-              onPress={handleClose}
-              style={[styles.headerBtn, { backgroundColor: colors.actionBtnSecondaryBg, borderColor: colors.borderStrong, borderRadius: s(16), paddingHorizontal: s(14), paddingVertical: s(8) }]}
-            >
-              <Text style={[styles.headerBtnText, { color: colors.actionBtnSecondaryText, fontSize: s(14) }]}>Cancel</Text>
-            </TouchableOpacity>
-            <Text style={[styles.title, { color: colors.text, fontSize: s(17) }]}>Voice Message</Text>
-            <TouchableOpacity
-              onPress={handleSend}
-              style={[
-                styles.headerBtn,
-                { backgroundColor: colors.primaryBtn, borderColor: 'transparent', borderRadius: s(16), paddingHorizontal: s(16), paddingVertical: s(8) },
-                phase !== 'recorded' && styles.headerBtnDisabled,
-              ]}
-              disabled={phase !== 'recorded'}
-            >
-              <Text style={[styles.headerBtnText, { color: colors.primaryBtnText, fontSize: s(14), fontWeight: '800' }]}>
-                Send
-              </Text>
-            </TouchableOpacity>
-          </View>
+          <ModalHeader title="Voice Message" onCancel={handleClose} onSend={handleSend} sendDisabled={phase !== 'recorded'} />
 
           <View style={[styles.content, { paddingVertical: s(32) }]}>
             {phase === 'idle' && (
@@ -234,7 +219,8 @@ export default function VoiceRecorderModal({ visible, onClose, onSend, onError }
             )}
           </View>
         </SafeAreaView>
-      </View>
+        </TouchableOpacity>
+      </TouchableOpacity>
     </Modal>
   );
 }
@@ -244,30 +230,14 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'flex-end',
   },
+  cardWrapper: {
+    width: '100%',
+  },
   card: {
     borderTopLeftRadius: 28,
     borderTopRightRadius: 28,
     borderWidth: 2,
     borderBottomWidth: 0,
-  },
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-  },
-  headerBtn: {
-    borderWidth: 2,
-  },
-  headerBtnDisabled: {
-    opacity: 0.5,
-  },
-  headerBtnText: {
-    fontWeight: '700',
-  },
-  title: {
-    fontWeight: '800',
   },
   content: {
     alignItems: 'center',

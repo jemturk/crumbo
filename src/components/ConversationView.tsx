@@ -383,14 +383,14 @@ export default function ConversationView({ conversation, onBack }: ConversationV
           <Ionicons name="arrow-back" size={s(26)} color={colors.text} />
         </TouchableOpacity>
 
-        <View style={[styles.headerInfo, { flexDirection: 'row', justifyContent: 'center', gap: s(8) }]}>
+        <View style={[styles.headerInfo, { flexDirection: 'row', justifyContent: 'flex-start', gap: s(8), marginLeft: s(12) }]}>
           {otherParty && (
             <TouchableOpacity onPress={() => setAvatarPreviewVisible(true)}>
               {otherParty.isAdult ? (
-                <AdultAvatar uri={otherParty.avatarUrl} emoji={otherParty.avatarEmoji} size={s(32)} />
+                <AdultAvatar uri={otherParty.avatarUrl} emoji={otherParty.avatarEmoji} size={s(44)} />
               ) : (
-                <View style={{ width: s(32), height: s(32), borderRadius: s(16), backgroundColor: isDark ? colors.inputBg : '#FFFDF0', borderWidth: 2, borderColor: colors.borderStrong, justifyContent: 'center', alignItems: 'center' }}>
-                  <Text style={{ fontSize: s(16) }}>{otherParty.avatarEmoji || '🍪'}</Text>
+                <View style={{ width: s(44), height: s(44), borderRadius: s(22), backgroundColor: isDark ? colors.inputBg : '#FFFDF0', borderWidth: 2, borderColor: colors.borderStrong, justifyContent: 'center', alignItems: 'center' }}>
+                  <Text style={{ fontSize: s(22) }}>{otherParty.avatarEmoji || '🍪'}</Text>
                 </View>
               )}
             </TouchableOpacity>

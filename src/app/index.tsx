@@ -1,6 +1,6 @@
 import React, { useState, useCallback } from 'react';
 import { View, Text, StyleSheet, Image, TouchableOpacity, SafeAreaView, ActivityIndicator, Platform, KeyboardAvoidingView, ScrollView } from 'react-native';
-import { useRouter, useFocusEffect } from 'expo-router';
+import { useRouter, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import Constants from 'expo-constants';
 import { StorageService, KidProfile } from '@/services/storage';
 import { Ionicons } from '@expo/vector-icons';
@@ -21,6 +21,11 @@ const APP_VERSION = Constants.expoConfig?.version;
 
 export default function WelcomeScreen() {
   const router = useRouter();
+  // Set only by a chat header's logout button (see chat/index.tsx and parent/chat/index.tsx) —
+  // marks a deliberate hop back to this screen rather than a normal cold launch, so checkAppState
+  // below knows to show the "Welcome back"/"Hey, {name}" card for the still-active kid or parent
+  // instead of auto-redirecting straight back into their chat list.
+  const { fromLogout } = useLocalSearchParams<{ fromLogout?: string }>();
   const { s } = useDisplayScale();
   const { theme, colors, isDark } = useAppTheme();
   const insets = useSafeAreaInsets();
@@ -67,7 +72,8 @@ export default function WelcomeScreen() {
   useFocusEffect(
     useCallback(() => {
       checkAppState();
-    }, [])
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [fromLogout])
   );
 
   const checkAppState = async () => {
@@ -76,20 +82,48 @@ export default function WelcomeScreen() {
       const isSub = await StorageService.isSubscribed();
       const kidProf = await StorageService.getKidProfile();
       const isParentActive = await StorageService.isParentActiveOnDevice();
+
+      // An active kid or parent on this device skips straight to their chat list — there's
+      // nothing to decide here (activating/deactivating is a Parent Area action only, see the
+      // card's own comment below), so landing on this screen first is just friction. replace()
+      // (not push()) so this screen isn't left sitting in history — back-navigation shouldn't
+      // return here. EXCEPT when they just came from a chat header's logout button (fromLogout)
+      // — that's a deliberate hop back to this screen specifically to show the "Welcome back"
+      // card below, not something to immediately redirect away from again.
+      if (kidProf && !fromLogout) {
+        router.replace('/chat');
+        return;
+      }
+      if (isParentActive && !fromLogout) {
+        router.replace('/parent/chat');
+        return;
+      }
+
       const seenOnboarding = await StorageService.hasSeenOnboarding();
       setSubscribed(isSub);
-      setProfile(kidProf);
       setParentActive(isParentActive);
-      if (isParentActive) {
-        const pName = await StorageService.getParentName();
-        const pEmail = await StorageService.getParentEmail();
-        setParentName(pName || pEmail);
-        const pAvatarUrl = await StorageService.getParentAvatarUrl();
-        setParentAvatarUrl(pAvatarUrl);
-        const pAvatarEmoji = await StorageService.getParentAvatarEmoji();
-        setParentAvatarEmoji(pAvatarEmoji);
+      if (kidProf) {
+        setProfile(kidProf);
+        setOnboardingVisible(false);
+      } else if (isParentActive) {
+        setProfile(null);
+        const [name, email, avatarUrl, avatarEmoji] = await Promise.all([
+          StorageService.getParentName(),
+          StorageService.getParentEmail(),
+          StorageService.getParentAvatarUrl(),
+          StorageService.getParentAvatarEmoji(),
+        ]);
+        setParentName(name || email);
+        setParentAvatarUrl(avatarUrl);
+        setParentAvatarEmoji(avatarEmoji);
+        setOnboardingVisible(false);
+      } else {
+        // Neither is active (else we'd already have redirected or hit a branch above) — reset
+        // any stale state from a previous run (e.g. a parent who was just deactivated via Parent
+        // Area) and show the "no one's active here yet" card.
+        setProfile(null);
+        setOnboardingVisible(!seenOnboarding);
       }
-      setOnboardingVisible(!seenOnboarding);
     } catch (e) {
       console.error("Error loading app state", e);
     } finally {
@@ -193,27 +227,16 @@ export default function WelcomeScreen() {
                 <Text style={[styles.cardEmoji, { fontSize: s(48) }]}>🍪</Text>
                 <Text style={[styles.cardTitle, { fontSize: s(22), color: colors.text }]}>No one&apos;s active here yet</Text>
                 <Text style={[styles.cardText, { fontSize: s(14), lineHeight: s(20), color: colors.textSecondary }]}>
-                  Ask a parent to open the Parent Area below and activate a user on this device.
+                  Ask a parent to sign in to the Parents Area and activate a user on this device.
                 </Text>
               </View>
             )}
           </View>
 
-          {/* Footer Area for parents — flex:1 fills the remaining space below the card, with the
-              button centered in that space (so it sits midway between the card and the privacy
-              text below) rather than the two being stacked tight against each other. */}
-          <View style={[styles.footer, { flex: 1, justifyContent: 'space-between' }]}>
-            <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', width: '100%' }}>
-              <TouchableOpacity
-                style={[styles.secondaryButton, { backgroundColor: colors.primaryBtnFaded, borderColor: colors.primaryBtn }]}
-                onPress={() => router.push('/parent/gate')}
-              >
-                {/* Text was colors.primaryBtn (golden yellow) on primaryBtnFaded (pale yellow) —
-                    low-contrast yellow-on-near-white-yellow. colors.text is the same dark brown
-                    used for headings, readable against the faded background in both themes. */}
-                <Text style={[styles.secondaryButtonText, { fontSize: s(15), color: colors.text }]}>Parents Area (Setup & Controls)</Text>
-              </TouchableOpacity>
-            </View>
+          {/* Footer Area — flex:1 fills the remaining space below the card, with the privacy
+              promise and version centered in that space (where the "Parents Area" button used
+              to sit) rather than pinned to the bottom edge. */}
+          <View style={[styles.footer, { flex: 1, justifyContent: 'center' }]}>
             <Text style={[styles.privacyText, { fontSize: s(11), color: colors.textSecondary }]}>
               Privacy promise: No child data will ever be collected or stored.
             </Text>
@@ -228,6 +251,8 @@ export default function WelcomeScreen() {
       <AppSettingsModal
         visible={settingsVisible}
         onClose={() => setSettingsVisible(false)}
+        showParentControlsOption={true}
+        onParentControlsPress={() => router.push('/parent/gate')}
       />
       <OnboardingModal
         visible={onboardingVisible}
@@ -250,7 +275,6 @@ export default function WelcomeScreen() {
         visible={parentAvatarPicker.pickerVisible}
         currentAvatarUrl={parentAvatarUrl}
         currentAvatarEmoji={parentAvatarEmoji}
-        uploading={parentAvatarPicker.uploading}
         onClose={parentAvatarPicker.closePicker}
         onTakePhoto={parentAvatarPicker.takePhoto}
         onChooseFromGallery={parentAvatarPicker.chooseFromGallery}
@@ -358,16 +382,6 @@ const styles = StyleSheet.create({
     width: '100%',
     alignItems: 'center',
     gap: 12,
-  },
-  secondaryButton: {
-    borderRadius: 20,
-    borderWidth: 1.5,
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-    alignItems: 'center',
-  },
-  secondaryButtonText: {
-    fontWeight: '800',
   },
   privacyText: {
     fontSize: 11,

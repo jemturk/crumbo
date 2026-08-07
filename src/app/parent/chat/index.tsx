@@ -1,5 +1,6 @@
 import AdultAvatar from '@/components/AdultAvatar';
 import AdultAvatarPickerModal from '@/components/AdultAvatarPickerModal';
+import AppSettingsModal from '@/components/AppSettingsModal';
 import ContactListView from '@/components/ContactListView';
 import CustomAlertModal, { AlertButton } from '@/components/CustomAlertModal';
 import { useContactList } from '@/hooks/use-contact-list';
@@ -32,6 +33,7 @@ export default function ParentChatDashboard() {
   const [qrCodeVisible, setQrCodeVisible] = useState(false);
   const [qrScannerVisible, setQrScannerVisible] = useState(false);
   const qrScanHandledRef = useRef(false);
+  const [settingsVisible, setSettingsVisible] = useState(false);
 
   const [alertConfig, setAlertConfig] = useState<{
     visible: boolean;
@@ -111,10 +113,12 @@ export default function ParentChatDashboard() {
       headerActions={[
         { key: 'qr-show', icon: 'qr-code-outline', onPress: () => setQrCodeVisible(true) },
         { key: 'qr-scan', icon: 'scan-outline', onPress: handleStartQRScan },
-        // Just navigates back to the gate — doesn't deactivate anything. Deactivating a parent
-        // on this device is a Parent Area action only now, to prevent an accidental one-tap
-        // logout here; the active profile is still right there next time you tap Enter.
-        { key: 'logout', icon: 'log-out-outline', onPress: () => router.replace('/') },
+        { key: 'settings', icon: 'settings', onPress: () => setSettingsVisible(true) },
+        // Just navigates to the gate — doesn't deactivate anything. Deactivating a parent on
+        // this device is a Parent Area action only, to prevent an accidental one-tap logout
+        // here. The fromLogout param tells '/' to show its "Welcome back" card instead of its
+        // normal auto-redirect straight back here for a still-active parent (see app/index.tsx).
+        { key: 'logout', icon: 'log-out-outline', onPress: () => router.replace('/?fromLogout=1') },
       ]}
       rows={rows}
       loading={loading}
@@ -129,11 +133,16 @@ export default function ParentChatDashboard() {
         buttons={alertConfig.buttons}
         onClose={() => setAlertConfig(prev => ({ ...prev, visible: false }))}
       />
+      <AppSettingsModal
+        visible={settingsVisible}
+        onClose={() => setSettingsVisible(false)}
+        showParentControlsOption={true}
+        onParentControlsPress={() => router.push('/parent/dashboard')}
+      />
       <AdultAvatarPickerModal
         visible={avatarPicker.pickerVisible}
         currentAvatarUrl={myAvatarUrl}
         currentAvatarEmoji={myAvatarEmoji}
-        uploading={avatarPicker.uploading}
         onClose={avatarPicker.closePicker}
         onTakePhoto={avatarPicker.takePhoto}
         onChooseFromGallery={avatarPicker.chooseFromGallery}
@@ -143,8 +152,8 @@ export default function ParentChatDashboard() {
 
       {/* Show My QR Code Modal */}
       <Modal animationType="fade" transparent visible={qrCodeVisible} onRequestClose={() => setQrCodeVisible(false)}>
-        <View style={styles.modalOverlayCentered}>
-          <View style={styles.qrCodeDialog}>
+        <TouchableOpacity style={styles.modalOverlayCentered} activeOpacity={1} onPress={() => setQrCodeVisible(false)}>
+          <TouchableOpacity activeOpacity={1} onPress={() => {}} style={styles.qrCodeDialog}>
             <Text style={styles.dialogTitle}>Your Parent QR Code</Text>
             <Text style={styles.qrCodeSubtitle}>Let another parent scan this to pair with you!</Text>
 
@@ -163,8 +172,8 @@ export default function ParentChatDashboard() {
             <TouchableOpacity style={styles.dialogCloseBtn} onPress={() => setQrCodeVisible(false)}>
               <Text style={styles.dialogCloseBtnText}>Close</Text>
             </TouchableOpacity>
-          </View>
-        </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
       </Modal>
 
       {/* QR Scanner Modal */}

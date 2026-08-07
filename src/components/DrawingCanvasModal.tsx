@@ -1,3 +1,4 @@
+import ModalHeader from '@/components/ModalHeader';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { useDisplayScale } from '@/hooks/use-display-scale';
 import { Ionicons } from '@expo/vector-icons';
@@ -95,28 +96,7 @@ export default function DrawingCanvasModal({ visible, onClose, onSend }: Drawing
           gestures need their own root view local to this modal too. */}
       <GestureHandlerRootView style={{ flex: 1 }}>
         <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
-          <View style={styles.header}>
-            <TouchableOpacity
-              onPress={handleClose}
-              style={[styles.headerBtn, { backgroundColor: colors.actionBtnSecondaryBg, borderColor: colors.borderStrong, borderRadius: s(16), paddingHorizontal: s(14), paddingVertical: s(8) }]}
-            >
-              <Text style={[styles.headerBtnText, { color: colors.actionBtnSecondaryText, fontSize: s(14) }]}>Cancel</Text>
-            </TouchableOpacity>
-            <Text style={[styles.title, { color: colors.text, fontSize: s(17) }]}>Draw a Picture</Text>
-            <TouchableOpacity
-              onPress={handleSend}
-              style={[
-                styles.headerBtn,
-                { backgroundColor: colors.primaryBtn, borderColor: 'transparent', borderRadius: s(16), paddingHorizontal: s(16), paddingVertical: s(8) },
-                paths.length === 0 && styles.headerBtnDisabled,
-              ]}
-              disabled={paths.length === 0}
-            >
-              <Text style={[styles.headerBtnText, { color: colors.primaryBtnText, fontSize: s(14), fontWeight: '800' }]}>
-                Send
-              </Text>
-            </TouchableOpacity>
-          </View>
+          <ModalHeader title="Draw a Picture" onCancel={handleClose} onSend={handleSend} sendDisabled={paths.length === 0} />
 
           <View style={styles.canvasWrapper}>
             <ViewShot ref={viewShotRef} options={{ format: 'png', result: 'tmpfile' }}>
@@ -184,25 +164,6 @@ export default function DrawingCanvasModal({ visible, onClose, onSend }: Drawing
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-  },
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-  },
-  headerBtn: {
-    borderWidth: 2,
-  },
-  headerBtnDisabled: {
-    opacity: 0.5,
-  },
-  headerBtnText: {
-    fontWeight: '700',
-  },
-  title: {
-    fontWeight: '800',
   },
   canvasWrapper: {
     flex: 1,

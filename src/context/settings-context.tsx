@@ -9,6 +9,11 @@ export const ThemeColors = {
   light: {
     bg: '#FFFDF3',
     cardBg: '#FFFFFF',
+    // Contact list row backgrounds — subtle warm-vs-cool tint so a kid's cookie jar and a
+    // grown-up's chats are distinguishable at a glance without a loud color change (see
+    // ContactListView's isAdultAvatar-based row background).
+    cardBgKid: '#FFFCF2',
+    cardBgAdult: '#F7F9FF',
     text: '#4E342E',
     textSecondary: '#8D6E63',
     border: '#FFF5D1',
@@ -29,6 +34,8 @@ export const ThemeColors = {
   dark: {
     bg: '#1A120B',
     cardBg: '#2C1E15',
+    cardBgKid: '#2E2013',
+    cardBgAdult: '#1E2130',
     text: '#FFFDF3',
     textSecondary: '#D4A373',
     border: '#3D2A1D',

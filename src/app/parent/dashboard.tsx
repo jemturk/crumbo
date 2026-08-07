@@ -1224,7 +1224,8 @@ export default function ParentDashboard() {
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           style={styles.modalOverlay}
         >
-          <View style={[styles.modalContent, { paddingBottom: insets.bottom > 0 ? insets.bottom + s(24) : s(24) }]}>
+          <TouchableOpacity style={styles.modalOverlayTouchable} activeOpacity={1} onPress={() => setFriendsModalVisible(false)}>
+          <TouchableOpacity activeOpacity={1} onPress={() => {}} style={[styles.modalContent, { paddingBottom: insets.bottom > 0 ? insets.bottom + s(24) : s(24) }]}>
             {selectedBuddyForLogs ? (
               // Chat Logs View
               <>
@@ -1521,7 +1522,8 @@ export default function ParentDashboard() {
                 </View>
               </>
             )}
-          </View>
+          </TouchableOpacity>
+          </TouchableOpacity>
         </KeyboardAvoidingView>
       </Modal>
 
@@ -1532,8 +1534,8 @@ export default function ParentDashboard() {
         visible={qrCodeVisible}
         onRequestClose={() => setQrCodeVisible(false)}
       >
-        <View style={styles.modalOverlayCentered}>
-          <View style={styles.qrCodeDialog}>
+        <TouchableOpacity style={styles.modalOverlayCentered} activeOpacity={1} onPress={() => setQrCodeVisible(false)}>
+          <TouchableOpacity activeOpacity={1} onPress={() => {}} style={styles.qrCodeDialog}>
             <Text style={styles.dialogTitle}>{selectedKidForLogs?.name}'s QR Code</Text>
             <Text style={styles.qrCodeSubtitle}>Let another parent scan this to pair immediately!</Text>
             
@@ -1556,8 +1558,8 @@ export default function ParentDashboard() {
             <TouchableOpacity style={styles.dialogCloseBtn} onPress={() => setQrCodeVisible(false)}>
               <Text style={styles.dialogCloseBtnText}>Close</Text>
             </TouchableOpacity>
-          </View>
-        </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
       </Modal>
 
       {/* QR Scanner Modal */}
@@ -1645,8 +1647,8 @@ export default function ParentDashboard() {
         visible={addKidModalVisible}
         onRequestClose={() => setAddKidModalVisible(false)}
       >
-        <View style={styles.modalOverlayCentered}>
-          <View style={styles.modalDialog}>
+        <TouchableOpacity style={styles.modalOverlayCentered} activeOpacity={1} onPress={() => setAddKidModalVisible(false)}>
+          <TouchableOpacity activeOpacity={1} onPress={() => {}} style={styles.modalDialog}>
             <Text style={styles.dialogTitle}>Add Child Profile</Text>
             
             <Text style={styles.dialogLabel}>Enter child's name or nickname:</Text>
@@ -1679,8 +1681,8 @@ export default function ParentDashboard() {
                 )}
               </TouchableOpacity>
             </View>
-          </View>
-        </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
       </Modal>
       <CustomAlertModal
         visible={alertConfig.visible}
@@ -1697,7 +1699,6 @@ export default function ParentDashboard() {
         visible={avatarPicker.pickerVisible}
         currentAvatarUrl={parentAvatarUrl}
         currentAvatarEmoji={parentAvatarEmoji}
-        uploading={avatarPicker.uploading}
         onClose={avatarPicker.closePicker}
         onTakePhoto={avatarPicker.takePhoto}
         onChooseFromGallery={avatarPicker.chooseFromGallery}
@@ -1989,6 +1990,11 @@ const styles = StyleSheet.create({
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(78, 52, 46, 0.4)',
+    justifyContent: 'flex-end',
+  },
+  modalOverlayTouchable: {
+    flex: 1,
+    width: '100%',
     justifyContent: 'flex-end',
   },
   modalContent: {

@@ -1,7 +1,7 @@
 import { formatMessagePreview } from '@/components/ChatMediaBubble';
 import { callKeepManager } from '@/services/callkeep';
 import { registerForPushNotificationsAsync } from '@/services/notifications';
-import { KidProfile, StorageService } from '@/services/storage';
+import { KidProfile, Message, StorageService } from '@/services/storage';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useRef, useState } from 'react';
 
@@ -20,6 +20,18 @@ export interface ContactListRow {
   hideVideoCall: boolean;
   onPress: () => void;
   onQuickCall: (isVideo: boolean) => void;
+}
+
+// Most-recently-interacted-with first, so the list reorders itself as conversations happen
+// instead of staying pinned in whatever order friends/contacts were added — mirrors how every
+// other chat app sorts its list. A contact with no messages yet (lastMsg null, e.g. a fresh
+// pairing) has no timestamp to sort by, so it sinks to the bottom, below anyone with history.
+function sortByLastActivity<T extends { lastMsg: Message | null }>(items: T[]): T[] {
+  return [...items].sort((a, b) => {
+    const aTime = a.lastMsg ? new Date(a.lastMsg.timestamp).getTime() : -Infinity;
+    const bTime = b.lastMsg ? new Date(b.lastMsg.timestamp).getTime() : -Infinity;
+    return bTime - aTime;
+  });
 }
 
 interface UseContactListResult {
@@ -120,7 +132,7 @@ export function useContactList(mode: ContactListMode): UseContactListResult {
       await Promise.all(avatarUpdates.map(u => StorageService.updateFriendAvatar(u.friendId, u.avatarEmoji)));
     }
 
-    setRows(perFriend.map(({ friend, lastMsg }) => {
+    setRows(sortByLastActivity(perFriend).map(({ friend, lastMsg }) => {
       const avatarEmoji = avatarUpdates.find(u => u.friendId === friend.id)?.avatarEmoji || friend.avatarEmoji;
       const resolvedStatus = statuses[friend.id] || 'pending';
       return {
@@ -186,7 +198,7 @@ export function useContactList(mode: ContactListMode): UseContactListResult {
       })
     );
 
-    setRows(withPreviews.map(({ c, lastMsg }) => ({
+    setRows(sortByLastActivity(withPreviews).map(({ c, lastMsg }) => ({
       key: c.code,
       name: c.name,
       avatarEmoji: c.avatarEmoji,

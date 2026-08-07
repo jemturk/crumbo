@@ -52,8 +52,10 @@ export default function ChatDashboard() {
         { key: 'settings', icon: 'settings', onPress: () => setSettingsVisible(true) },
         // Just navigates back to the gate — doesn't deactivate anything. Deactivating a kid on
         // this device is a Parent Area action only now, to prevent an accidental one-tap logout
-        // here; the active profile is still right there next time you tap Enter.
-        { key: 'logout', icon: 'log-out-outline', onPress: () => router.replace('/') },
+        // here; the active profile is still right there next time you tap Enter. The fromLogout
+        // param tells '/' to show its "Hey, {name}!" card instead of its normal auto-redirect
+        // straight back here for a still-active kid (see app/index.tsx).
+        { key: 'logout', icon: 'log-out-outline', onPress: () => router.replace('/?fromLogout=1') },
       ]}
       rows={rows}
       loading={loading}
@@ -71,8 +73,6 @@ export default function ChatDashboard() {
       <AppSettingsModal
         visible={settingsVisible}
         onClose={() => setSettingsVisible(false)}
-        showParentControlsOption={true}
-        onParentControlsPress={() => router.push('/parent/gate')}
       />
       <AvatarPickerModal
         visible={avatarPickerVisible}

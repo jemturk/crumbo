@@ -53,7 +53,15 @@ export default function ContactListView({
 
   const renderRow = ({ item }: { item: ContactListRow }) => (
     <TouchableOpacity
-      style={[styles.friendCard, { backgroundColor: colors.cardBg, borderColor: colors.border, padding: s(16), shadowColor: colors.textSecondary }]}
+      style={[
+        styles.friendCard,
+        {
+          backgroundColor: item.isAdultAvatar ? colors.cardBgAdult : colors.cardBgKid,
+          borderColor: colors.border,
+          padding: s(16),
+          shadowColor: colors.textSecondary,
+        },
+      ]}
       onPress={item.onPress}
     >
       {item.isAdultAvatar ? (
@@ -84,18 +92,18 @@ export default function ContactListView({
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: s(6), marginRight: s(8) }}>
           {!item.hideVoiceCall && (
             <TouchableOpacity
-              style={[styles.quickCallBtn, { width: s(32), height: s(32), borderRadius: s(16), backgroundColor: isDark ? colors.inputBg : '#FFFDF5', borderColor: colors.borderStrong }]}
+              style={[styles.quickCallBtn, { width: s(40), height: s(40), borderRadius: s(20), backgroundColor: isDark ? colors.inputBg : '#FFFDF5', borderColor: colors.borderStrong }]}
               onPress={(e) => { e.stopPropagation(); item.onQuickCall(false); }}
             >
-              <Ionicons name="call" size={s(15)} color={colors.textSecondary} />
+              <Ionicons name="call" size={s(19)} color={colors.textSecondary} />
             </TouchableOpacity>
           )}
           {!item.hideVideoCall && (
             <TouchableOpacity
-              style={[styles.quickCallBtn, { width: s(32), height: s(32), borderRadius: s(16), backgroundColor: isDark ? colors.inputBg : '#FFFDF5', borderColor: colors.borderStrong }]}
+              style={[styles.quickCallBtn, { width: s(40), height: s(40), borderRadius: s(20), backgroundColor: isDark ? colors.inputBg : '#FFFDF5', borderColor: colors.borderStrong }]}
               onPress={(e) => { e.stopPropagation(); item.onQuickCall(true); }}
             >
-              <Ionicons name="videocam" size={s(15)} color={colors.textSecondary} />
+              <Ionicons name="videocam" size={s(19)} color={colors.textSecondary} />
             </TouchableOpacity>
           )}
         </View>

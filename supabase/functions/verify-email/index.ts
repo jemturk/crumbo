@@ -8,10 +8,14 @@
  * anyone who isn't on a device with the app installed (previously: a broken "can't open app"
  * browser error, even though the account really was verified underneath it).
  *
- * On a device with the app installed, this attempts to jump straight into it
- * (crumbo://parent/gate) so mobile keeps working exactly like before; anywhere that fails
- * (desktop, no app installed) the static "you're verified" message underneath stays visible
- * instead of a dead redirect.
+ * On a mobile device, this attempts to jump straight into the app (crumbo://parent/gate) so
+ * mobile keeps working exactly like before. This used to be attempted unconditionally, on the
+ * assumption that a `crumbo://` navigation with nothing registered to catch it just fails
+ * silently — it doesn't: on desktop browsers (and some mobile ones without the app installed) it
+ * surfaces a visible "open this link?" prompt or a broken-link error, i.e. exactly the page
+ * trying to open an app that isn't there. The user-agent check below keeps the deep-link attempt
+ * (script tag AND the "Open Crumbo App" button) out of the response entirely for anything that
+ * doesn't look like iOS/Android, so desktop only ever sees the plain confirmation card.
  *
  * Deploy: supabase functions deploy verify-email --no-verify-jwt
  * (also set verify_jwt = false for this function in supabase/config.toml — this endpoint is hit
@@ -25,7 +29,8 @@ declare const Deno: {
 
 const APP_DEEP_LINK = "crumbo://parent/gate";
 
-const html = `<!doctype html>
+function buildHtml(isMobile: boolean): string {
+  return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
@@ -75,18 +80,22 @@ const html = `<!doctype html>
     <div class="emoji">🍪✅</div>
     <h1>Email Verified!</h1>
     <p>Your Crumbo account is confirmed. You can sign in and start setting up your family now.</p>
-    <a class="button" href="${APP_DEEP_LINK}">Open Crumbo App</a>
+    ${isMobile ? `<a class="button" href="${APP_DEEP_LINK}">Open Crumbo App</a>` : ""}
   </div>
-  <script>
+  ${isMobile ? `<script>
     // Best-effort jump straight into the app on a device that has it installed — the button
-    // above is the fallback for anywhere this silently does nothing (desktop, no app installed).
+    // above is the fallback for anywhere this silently does nothing (no app installed).
     window.location.href = ${JSON.stringify(APP_DEEP_LINK)};
-  </script>
+  </script>` : ""}
 </body>
 </html>`;
+}
 
-Deno.serve((_req) => {
-  return new Response(html, {
+Deno.serve((req) => {
+  const userAgent = req.headers.get("user-agent") || "";
+  const isMobile = /Android|iPhone|iPad|iPod/i.test(userAgent);
+
+  return new Response(buildHtml(isMobile), {
     headers: { "Content-Type": "text/html; charset=utf-8" },
   });
 });

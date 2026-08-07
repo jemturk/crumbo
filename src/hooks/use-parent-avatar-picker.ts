@@ -13,20 +13,23 @@ interface Options {
 // card), and index.tsx (the gate) — all three let a parent pick a real photo (camera/library) or
 // one of the family-role preset avatars (see AdultAvatarPickerModal) the same way.
 export function useParentAvatarPicker({ onAvatarUrlChange, onAvatarEmojiChange, showAlert }: Options) {
-  const [uploading, setUploading] = useState(false);
   const [pickerVisible, setPickerVisible] = useState(false);
 
-  const saveNewAvatar = async (localUri: string) => {
-    setUploading(true);
-    const url = await StorageService.uploadParentAvatar(localUri);
-    setUploading(false);
-    if (url) {
-      onAvatarUrlChange(url);
-      onAvatarEmojiChange(null);
-      setPickerVisible(false);
-    } else {
-      showAlert('Upload Failed', "Couldn't upload your photo — check your connection and try again.");
-    }
+  // Optimistic, matching the kid avatar picker (see handleKidAvatarSelect in index.tsx) — the
+  // picker closes and the new avatar shows immediately, with the actual upload/save happening in
+  // the background rather than blocking the modal open with a spinner.
+  const saveNewAvatar = (localUri: string) => {
+    setPickerVisible(false);
+    onAvatarUrlChange(localUri);
+    onAvatarEmojiChange(null);
+    StorageService.uploadParentAvatar(localUri).then((url) => {
+      if (url) {
+        // Swap the local file URI for the real hosted one once the upload finishes.
+        onAvatarUrlChange(url);
+      } else {
+        showAlert('Upload Failed', "Couldn't upload your photo — check your connection and try again.");
+      }
+    });
   };
 
   const takePhoto = async () => {
@@ -43,7 +46,7 @@ export function useParentAvatarPicker({ onAvatarUrlChange, onAvatarEmojiChange, 
       cameraType: ImagePicker.CameraType.front,
     });
     if (result.canceled) return;
-    await saveNewAvatar(result.assets[0].uri);
+    saveNewAvatar(result.assets[0].uri);
   };
 
   const chooseFromGallery = async () => {
@@ -54,32 +57,27 @@ export function useParentAvatarPicker({ onAvatarUrlChange, onAvatarEmojiChange, 
     }
     const result = await ImagePicker.launchImageLibraryAsync({ quality: 0.8, mediaTypes: ['images'], allowsEditing: true, aspect: [1, 1] });
     if (result.canceled) return;
-    await saveNewAvatar(result.assets[0].uri);
+    saveNewAvatar(result.assets[0].uri);
   };
 
-  const removePhoto = async () => {
-    setUploading(true);
-    await StorageService.removeParentAvatar();
-    setUploading(false);
-    onAvatarUrlChange(null);
+  const removePhoto = () => {
     setPickerVisible(false);
+    onAvatarUrlChange(null);
+    StorageService.removeParentAvatar();
   };
 
-  const selectPreset = async (emoji: string) => {
-    setUploading(true);
-    const success = await StorageService.setParentAvatarEmoji(emoji);
-    setUploading(false);
-    if (success) {
-      onAvatarEmojiChange(emoji);
-      onAvatarUrlChange(null);
-      setPickerVisible(false);
-    } else {
-      showAlert('Error', "Couldn't update your avatar — check your connection and try again.");
-    }
+  const selectPreset = (emoji: string) => {
+    setPickerVisible(false);
+    onAvatarEmojiChange(emoji);
+    onAvatarUrlChange(null);
+    StorageService.setParentAvatarEmoji(emoji).then((success) => {
+      if (!success) {
+        showAlert('Error', "Couldn't update your avatar — check your connection and try again.");
+      }
+    });
   };
 
   return {
-    uploading,
     pickerVisible,
     openPicker: () => setPickerVisible(true),
     closePicker: () => setPickerVisible(false),

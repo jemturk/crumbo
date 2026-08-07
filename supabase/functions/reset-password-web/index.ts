@@ -7,10 +7,17 @@
  * same supabase.auth.exchangeCodeForSession → updateUser({password}) sequence) — just running
  * Supabase's JS SDK in a plain browser instead of React Native.
  *
- * On a device with the app installed, this attempts to jump straight into it
- * (crumbo://reset-password?code=...) so mobile keeps working exactly like before; anywhere that
- * fails (desktop, no app installed) the in-browser password form below takes over instead. The
- * PKCE code is one-time-use: if the app opens and exchanges it first, this page's own later
+ * On a mobile device, this attempts to jump straight into the app (crumbo://reset-password?
+ * code=...) so mobile keeps working exactly like before. This used to be attempted
+ * unconditionally, on the assumption that a `crumbo://` navigation with nothing registered to
+ * catch it just fails silently — it doesn't: on desktop browsers (and some mobile ones without
+ * the app installed) it surfaces a visible "open this link?" prompt or a broken-link error, i.e.
+ * exactly the page trying to open an app that isn't there. The user-agent check below keeps that
+ * script line out of the response entirely for anything that doesn't look like iOS/Android, so
+ * desktop skips straight to the in-browser password form with no attempted handoff and no
+ * artificial delay waiting for one.
+ *
+ * The PKCE code is one-time-use: if the app opens and exchanges it first, this page's own later
  * attempt just shows "link expired" in what is by then an abandoned browser tab — harmless.
  *
  * Deploy: supabase functions deploy reset-password-web --no-verify-jwt
@@ -25,9 +32,11 @@ declare const Deno: {
   env: { get(key: string): string | undefined };
 };
 
-Deno.serve((_req) => {
+Deno.serve((req) => {
   const supabaseUrl = Deno.env.get("SUPABASE_URL") || "";
   const supabaseAnonKey = Deno.env.get("SUPABASE_ANON_KEY") || "";
+  const userAgent = req.headers.get("user-agent") || "";
+  const isMobile = /Android|iPhone|iPad|iPod/i.test(userAgent);
 
   const html = `<!doctype html>
 <html lang="en">
@@ -134,14 +143,17 @@ Deno.serve((_req) => {
       });
     }
 
+    ${isMobile ? `
     // Best-effort jump straight into the app on a device that has it installed — everything
-    // below is the fallback for anywhere this silently does nothing (desktop, no app installed).
+    // below is the fallback for anywhere this silently does nothing (no app installed).
     if (code) {
       window.location.href = 'crumbo://reset-password?code=' + encodeURIComponent(code);
     }
+    ` : ""}
 
     // Give the OS a moment to actually hand off to the app before committing to the web form —
-    // if we're still here after that, there's nothing installed to catch the link above.
+    // if we're still here after that, there's nothing installed to catch the link above. Desktop
+    // never attempted a handoff at all, so there's nothing to wait for — go straight to the form.
     setTimeout(async () => {
       if (!code) {
         show('error-state');
@@ -185,7 +197,7 @@ Deno.serve((_req) => {
         await client.auth.signOut();
         show('success-state');
       });
-    }, 1200);
+    }, ${isMobile ? 1200 : 0});
   </script>
 </body>
 </html>`;

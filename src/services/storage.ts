@@ -2372,31 +2372,3 @@ export const StorageService = {
     }
   }
 };
-
-// A helper for simulated friend responses
-const MOCK_ANSWERS: Record<string, string[]> = {
-  general: [
-    "That is so cool! 🌟",
-    "Haha awesome! 👾",
-    "Do you want to play a game later? 🎮",
-    "Let's bake some cookies! 🍪🍪",
-    "Look at this: 🦕 rawr!",
-    "Wow, I love that! ❤️",
-    "What are you doing today? 🎈",
-    "I am building a lego castle right now 🧱"
-  ]
-};
-
-export function triggerMockReply(
-  friend: Friend,
-  userMessageText: string,
-  onReply: (msg: Message) => void
-) {
-  setTimeout(async () => {
-    const list = MOCK_ANSWERS.general;
-    const replyText = list[Math.floor(Math.random() * list.length)];
-
-    const received = await StorageService.receiveMockMessage(friend.id, replyText);
-    onReply(received);
-  }, 1500); // 1.5 seconds typing lag for realism
-}

@@ -191,7 +191,28 @@ function ChatVisual({ s, colors }: VisualProps) {
         <Ionicons name="camera" size={s(20)} color={colors.textSecondary} />
         <Ionicons name="images" size={s(20)} color={colors.textSecondary} />
         <Ionicons name="brush" size={s(20)} color={colors.textSecondary} />
+        <Ionicons name="mic" size={s(20)} color={colors.textSecondary} />
       </View>
+    </MockFrame>
+  );
+}
+
+function CallVisual({ s, colors }: VisualProps) {
+  return (
+    <MockFrame s={s} colors={colors}>
+      <View style={[styles.mockHeaderRow, { gap: s(6) }]}>
+        <Ionicons name="person-circle-outline" size={s(18)} color={colors.textSecondary} />
+        <Text style={[styles.mockHeaderText, { color: colors.text, fontSize: s(13) }]}>Sam</Text>
+      </View>
+      <View style={[styles.mockToggleRow, { gap: s(14) }]}>
+        <View style={[styles.mockToggle, { width: s(40), height: s(40), borderRadius: s(20), backgroundColor: colors.primaryBtn }]}>
+          <Ionicons name="call" size={s(18)} color={colors.primaryBtnText} />
+        </View>
+        <View style={[styles.mockToggle, { width: s(40), height: s(40), borderRadius: s(20), backgroundColor: colors.primaryBtn }]}>
+          <Ionicons name="videocam" size={s(18)} color={colors.primaryBtnText} />
+        </View>
+      </View>
+      <Text style={[styles.mockCaption, { color: colors.textSecondary, fontSize: s(12) }]}>One tap, right from the chat</Text>
     </MockFrame>
   );
 }
@@ -250,9 +271,14 @@ const SLIDES = [
     Visual: QRPairVisual,
   },
   {
-    title: 'Chat, snap & draw',
-    body: 'Send messages, photos from your camera or gallery, and pictures you draw yourself, right in the chat.',
+    title: 'Chat, snap, draw & talk',
+    body: 'Send messages, photos from your camera or gallery, pictures you draw yourself, and voice messages — right in the chat.',
     Visual: ChatVisual,
+  },
+  {
+    title: 'Voice & video calls',
+    body: 'Once you\'re paired, call each other with one tap — right from the chat list or from inside a conversation.',
+    Visual: CallVisual,
   },
   {
     title: 'Parents can chat too!',
@@ -266,7 +292,7 @@ const SLIDES = [
   },
   {
     title: 'A grown-up is in charge',
-    body: 'A parent sets everything up, decides who\'s active on each device, and can pause chat, calls, photos, or drawing any time from the Parents Area.',
+    body: 'A parent sets everything up, decides who\'s active on each device, and can pause chat, calls, photos, drawing, or voice messages any time from the Parents Area.',
     Visual: ControlVisual,
   },
 ];
