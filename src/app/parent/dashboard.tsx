@@ -881,7 +881,7 @@ export default function ParentDashboard() {
                 <View style={{ position: 'absolute', top: s(-1), right: s(-1), backgroundColor: '#FFC93C', borderTopRightRadius: s(18), borderBottomLeftRadius: s(12), paddingHorizontal: s(8), paddingVertical: s(3) }}>
                   <Text style={{ fontSize: s(9), fontWeight: '800', color: '#4E342E' }}>PARENT</Text>
                 </View>
-                <View style={[styles.childMetaRow, { marginBottom: 0 }]}>
+                <View style={[styles.childMetaRow, { alignItems: 'flex-start', marginBottom: 0 }]}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: s(8), flexShrink: 1 }}>
                     <TouchableOpacity onPress={avatarPicker.openPicker}>
                       <AdultAvatar uri={parentAvatarUrl || undefined} emoji={parentAvatarEmoji || undefined} size={s(32)} />
@@ -975,61 +975,61 @@ export default function ParentDashboard() {
                         <View style={styles.togglesGroup}>
                           {/* Chat Toggle */}
                           <TouchableOpacity
-                            style={[styles.toggleCircle, { width: s(36), height: s(36), borderRadius: s(18) }, kid.chatDisabled ? styles.toggleRedBg : styles.toggleGreenBg]}
+                            style={[styles.toggleCircle, { width: s(32), height: s(32), borderRadius: s(16) }, kid.chatDisabled ? styles.toggleRedBg : styles.toggleGreenBg]}
                             onPress={() => handleToggleChat(kid)}
                             activeOpacity={0.8}
                           >
-                            <Ionicons name="chatbubble" size={s(18)} color="#FFFFFF" />
+                            <Ionicons name="chatbubble" size={s(16)} color="#FFFFFF" />
                             {kid.chatDisabled && <View style={styles.slashOverlay} />}
                           </TouchableOpacity>
 
                           {/* Voice Call Toggle */}
                           <TouchableOpacity
-                            style={[styles.toggleCircle, { width: s(36), height: s(36), borderRadius: s(18) }, kid.callingDisabled ? styles.toggleRedBg : styles.toggleGreenBg]}
+                            style={[styles.toggleCircle, { width: s(32), height: s(32), borderRadius: s(16) }, kid.callingDisabled ? styles.toggleRedBg : styles.toggleGreenBg]}
                             onPress={() => handleToggleCalling(kid)}
                             activeOpacity={0.8}
                           >
-                            <Ionicons name="call" size={s(18)} color="#FFFFFF" />
+                            <Ionicons name="call" size={s(16)} color="#FFFFFF" />
                             {kid.callingDisabled && <View style={styles.slashOverlay} />}
                           </TouchableOpacity>
 
                           {/* Video Call Toggle */}
                           <TouchableOpacity
-                            style={[styles.toggleCircle, { width: s(36), height: s(36), borderRadius: s(18) }, kid.videoCallingDisabled ? styles.toggleRedBg : styles.toggleGreenBg]}
+                            style={[styles.toggleCircle, { width: s(32), height: s(32), borderRadius: s(16) }, kid.videoCallingDisabled ? styles.toggleRedBg : styles.toggleGreenBg]}
                             onPress={() => handleToggleVideo(kid)}
                             activeOpacity={0.8}
                           >
-                            <Ionicons name="videocam" size={s(18)} color="#FFFFFF" />
+                            <Ionicons name="videocam" size={s(16)} color="#FFFFFF" />
                             {kid.videoCallingDisabled && <View style={styles.slashOverlay} />}
                           </TouchableOpacity>
 
                           {/* Photos Toggle */}
                           <TouchableOpacity
-                            style={[styles.toggleCircle, { width: s(36), height: s(36), borderRadius: s(18) }, photosEffectivelyDisabled ? styles.toggleRedBg : styles.toggleGreenBg]}
+                            style={[styles.toggleCircle, { width: s(32), height: s(32), borderRadius: s(16) }, photosEffectivelyDisabled ? styles.toggleRedBg : styles.toggleGreenBg]}
                             onPress={() => handleTogglePhotos(kid)}
                             activeOpacity={0.8}
                           >
-                            <Ionicons name="image" size={s(18)} color="#FFFFFF" />
+                            <Ionicons name="image" size={s(16)} color="#FFFFFF" />
                             {photosEffectivelyDisabled && <View style={styles.slashOverlay} />}
                           </TouchableOpacity>
 
                           {/* Drawing Toggle */}
                           <TouchableOpacity
-                            style={[styles.toggleCircle, { width: s(36), height: s(36), borderRadius: s(18) }, drawingEffectivelyDisabled ? styles.toggleRedBg : styles.toggleGreenBg]}
+                            style={[styles.toggleCircle, { width: s(32), height: s(32), borderRadius: s(16) }, drawingEffectivelyDisabled ? styles.toggleRedBg : styles.toggleGreenBg]}
                             onPress={() => handleToggleDrawing(kid)}
                             activeOpacity={0.8}
                           >
-                            <Ionicons name="brush" size={s(18)} color="#FFFFFF" />
+                            <Ionicons name="brush" size={s(16)} color="#FFFFFF" />
                             {drawingEffectivelyDisabled && <View style={styles.slashOverlay} />}
                           </TouchableOpacity>
 
                           {/* Voice Messages Toggle */}
                           <TouchableOpacity
-                            style={[styles.toggleCircle, { width: s(36), height: s(36), borderRadius: s(18) }, voiceMessagesEffectivelyDisabled ? styles.toggleRedBg : styles.toggleGreenBg]}
+                            style={[styles.toggleCircle, { width: s(32), height: s(32), borderRadius: s(16) }, voiceMessagesEffectivelyDisabled ? styles.toggleRedBg : styles.toggleGreenBg]}
                             onPress={() => handleToggleVoiceMessages(kid)}
                             activeOpacity={0.8}
                           >
-                            <Ionicons name="mic" size={s(18)} color="#FFFFFF" />
+                            <Ionicons name="mic" size={s(16)} color="#FFFFFF" />
                             {voiceMessagesEffectivelyDisabled && <View style={styles.slashOverlay} />}
                           </TouchableOpacity>
                         </View>
