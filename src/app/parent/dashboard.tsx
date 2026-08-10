@@ -870,9 +870,9 @@ export default function ParentDashboard() {
                   delete/regenerate-code controls (removing the account lives in Device &
                   Account Data instead). Exactly one of this card or a kid card below can show
                   "Active on this device" at a time. */}
-              <View style={[styles.childContainer, { borderColor: '#FFC93C', borderWidth: 2, paddingHorizontal: s(16), paddingVertical: s(30), borderRadius: s(20), backgroundColor: isDark ? colors.inputBg : '#FFFDF8', marginBottom: s(12) }]}>
-                <View style={{ position: 'absolute', top: s(-1), right: s(-1), backgroundColor: '#FFC93C', borderTopRightRadius: s(18), borderBottomLeftRadius: s(12), paddingHorizontal: s(10), paddingVertical: s(4) }}>
-                  <Text style={{ fontSize: s(11), fontWeight: '800', color: '#4E342E' }}>PARENT</Text>
+              <View style={[styles.childContainer, { borderColor: '#FFC93C', borderWidth: 2, paddingHorizontal: s(16), paddingVertical: s(30), borderRadius: s(20), backgroundColor: colors.cardBgAdult, marginBottom: s(12) }]}>
+                <View style={{ position: 'absolute', top: s(-1), right: s(-1), backgroundColor: '#FFC93C', borderTopRightRadius: s(18), borderBottomLeftRadius: s(12), paddingHorizontal: s(8), paddingVertical: s(3) }}>
+                  <Text style={{ fontSize: s(9), fontWeight: '800', color: '#4E342E' }}>PARENT</Text>
                 </View>
                 <View style={[styles.childMetaRow, { marginBottom: 0 }]}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: s(8), flexShrink: 1 }}>
@@ -921,12 +921,12 @@ export default function ParentDashboard() {
                   const statusButtonBorder = activeHere || activeElsewhere ? colors.successText : colors.dangerText;
                   const statusButtonText = activeHere || activeElsewhere ? colors.successText : colors.dangerText;
                   return (
-                    <View key={kid.cookieCode} style={[styles.childContainer, { borderColor: colors.border, padding: s(16), borderRadius: s(20), backgroundColor: isDark ? colors.inputBg : '#FFFDF8' }]}>
+                    <View key={kid.cookieCode} style={[styles.childContainer, { borderColor: colors.border, padding: s(16), borderRadius: s(20), backgroundColor: isDark ? '#2A1D11' : '#FFF8EC' }]}>
                       {/* Name and Delete Row */}
                       <View style={styles.childMetaRow}>
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: s(8) }}>
-                          <View style={{ width: s(36), height: s(36), borderRadius: s(18), backgroundColor: isDark ? colors.inputBg : '#FFFDF0', borderWidth: 2, borderColor: colors.borderStrong, justifyContent: 'center', alignItems: 'center' }}>
-                            <Text style={{ fontSize: s(18) }}>{kid.avatarEmoji || '🍪'}</Text>
+                          <View style={{ width: s(40), height: s(40), borderRadius: s(20), backgroundColor: isDark ? colors.inputBg : '#FFFDF0', borderWidth: 2, borderColor: colors.borderStrong, justifyContent: 'center', alignItems: 'center' }}>
+                            <Text style={{ fontSize: s(20) }}>{kid.avatarEmoji || '🍪'}</Text>
                           </View>
                           <Text style={[styles.childName, { color: colors.text, fontSize: s(18) }]}>{kid.name}</Text>
                         </View>
