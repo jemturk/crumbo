@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -13,7 +13,7 @@ import {
   KeyboardAvoidingView
 } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { StorageService, KidProfile } from '@/services/storage';
 import { supabase } from '@/services/supabase';
@@ -136,20 +136,27 @@ export default function ParentDashboard() {
     showAlert,
   });
 
-  useEffect(() => {
-    // Plain loadSettings() alone only re-reads the local KIDS_LIST cache, which is last synced
-    // from the server at sign-in time — so a kid's boundDeviceId (and every other kid/device's
-    // Active/Inactive badge here) would keep showing whatever was cached back then no matter how
-    // stale, even on a fresh app open. Pull a live copy down first, same as refreshKidsFromServer
-    // does after an activate/deactivate action, so the very first render is honest too.
-    (async () => {
-      const email = await StorageService.getParentEmail();
-      if (email) {
-        await StorageService.fetchAndRestoreParentData(email);
-      }
-      await loadSettings();
-    })();
-  }, []);
+  useFocusEffect(
+    useCallback(() => {
+      // Plain loadSettings() alone only re-reads the local KIDS_LIST cache, which is last synced
+      // from the server at sign-in time — so a kid's boundDeviceId (and every other kid/device's
+      // Active/Inactive badge here) would keep showing whatever was cached back then no matter how
+      // stale. A mount-only effect only pulls this fresh on a cold app open — this screen stays
+      // mounted across tab navigation like the rest of the app's screens (see use-contact-list.ts,
+      // parent/chat/index.tsx), so without useFocusEffect, coming back to this tab after Nora
+      // activates on another device would keep showing whatever was cached the first time the
+      // dashboard ever loaded this session. Pull a live copy down first, same as
+      // refreshKidsFromServer does after an activate/deactivate action, every time this tab
+      // regains focus.
+      (async () => {
+        const email = await StorageService.getParentEmail();
+        if (email) {
+          await StorageService.fetchAndRestoreParentData(email);
+        }
+        await loadSettings();
+      })();
+    }, [])
+  );
 
   useEffect(() => {
     if (selectedKidForLogs && friendsModalVisible) {
@@ -877,7 +884,7 @@ export default function ParentDashboard() {
                 <View style={[styles.childMetaRow, { marginBottom: 0 }]}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: s(8), flexShrink: 1 }}>
                     <TouchableOpacity onPress={avatarPicker.openPicker}>
-                      <AdultAvatar uri={parentAvatarUrl || undefined} emoji={parentAvatarEmoji || undefined} size={s(36)} />
+                      <AdultAvatar uri={parentAvatarUrl || undefined} emoji={parentAvatarEmoji || undefined} size={s(32)} />
                     </TouchableOpacity>
                     <View style={{ flexShrink: 1 }}>
                       <TouchableOpacity style={{ flexDirection: 'row', alignItems: 'center', gap: s(6) }} onPress={handleOpenEditName}>
