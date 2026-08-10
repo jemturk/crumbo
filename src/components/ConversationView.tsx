@@ -115,14 +115,19 @@ export default function ConversationView({ conversation, onBack }: ConversationV
       conversation.showAlert('Paused', 'Sending photos is paused by your parent.');
       return;
     }
-    const permission = await ImagePicker.requestCameraPermissionsAsync();
-    if (!permission.granted) {
-      conversation.showAlert('Permission Required', 'Camera permission is required to take a photo.');
-      return;
+    try {
+      const permission = await ImagePicker.requestCameraPermissionsAsync();
+      if (!permission.granted) {
+        conversation.showAlert('Permission Required', 'Camera permission is required to take a photo.');
+        return;
+      }
+      const result = await ImagePicker.launchCameraAsync({ quality: 0.8 });
+      if (result.canceled) return;
+      setPendingPhotoUri(result.assets[0].uri);
+    } catch (e) {
+      console.error('Error taking photo', e);
+      conversation.showAlert('Camera Failed', "Couldn't open the camera. Please try again.");
     }
-    const result = await ImagePicker.launchCameraAsync({ quality: 0.8 });
-    if (result.canceled) return;
-    setPendingPhotoUri(result.assets[0].uri);
   };
 
   const handleChooseFromGallery = async () => {
@@ -131,14 +136,19 @@ export default function ConversationView({ conversation, onBack }: ConversationV
       conversation.showAlert('Paused', 'Sending photos is paused by your parent.');
       return;
     }
-    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!permission.granted) {
-      conversation.showAlert('Permission Required', 'Photo library permission is required to choose a photo.');
-      return;
+    try {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        conversation.showAlert('Permission Required', 'Photo library permission is required to choose a photo.');
+        return;
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({ quality: 0.8, mediaTypes: ['images'] });
+      if (result.canceled) return;
+      setPendingPhotoUri(result.assets[0].uri);
+    } catch (e) {
+      console.error('Error choosing photo', e);
+      conversation.showAlert('Gallery Failed', "Couldn't open your photos. Please try again.");
     }
-    const result = await ImagePicker.launchImageLibraryAsync({ quality: 0.8, mediaTypes: ['images'] });
-    if (result.canceled) return;
-    setPendingPhotoUri(result.assets[0].uri);
   };
 
   const handleCancelPendingPhoto = () => setPendingPhotoUri(null);
@@ -216,8 +226,10 @@ export default function ConversationView({ conversation, onBack }: ConversationV
           isMissed = true;
           break;
         case 'MISSED_AUDIO':
+          // Ionicons has no "call-off" glyph (unlike videocam-off), so the missed-call slash is
+          // drawn manually as an overlay line — see the logType === 'MISSED_AUDIO' branch below.
           logTitle = 'Missed Voice Call';
-          logIcon = 'call-outline';
+          logIcon = 'call';
           isMissed = true;
           break;
         case 'ENDED_VIDEO':
@@ -256,15 +268,30 @@ export default function ConversationView({ conversation, onBack }: ConversationV
             backgroundColor: isDark ? logColors.bgDark : logColors.bg,
             borderColor: isDark ? logColors.borderDark : logColors.border
           }, { paddingHorizontal: s(12), paddingVertical: s(6), gap: s(6) }]}>
+            {logType === 'MISSED_AUDIO' ? (
+              <View style={[styles.callLogIcon, { width: s(16), height: s(16), justifyContent: 'center', alignItems: 'center' }]}>
+                <Ionicons name={logIcon} size={s(16)} color={logColor} />
+                <View
+                  style={{
+                    position: 'absolute',
+                    width: s(18),
+                    height: s(1.5),
+                    backgroundColor: logColor,
+                    transform: [{ rotate: '-45deg' }],
+                  }}
+                />
+              </View>
+            ) : (
+              <Ionicons name={logIcon} size={s(16)} color={logColor} style={styles.callLogIcon} />
+            )}
             {direction && (
               <Ionicons
                 name="arrow-up-outline"
                 size={s(12)}
                 color={logColor}
-                style={{ transform: [{ rotate: initiatedByMe ? '45deg' : '225deg' }] }}
+                style={{ marginLeft: -s(4), transform: [{ rotate: initiatedByMe ? '45deg' : '225deg' }] }}
               />
             )}
-            <Ionicons name={logIcon} size={s(16)} color={logColor} style={styles.callLogIcon} />
             <Text style={[styles.callLogText, { color: logColor }, { fontSize: s(12) }]}>
               {logTitle}
             </Text>

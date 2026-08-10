@@ -807,13 +807,43 @@ export const StorageService = {
         avatarEmoji: k.avatarEmoji,
         isOwnKid: true,
       }));
-      const pairedParents = (payload.friends || []).map((f: any) => ({
-        code: f.cookieCode,
-        name: f.name,
-        avatarEmoji: f.avatarEmoji,
-        avatarUrl: f.avatarUrl,
-        isOwnKid: false,
+
+      // The snapshot in `payload.friends` is only ever written once, at pairing time (see
+      // pairParentsViaQRCode) — buildParentPushTokenPayload preserves it verbatim on every later
+      // sync (it has no way to track this list, see the comment there), so a paired parent's own
+      // avatar/name changes never reach it. Refresh each entry from that parent's own live
+      // profile row here, at chat-list read time — the same way checkFriendPairingStatus
+      // piggybacks a live avatar fetch for kid friends — falling back to the cached snapshot if
+      // the lookup fails (offline) or that parent has no avatar set yet.
+      const rawParentFriends: any[] = payload.friends || [];
+      const pairedParents = await Promise.all(rawParentFriends.map(async (f: any) => {
+        let name = f.name;
+        let avatarEmoji = f.avatarEmoji;
+        let avatarUrl = f.avatarUrl;
+        try {
+          const { data: friendData } = await supabase
+            .from('profiles')
+            .select('push_token')
+            .eq('cookie_code', f.cookieCode)
+            .single();
+          if (friendData?.push_token) {
+            const friendPayload = JSON.parse(friendData.push_token);
+            name = friendPayload.parentName || name;
+            avatarEmoji = friendPayload.parentAvatarEmoji || avatarEmoji;
+            avatarUrl = friendPayload.parentAvatarUrl || avatarUrl;
+          }
+        } catch {
+          // Offline/lookup failure — fall back to the cached snapshot values above.
+        }
+        return {
+          code: f.cookieCode,
+          name,
+          avatarEmoji,
+          avatarUrl,
+          isOwnKid: false,
+        };
       }));
+
       return [...ownKids, ...pairedParents];
     } catch (e) {
       console.error("Error fetching parent contacts:", e);
@@ -1141,6 +1171,7 @@ export const StorageService = {
         photosDisabled: !!k.photosDisabled,
         drawingDisabled: !!k.drawingDisabled,
         voiceMessagesDisabled: !!k.voiceMessagesDisabled,
+        boundDeviceId: k.boundDeviceId,
         friends: friendsWithParent.map((f: any) => ({
           id: f.id,
           name: f.name,

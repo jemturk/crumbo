@@ -90,8 +90,23 @@ export default function AdultAvatarPickerModal({
       </View>
 
       {currentAvatarUrl && (
-        <TouchableOpacity style={[styles.removeBtn, { marginTop: s(16) }]} onPress={onRemovePhoto}>
-          <Text style={[styles.removeText, { fontSize: s(14), color: colors.dangerText }]}>Remove Photo</Text>
+        <TouchableOpacity
+          style={[
+            styles.removeBtn,
+            {
+              borderColor: colors.dangerText,
+              backgroundColor: colors.dangerBg,
+              borderRadius: s(12),
+              paddingVertical: s(7),
+              paddingHorizontal: s(12),
+              marginTop: s(16),
+              gap: s(6),
+            },
+          ]}
+          onPress={onRemovePhoto}
+        >
+          <Ionicons name="trash-outline" size={s(14)} color={colors.dangerText} />
+          <Text style={[styles.removeText, { fontSize: s(12), color: colors.dangerText }]}>Remove Photo</Text>
         </TouchableOpacity>
       )}
     </CenteredModalShell>
@@ -135,7 +150,11 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   removeBtn: {
+    flexDirection: 'row',
+    alignSelf: 'center',
     alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.5,
   },
   removeText: {
     fontWeight: '800',

@@ -92,6 +92,8 @@ export default function ParentDashboard() {
   const [addKidModalVisible, setAddKidModalVisible] = useState(false);
   const [onboardingVisible, setOnboardingVisible] = useState(false);
   const [newKidName, setNewKidName] = useState('');
+  const [editNameModalVisible, setEditNameModalVisible] = useState(false);
+  const [editNameInput, setEditNameInput] = useState('');
   const [selectedKidForLogs, setSelectedKidForLogs] = useState<KidProfile | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [newFriendName, setNewFriendName] = useState('');
@@ -135,7 +137,18 @@ export default function ParentDashboard() {
   });
 
   useEffect(() => {
-    loadSettings();
+    // Plain loadSettings() alone only re-reads the local KIDS_LIST cache, which is last synced
+    // from the server at sign-in time — so a kid's boundDeviceId (and every other kid/device's
+    // Active/Inactive badge here) would keep showing whatever was cached back then no matter how
+    // stale, even on a fresh app open. Pull a live copy down first, same as refreshKidsFromServer
+    // does after an activate/deactivate action, so the very first render is honest too.
+    (async () => {
+      const email = await StorageService.getParentEmail();
+      if (email) {
+        await StorageService.fetchAndRestoreParentData(email);
+      }
+      await loadSettings();
+    })();
   }, []);
 
   useEffect(() => {
@@ -345,6 +358,36 @@ export default function ParentDashboard() {
   const handleAddChildClick = () => {
     setNewKidName('');
     setAddKidModalVisible(true);
+  };
+
+  const handleOpenEditName = () => {
+    setEditNameInput(parentName || '');
+    setEditNameModalVisible(true);
+  };
+
+  const handleSaveParentName = async () => {
+    const name = editNameInput.trim();
+    if (!name) {
+      showAlert("Name Required", "Please enter a name.");
+      return;
+    }
+
+    try {
+      setSyncing(true);
+      await StorageService.saveParentName(name);
+      setParentName(name);
+      setEditNameModalVisible(false);
+      // Same propagation path as the avatar picker (see useParentAvatarPicker) — pushes the new
+      // name into this parent's own profile row, and buildParentPushTokenPayload's per-kid
+      // backfill carries it into every kid-they-manage's friends[] entry for "me". A paired
+      // parent's copy is refreshed lazily at their own next getParentContacts() read, same as
+      // their avatar (see the comment there).
+      await StorageService.syncParentData();
+    } catch (e) {
+      showAlert("Error", "Could not update your name.");
+    } finally {
+      setSyncing(false);
+    }
   };
 
   const handleCreateProfile = async () => {
@@ -831,29 +874,32 @@ export default function ParentDashboard() {
                 <View style={{ position: 'absolute', top: s(-1), right: s(-1), backgroundColor: '#FFC93C', borderTopRightRadius: s(18), borderBottomLeftRadius: s(12), paddingHorizontal: s(10), paddingVertical: s(4) }}>
                   <Text style={{ fontSize: s(11), fontWeight: '800', color: '#4E342E' }}>PARENT</Text>
                 </View>
-                <View style={[styles.childMetaRow, { paddingRight: s(64) }]}>
+                <View style={[styles.childMetaRow, { marginBottom: 0 }]}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: s(8), flexShrink: 1 }}>
                     <TouchableOpacity onPress={avatarPicker.openPicker}>
                       <AdultAvatar uri={parentAvatarUrl || undefined} emoji={parentAvatarEmoji || undefined} size={s(36)} />
                     </TouchableOpacity>
                     <View style={{ flexShrink: 1 }}>
-                      <Text style={[styles.childName, { color: colors.text, fontSize: s(16) }]} numberOfLines={1}>{parentName || parentEmail}</Text>
+                      <TouchableOpacity style={{ flexDirection: 'row', alignItems: 'center', gap: s(6) }} onPress={handleOpenEditName}>
+                        <Text style={[styles.childName, { color: colors.text, fontSize: s(18) }]} numberOfLines={1}>{parentName || parentEmail}</Text>
+                        <Ionicons name="pencil" size={s(14)} color={colors.textSecondary} />
+                      </TouchableOpacity>
                       {parentName && (
                         <Text style={[styles.infoText, { color: colors.textSecondary, fontSize: s(12) }]} numberOfLines={1}>{parentEmail}</Text>
                       )}
                     </View>
                   </View>
-                </View>
-                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: s(10) }}>
-                  <Text style={[styles.infoText, { color: parentActiveOnDevice ? '#2E7D32' : colors.textSecondary, fontSize: s(13), fontWeight: '700' }]}>
-                    {parentActiveOnDevice ? 'Active on this device' : 'Not active on this device'}
-                  </Text>
                   <TouchableOpacity
-                    style={[styles.actionBtnSecondary, { backgroundColor: colors.actionBtnSecondaryBg, borderColor: parentActiveOnDevice ? '#D32F2F' : colors.border, height: s(38), borderRadius: s(12), paddingHorizontal: s(14) }]}
+                    style={[styles.actionBtnSecondary, { alignSelf: 'center', backgroundColor: parentActiveOnDevice ? colors.successBg : colors.dangerBg, borderColor: parentActiveOnDevice ? colors.successText : colors.dangerText, height: s(36), borderRadius: s(12), width: s(92), paddingHorizontal: s(6) }]}
                     onPress={parentActiveOnDevice ? handleDeactivateParent : handleActivateParent}
                   >
-                    <Text style={[styles.actionBtnSecondaryText, { color: parentActiveOnDevice ? '#D32F2F' : colors.actionBtnSecondaryText, fontSize: s(13) }]}>
-                      {parentActiveOnDevice ? 'Deactivate' : 'Activate'}
+                    <Text
+                      style={[styles.actionBtnSecondaryText, { color: parentActiveOnDevice ? colors.successText : colors.dangerText, fontSize: s(13) }]}
+                      numberOfLines={1}
+                      adjustsFontSizeToFit
+                      minimumFontScale={0.7}
+                    >
+                      {parentActiveOnDevice ? 'Active' : 'Inactive'}
                     </Text>
                   </TouchableOpacity>
                 </View>
@@ -870,8 +916,10 @@ export default function ParentDashboard() {
                   const voiceMessagesEffectivelyDisabled = kid.chatDisabled || kid.voiceMessagesDisabled;
                   const activeHere = !!kid.boundDeviceId && kid.boundDeviceId === thisDeviceId;
                   const activeElsewhere = !!kid.boundDeviceId && kid.boundDeviceId !== thisDeviceId;
-                  const statusLabel = activeHere ? 'Active on this device' : activeElsewhere ? 'Active on another device' : 'Inactive';
-                  const statusColor = activeHere ? '#2E7D32' : activeElsewhere ? '#B8860B' : colors.textSecondary;
+                  const statusButtonLabel = activeHere ? 'Active' : activeElsewhere ? 'Active (another device)' : 'Inactive';
+                  const statusButtonBg = activeHere ? colors.successBg : activeElsewhere ? colors.successBgFaint : colors.dangerBg;
+                  const statusButtonBorder = activeHere || activeElsewhere ? colors.successText : colors.dangerText;
+                  const statusButtonText = activeHere || activeElsewhere ? colors.successText : colors.dangerText;
                   return (
                     <View key={kid.cookieCode} style={[styles.childContainer, { borderColor: colors.border, padding: s(16), borderRadius: s(20), backgroundColor: isDark ? colors.inputBg : '#FFFDF8' }]}>
                       {/* Name and Delete Row */}
@@ -887,28 +935,31 @@ export default function ParentDashboard() {
                         </TouchableOpacity>
                       </View>
 
-                      {/* Activation Status Row */}
-                      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: s(4), marginBottom: s(8) }}>
-                        <Text style={[styles.infoText, { color: statusColor, fontSize: s(13), fontWeight: '700' }]}>{statusLabel}</Text>
+                      {/* Pairing Code Pill, QR, and Activation Status */}
+                      <View style={[styles.codeRow, { justifyContent: 'space-between', marginTop: s(8) }]}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: s(8) }}>
+                          <TouchableOpacity style={[styles.codePill, { backgroundColor: isDark ? '#3D2A1D' : '#FFF5D1', paddingHorizontal: s(12), paddingVertical: s(6), borderRadius: s(12) }]} onPress={() => copyToClipboard(kid.cookieCode)} activeOpacity={0.7}>
+                            <Text style={[styles.codeText, { color: colors.textSecondary, fontSize: s(13) }]}>{kid.cookieCode}</Text>
+                            <Ionicons name="copy-outline" size={s(14)} color="#8D6E63" />
+                          </TouchableOpacity>
+
+                          <TouchableOpacity style={[styles.qrBtn, { width: s(36), height: s(36), borderRadius: s(18), backgroundColor: isDark ? '#3D2A1D' : '#FFFDF5' }]} onPress={() => { setSelectedKidForLogs(kid); setQrCodeVisible(true); }}>
+                            <Ionicons name="qr-code-outline" size={s(16)} color="#8D6E63" />
+                          </TouchableOpacity>
+                        </View>
+
                         <TouchableOpacity
-                          style={[styles.actionBtnSecondary, { backgroundColor: colors.actionBtnSecondaryBg, borderColor: activeHere ? '#D32F2F' : colors.border, height: s(36), borderRadius: s(12), paddingHorizontal: s(14) }]}
+                          style={[styles.actionBtnSecondary, { backgroundColor: statusButtonBg, borderColor: statusButtonBorder, height: s(36), borderRadius: s(12), width: s(92), paddingHorizontal: s(6) }]}
                           onPress={() => (activeHere || activeElsewhere ? handleDeactivateKid(kid) : handleActivateKid(kid))}
                         >
-                          <Text style={[styles.actionBtnSecondaryText, { color: activeHere ? '#D32F2F' : colors.actionBtnSecondaryText, fontSize: s(13) }]}>
-                            {activeHere || activeElsewhere ? 'Deactivate' : 'Activate'}
+                          <Text
+                            style={[styles.actionBtnSecondaryText, { color: statusButtonText, fontSize: s(13) }]}
+                            numberOfLines={1}
+                            adjustsFontSizeToFit
+                            minimumFontScale={0.7}
+                          >
+                            {statusButtonLabel}
                           </Text>
-                        </TouchableOpacity>
-                      </View>
-
-                      {/* Pairing Code Pill and QR */}
-                      <View style={styles.codeRow}>
-                        <TouchableOpacity style={[styles.codePill, { backgroundColor: isDark ? '#3D2A1D' : '#FFF5D1', paddingHorizontal: s(12), paddingVertical: s(6), borderRadius: s(12) }]} onPress={() => copyToClipboard(kid.cookieCode)} activeOpacity={0.7}>
-                          <Text style={[styles.codeText, { color: colors.textSecondary, fontSize: s(13) }]}>{kid.cookieCode}</Text>
-                          <Ionicons name="copy-outline" size={s(14)} color="#8D6E63" />
-                        </TouchableOpacity>
-                        
-                        <TouchableOpacity style={[styles.qrBtn, { width: s(36), height: s(36), borderRadius: s(18), backgroundColor: isDark ? '#3D2A1D' : '#FFFDF5' }]} onPress={() => { setSelectedKidForLogs(kid); setQrCodeVisible(true); }}>
-                          <Ionicons name="qr-code-outline" size={s(16)} color="#8D6E63" />
                         </TouchableOpacity>
                       </View>
 
@@ -916,7 +967,7 @@ export default function ParentDashboard() {
                       <View style={styles.controlsRow}>
                         <View style={styles.togglesGroup}>
                           {/* Chat Toggle */}
-                          <TouchableOpacity 
+                          <TouchableOpacity
                             style={[styles.toggleCircle, { width: s(40), height: s(40), borderRadius: s(20) }, kid.chatDisabled ? styles.toggleRedBg : styles.toggleGreenBg]}
                             onPress={() => handleToggleChat(kid)}
                             activeOpacity={0.8}
@@ -926,7 +977,7 @@ export default function ParentDashboard() {
                           </TouchableOpacity>
 
                           {/* Voice Call Toggle */}
-                          <TouchableOpacity 
+                          <TouchableOpacity
                             style={[styles.toggleCircle, { width: s(40), height: s(40), borderRadius: s(20) }, kid.callingDisabled ? styles.toggleRedBg : styles.toggleGreenBg]}
                             onPress={() => handleToggleCalling(kid)}
                             activeOpacity={0.8}
@@ -977,15 +1028,15 @@ export default function ParentDashboard() {
                         </View>
 
                         {/* Friends and Logs Button */}
-                        <TouchableOpacity 
-                          style={[styles.friendsLogsBtn, { height: s(40), borderRadius: s(12), paddingHorizontal: s(16), backgroundColor: isDark ? '#3D2A1D' : '#FFFDF5', borderColor: colors.border }]} 
+                        <TouchableOpacity
+                          style={[styles.friendsLogsBtn, { borderRadius: s(12), paddingVertical: s(6), paddingHorizontal: s(12), backgroundColor: isDark ? '#3D2A1D' : '#FFFDF5', borderColor: '#FFD54F' }]}
                           onPress={() => {
                             setSelectedKidForLogs(kid);
                             setFriendsModalVisible(true);
                           }}
                         >
                           <Text style={[styles.friendsLogsBtnText, { color: colors.textSecondary, fontSize: s(13) }]}>Friends & Logs</Text>
-                          <Ionicons name="chevron-forward" size={s(14)} color="#8D6E63" />
+                          <Ionicons name="chevron-forward" size={s(14)} color={colors.textSecondary} />
                         </TouchableOpacity>
                       </View>
                     </View>
@@ -996,7 +1047,7 @@ export default function ParentDashboard() {
               )}
 
               {/* Add Child Profile Button */}
-              <TouchableOpacity style={[styles.addChildBtn, { height: s(50), borderRadius: s(16), borderColor: colors.border, marginTop: s(8) }]} onPress={handleAddChildClick}>
+              <TouchableOpacity style={[styles.addChildBtn, { height: s(50), borderRadius: s(16), borderColor: '#FFD54F', backgroundColor: colors.primaryBtnFaded, marginTop: s(8) }]} onPress={handleAddChildClick}>
                 <Ionicons name="add" size={s(18)} color="#8D6E63" />
                 <Text style={[styles.addChildBtnText, { color: colors.textSecondary, fontSize: s(14) }]}>Add Child Profile</Text>
               </TouchableOpacity>
@@ -1684,6 +1735,50 @@ export default function ParentDashboard() {
           </TouchableOpacity>
         </TouchableOpacity>
       </Modal>
+      {/* Edit Preferred Name Modal */}
+      <Modal
+        animationType="fade"
+        transparent={true}
+        visible={editNameModalVisible}
+        onRequestClose={() => setEditNameModalVisible(false)}
+      >
+        <TouchableOpacity style={styles.modalOverlayCentered} activeOpacity={1} onPress={() => setEditNameModalVisible(false)}>
+          <TouchableOpacity activeOpacity={1} onPress={() => {}} style={styles.modalDialog}>
+            <Text style={styles.dialogTitle}>Edit Your Name</Text>
+
+            <Text style={styles.dialogLabel}>This is the name shown to your kids and any paired parents:</Text>
+            <TextInput
+              style={styles.dialogInput}
+              placeholder="e.g. Mom"
+              placeholderTextColor="#A1887F"
+              value={editNameInput}
+              onChangeText={setEditNameInput}
+              autoFocus={true}
+            />
+
+            <View style={styles.dialogButtons}>
+              <TouchableOpacity
+                style={styles.dialogBtnCancel}
+                onPress={() => setEditNameModalVisible(false)}
+              >
+                <Text style={styles.dialogBtnCancelText}>Cancel</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.dialogBtnCreate}
+                onPress={handleSaveParentName}
+                disabled={syncing}
+              >
+                {syncing ? (
+                  <ActivityIndicator color="#FFFFFF" />
+                ) : (
+                  <Text style={styles.dialogBtnCreateText}>Save</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
       <CustomAlertModal
         visible={alertConfig.visible}
         title={alertConfig.title}
@@ -1850,7 +1945,7 @@ const styles = StyleSheet.create({
   },
   controlsRow: {
     flexDirection: 'column',
-    gap: 8,
+    gap: 16,
   },
   togglesGroup: {
     flexDirection: 'row',
