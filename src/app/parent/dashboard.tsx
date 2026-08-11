@@ -844,6 +844,9 @@ export default function ParentDashboard() {
           <TouchableOpacity style={styles.logoutButton} onPress={() => setOnboardingVisible(true)}>
             <Ionicons name="help-circle-outline" size={s(28)} color={colors.textSecondary} />
           </TouchableOpacity>
+          <TouchableOpacity style={styles.logoutButton} onPress={() => setAppSettingsExpanded(true)}>
+            <Ionicons name="settings-outline" size={s(28)} color={colors.textSecondary} />
+          </TouchableOpacity>
           <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
             <Ionicons name="log-out-outline" size={s(28)} color="#D32F2F" />
           </TouchableOpacity>
@@ -1119,102 +1122,6 @@ export default function ParentDashboard() {
                   </TouchableOpacity>
                 </View>
               )}
-            </View>
-          )}
-        </View>
-
-        {/* Accordion 3: App Settings */}
-        <View style={[styles.card, { backgroundColor: colors.cardBg, borderColor: colors.border, borderRadius: s(24) }]}>
-          <TouchableOpacity 
-            style={[styles.cardHeader, { paddingHorizontal: s(16), paddingVertical: s(14) }]} 
-            onPress={() => setAppSettingsExpanded(!appSettingsExpanded)}
-            activeOpacity={0.7}
-          >
-            <View style={styles.cardHeaderLeft}>
-              <Ionicons name="settings-outline" size={s(24)} color={colors.cardHeaderLeftIcon} style={styles.cardIcon} />
-              <Text style={[styles.cardTitle, { color: colors.text, fontSize: s(16) }]}>App Settings</Text>
-            </View>
-            <Ionicons 
-              name={appSettingsExpanded ? "chevron-up" : "chevron-down"} 
-              size={s(20)} 
-              color="#A1887F" 
-            />
-          </TouchableOpacity>
-
-          {appSettingsExpanded && (
-            <View style={styles.cardBodyPadding}>
-              <Text style={[styles.infoText, { color: colors.textSecondary, fontSize: s(13), lineHeight: s(18) }]}>
-                Customize display settings for Crumbo kid's interfaces on this device.
-              </Text>
-              
-              <Text style={[styles.inputLabel, { color: colors.text, fontSize: s(13), marginTop: s(8) }]}>Display Size</Text>
-              <View style={[styles.settingsRow, { gap: s(8) }]}>
-                {(['small', 'default', 'large'] as const).map((size) => (
-                  <TouchableOpacity 
-                    key={size}
-                    style={[
-                      styles.settingsBtn, 
-                      { height: s(48), borderRadius: s(16), borderColor: colors.borderStrong, backgroundColor: colors.cardBg },
-                      displaySize === size && { backgroundColor: colors.primaryBtn, borderColor: colors.primaryBtn }
-                    ]}
-                    onPress={() => handleUpdateDisplaySize(size)}
-                  >
-                    <Text style={[
-                      styles.settingsBtnText, 
-                      { color: colors.textSecondary, fontSize: s(14), fontWeight: '800' },
-                      displaySize === size && { color: colors.primaryBtnText }
-                    ]}>
-                      {size.charAt(0).toUpperCase() + size.slice(1)}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-
-              <Text style={[styles.inputLabel, { color: colors.text, fontSize: s(13), marginTop: s(16) }]}>App Theme</Text>
-              <View style={[styles.settingsRow, { gap: s(8) }]}>
-                {(['light', 'dark'] as const).map((mode) => (
-                  <TouchableOpacity 
-                    key={mode}
-                    style={[
-                      styles.settingsBtn, 
-                      { height: s(48), borderRadius: s(16), borderColor: colors.borderStrong, backgroundColor: colors.cardBg },
-                      appTheme === mode && { backgroundColor: colors.primaryBtn, borderColor: colors.primaryBtn }
-                    ]}
-                    onPress={() => handleUpdateTheme(mode)}
-                  >
-                    <Text style={[
-                      styles.settingsBtnText, 
-                      { color: colors.textSecondary, fontSize: s(14), fontWeight: '800' },
-                      appTheme === mode && { color: colors.primaryBtnText }
-                    ]}>
-                      {mode.charAt(0).toUpperCase() + mode.slice(1)} Mode
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-
-              <Text style={[styles.inputLabel, { color: colors.text, fontSize: s(13), marginTop: s(16) }]}>Biometric Sign-In</Text>
-              <View style={[styles.settingsRow, { gap: s(8) }]}>
-                {([{ label: 'On', value: true }, { label: 'Off', value: false }]).map((opt) => (
-                  <TouchableOpacity
-                    key={opt.label}
-                    style={[
-                      styles.settingsBtn,
-                      { height: s(48), borderRadius: s(16), borderColor: colors.borderStrong, backgroundColor: colors.cardBg },
-                      biometricEnabled === opt.value && { backgroundColor: colors.primaryBtn, borderColor: colors.primaryBtn }
-                    ]}
-                    onPress={() => handleToggleBiometric(opt.value)}
-                  >
-                    <Text style={[
-                      styles.settingsBtnText,
-                      { color: colors.textSecondary, fontSize: s(14), fontWeight: '800' },
-                      biometricEnabled === opt.value && { color: colors.primaryBtnText }
-                    ]}>
-                      {opt.label}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
             </View>
           )}
         </View>
@@ -1785,6 +1692,104 @@ export default function ParentDashboard() {
             </View>
           </TouchableOpacity>
         </TouchableOpacity>
+      </Modal>
+
+      {/* App Settings Modal — moved from an inline dashboard accordion to a header-launched modal
+          (opened via the header's settings-outline icon, between Help and Log Out). */}
+      <Modal
+        animationType="slide"
+        transparent={true}
+        visible={appSettingsExpanded}
+        onRequestClose={() => setAppSettingsExpanded(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <TouchableOpacity style={styles.modalOverlayTouchable} activeOpacity={1} onPress={() => setAppSettingsExpanded(false)}>
+            <TouchableOpacity activeOpacity={1} onPress={() => {}} style={[styles.modalContent, { paddingBottom: insets.bottom > 0 ? insets.bottom + s(24) : s(24) }]}>
+              <View style={styles.modalHeader}>
+                <View style={{ width: 24 }} />
+                <Text style={styles.modalTitle} numberOfLines={1}>App Settings</Text>
+                <TouchableOpacity onPress={() => setAppSettingsExpanded(false)}>
+                  <Ionicons name="close-circle" size={28} color="#8D6E63" />
+                </TouchableOpacity>
+              </View>
+
+              <ScrollView contentContainerStyle={styles.cardBodyPadding} showsVerticalScrollIndicator={true}>
+                <Text style={[styles.infoText, { color: colors.textSecondary, fontSize: s(13), lineHeight: s(18) }]}>
+                  Customize display settings for Crumbo kid's interfaces on this device.
+                </Text>
+
+                <Text style={[styles.inputLabel, { color: colors.text, fontSize: s(13), marginTop: s(8) }]}>Display Size</Text>
+                <View style={[styles.settingsRow, { gap: s(8) }]}>
+                  {(['small', 'default', 'large'] as const).map((size) => (
+                    <TouchableOpacity
+                      key={size}
+                      style={[
+                        styles.settingsBtn,
+                        { height: s(48), borderRadius: s(16), borderColor: colors.borderStrong, backgroundColor: colors.cardBg },
+                        displaySize === size && { backgroundColor: colors.primaryBtn, borderColor: colors.primaryBtn }
+                      ]}
+                      onPress={() => handleUpdateDisplaySize(size)}
+                    >
+                      <Text style={[
+                        styles.settingsBtnText,
+                        { color: colors.textSecondary, fontSize: s(14), fontWeight: '800' },
+                        displaySize === size && { color: colors.primaryBtnText }
+                      ]}>
+                        {size.charAt(0).toUpperCase() + size.slice(1)}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+
+                <Text style={[styles.inputLabel, { color: colors.text, fontSize: s(13), marginTop: s(16) }]}>App Theme</Text>
+                <View style={[styles.settingsRow, { gap: s(8) }]}>
+                  {(['light', 'dark'] as const).map((mode) => (
+                    <TouchableOpacity
+                      key={mode}
+                      style={[
+                        styles.settingsBtn,
+                        { height: s(48), borderRadius: s(16), borderColor: colors.borderStrong, backgroundColor: colors.cardBg },
+                        appTheme === mode && { backgroundColor: colors.primaryBtn, borderColor: colors.primaryBtn }
+                      ]}
+                      onPress={() => handleUpdateTheme(mode)}
+                    >
+                      <Text style={[
+                        styles.settingsBtnText,
+                        { color: colors.textSecondary, fontSize: s(14), fontWeight: '800' },
+                        appTheme === mode && { color: colors.primaryBtnText }
+                      ]}>
+                        {mode.charAt(0).toUpperCase() + mode.slice(1)} Mode
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+
+                <Text style={[styles.inputLabel, { color: colors.text, fontSize: s(13), marginTop: s(16) }]}>Biometric Sign-In</Text>
+                <View style={[styles.settingsRow, { gap: s(8) }]}>
+                  {([{ label: 'On', value: true }, { label: 'Off', value: false }]).map((opt) => (
+                    <TouchableOpacity
+                      key={opt.label}
+                      style={[
+                        styles.settingsBtn,
+                        { height: s(48), borderRadius: s(16), borderColor: colors.borderStrong, backgroundColor: colors.cardBg },
+                        biometricEnabled === opt.value && { backgroundColor: colors.primaryBtn, borderColor: colors.primaryBtn }
+                      ]}
+                      onPress={() => handleToggleBiometric(opt.value)}
+                    >
+                      <Text style={[
+                        styles.settingsBtnText,
+                        { color: colors.textSecondary, fontSize: s(14), fontWeight: '800' },
+                        biometricEnabled === opt.value && { color: colors.primaryBtnText }
+                      ]}>
+                        {opt.label}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </ScrollView>
+            </TouchableOpacity>
+          </TouchableOpacity>
+        </View>
       </Modal>
       <CustomAlertModal
         visible={alertConfig.visible}

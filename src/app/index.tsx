@@ -152,13 +152,13 @@ export default function WelcomeScreen() {
           style={{ padding: s(8) }}
           onPress={() => setOnboardingVisible(true)}
         >
-          <Ionicons name="help-circle" size={s(26)} color={colors.textSecondary} />
+          <Ionicons name="help-circle-outline" size={s(26)} color={colors.textSecondary} />
         </TouchableOpacity>
         <TouchableOpacity
           style={{ padding: s(8) }}
           onPress={() => setSettingsVisible(true)}
         >
-          <Ionicons name="settings" size={s(26)} color={colors.textSecondary} />
+          <Ionicons name="settings-outline" size={s(26)} color={colors.textSecondary} />
         </TouchableOpacity>
       </View>
 
