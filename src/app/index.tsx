@@ -1,18 +1,79 @@
 import React, { useState, useCallback } from 'react';
-import { View, Text, StyleSheet, Image, TouchableOpacity, SafeAreaView, ActivityIndicator, Platform } from 'react-native';
-import { useRouter, useFocusEffect } from 'expo-router';
+import { View, Text, StyleSheet, Image, TouchableOpacity, SafeAreaView, ActivityIndicator, Platform, KeyboardAvoidingView, ScrollView } from 'react-native';
+import { useRouter, useFocusEffect, useLocalSearchParams } from 'expo-router';
+import Constants from 'expo-constants';
 import { StorageService, KidProfile } from '@/services/storage';
+import { Ionicons } from '@expo/vector-icons';
+import AdultAvatar from '@/components/AdultAvatar';
+import AdultAvatarPickerModal from '@/components/AdultAvatarPickerModal';
+import AppSettingsModal from '@/components/AppSettingsModal';
+import AvatarPickerModal from '@/components/AvatarPickerModal';
+import CustomAlertModal, { AlertButton } from '@/components/CustomAlertModal';
+import OnboardingModal from '@/components/OnboardingModal';
+import { useDisplayScale } from '@/hooks/use-display-scale';
+import { useAppTheme } from '@/hooks/use-app-theme';
+import { useParentAvatarPicker } from '@/hooks/use-parent-avatar-picker';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+
+// Read from app.json (via app config, not hardcoded) so this can't drift out of sync with the
+// actual shipped version.
+const APP_VERSION = Constants.expoConfig?.version;
 
 export default function WelcomeScreen() {
   const router = useRouter();
+  // Set only by a chat header's logout button (see chat/index.tsx and parent/chat/index.tsx) —
+  // marks a deliberate hop back to this screen rather than a normal cold launch, so checkAppState
+  // below knows to show the "Welcome back"/"Hey, {name}" card for the still-active kid or parent
+  // instead of auto-redirecting straight back into their chat list.
+  const { fromLogout } = useLocalSearchParams<{ fromLogout?: string }>();
+  const { s } = useDisplayScale();
+  const { theme, colors, isDark } = useAppTheme();
+  const insets = useSafeAreaInsets();
   const [loading, setLoading] = useState(true);
   const [subscribed, setSubscribed] = useState(false);
   const [profile, setProfile] = useState<KidProfile | null>(null);
+  const [parentActive, setParentActive] = useState(false);
+  const [parentName, setParentName] = useState<string | null>(null);
+  const [parentAvatarUrl, setParentAvatarUrl] = useState<string | null>(null);
+  const [parentAvatarEmoji, setParentAvatarEmoji] = useState<string | null>(null);
+
+  const [settingsVisible, setSettingsVisible] = useState(false);
+  const [onboardingVisible, setOnboardingVisible] = useState(false);
+  const [avatarPickerVisible, setAvatarPickerVisible] = useState(false);
+
+  const [alertConfig, setAlertConfig] = useState<{
+    visible: boolean;
+    title: string;
+    message: string;
+    buttons?: AlertButton[];
+  }>({ visible: false, title: '', message: '' });
+
+  const showAlert = (title: string, message: string, buttons?: AlertButton[]) => {
+    setAlertConfig({ visible: true, title, message, buttons });
+  };
+
+  const parentAvatarPicker = useParentAvatarPicker({
+    onAvatarUrlChange: setParentAvatarUrl,
+    onAvatarEmojiChange: setParentAvatarEmoji,
+    showAlert,
+  });
+
+  const handleKidAvatarSelect = (emoji: string) => {
+    setAvatarPickerVisible(false);
+    // Optimistic: update immediately rather than waiting on the network round-trip.
+    setProfile(prev => (prev ? { ...prev, avatarEmoji: emoji } : prev));
+    StorageService.setKidAvatar(emoji).then((success) => {
+      if (!success) {
+        showAlert("Connection Error", "Could not save your new avatar. Please check your network and try again.");
+      }
+    });
+  };
 
   useFocusEffect(
     useCallback(() => {
       checkAppState();
-    }, [])
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [fromLogout])
   );
 
   const checkAppState = async () => {
@@ -20,8 +81,49 @@ export default function WelcomeScreen() {
       setLoading(true);
       const isSub = await StorageService.isSubscribed();
       const kidProf = await StorageService.getKidProfile();
+      const isParentActive = await StorageService.isParentActiveOnDevice();
+
+      // An active kid or parent on this device skips straight to their chat list — there's
+      // nothing to decide here (activating/deactivating is a Parent Area action only, see the
+      // card's own comment below), so landing on this screen first is just friction. replace()
+      // (not push()) so this screen isn't left sitting in history — back-navigation shouldn't
+      // return here. EXCEPT when they just came from a chat header's logout button (fromLogout)
+      // — that's a deliberate hop back to this screen specifically to show the "Welcome back"
+      // card below, not something to immediately redirect away from again.
+      if (kidProf && !fromLogout) {
+        router.replace('/chat');
+        return;
+      }
+      if (isParentActive && !fromLogout) {
+        router.replace('/parent/chat');
+        return;
+      }
+
+      const seenOnboarding = await StorageService.hasSeenOnboarding();
       setSubscribed(isSub);
-      setProfile(kidProf);
+      setParentActive(isParentActive);
+      if (kidProf) {
+        setProfile(kidProf);
+        setOnboardingVisible(false);
+      } else if (isParentActive) {
+        setProfile(null);
+        const [name, email, avatarUrl, avatarEmoji] = await Promise.all([
+          StorageService.getParentName(),
+          StorageService.getParentEmail(),
+          StorageService.getParentAvatarUrl(),
+          StorageService.getParentAvatarEmoji(),
+        ]);
+        setParentName(name || email);
+        setParentAvatarUrl(avatarUrl);
+        setParentAvatarEmoji(avatarEmoji);
+        setOnboardingVisible(false);
+      } else {
+        // Neither is active (else we'd already have redirected or hit a branch above) — reset
+        // any stale state from a previous run (e.g. a parent who was just deactivated via Parent
+        // Area) and show the "no one's active here yet" card.
+        setProfile(null);
+        setOnboardingVisible(!seenOnboarding);
+      }
     } catch (e) {
       console.error("Error loading app state", e);
     } finally {
@@ -29,100 +131,156 @@ export default function WelcomeScreen() {
     }
   };
 
-  const handleStartChatting = async () => {
-    if (!subscribed) {
-      // Direct them to tell their parent if not subscribed
-      return;
-    }
-    
-    if (!profile) {
-      // If subscribed but no profile yet, go to parent dashboard to set one up
-      router.push('/parent/gate');
-    } else {
-      // Go directly to chat list!
-      router.push('/chat');
-    }
+  const handleOnboardingDone = async () => {
+    setOnboardingVisible(false);
+    await StorageService.setOnboardingSeen();
   };
 
   if (loading) {
     return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#FFC93C" />
+      <View style={[styles.loadingContainer, { backgroundColor: colors.bg }]}>
+        <ActivityIndicator size="large" color={colors.primaryBtn} />
       </View>
     );
   }
 
   return (
-    <SafeAreaView style={styles.container}>
-      <View style={styles.content}>
-        
-        {/* Brand Header */}
-        <View style={styles.brandContainer}>
-          <Image 
-            source={require('@/assets/images/logo.png')} 
-            style={styles.logo}
-            resizeMode="contain"
-          />
-          <Text style={styles.title}>Crumbo</Text>
-          <Text style={styles.subtitle}>The cookie-jar chat messenger for kids!</Text>
-        </View>
-
-        {/* Dynamic Action Card */}
-        <View style={styles.card}>
-          {!subscribed ? (
-            <View style={styles.cardContent}>
-              <Text style={styles.cardEmoji}>🔒</Text>
-              <Text style={styles.cardTitle}>Ask your parent to set up Crumbo!</Text>
-              <Text style={styles.cardText}>
-                Crumbo is a safe space for messaging friends. We collect absolutely zero kid data.
-              </Text>
-              <TouchableOpacity 
-                style={styles.parentGateButton}
-                onPress={() => router.push('/parent/gate')}
-              >
-                <Text style={styles.parentGateButtonText}>Setup Crumbo for Kids</Text>
-              </TouchableOpacity>
-            </View>
-          ) : (
-            <View style={styles.cardContent}>
-              <Text style={styles.cardEmoji}>🍪</Text>
-              <Text style={styles.cardTitle}>
-                {profile ? `Hey, ${profile.name}!` : 'Ready to start?'}
-              </Text>
-              <Text style={styles.cardText}>
-                {profile 
-                  ? 'Your cookie jar is ready. Jump in to chat with your friends!' 
-                  : 'Your parent has activated Crumbo! Let\'s set up your profile.'}
-              </Text>
-              
-              <TouchableOpacity 
-                style={styles.primaryButton}
-                onPress={handleStartChatting}
-              >
-                <Text style={styles.primaryButtonText}>
-                  {profile ? 'Enter Cookie Jar 🍪' : 'Create Kid Profile'}
-                </Text>
-              </TouchableOpacity>
-            </View>
-          )}
-        </View>
-
-        {/* Footer Area for parents */}
-        <View style={styles.footer}>
-          {subscribed && (
-            <TouchableOpacity 
-              style={styles.linkButton} 
-              onPress={() => router.push('/parent/gate')}
-            >
-              <Text style={styles.linkButtonText}>Parents Area (Manage Subscription)</Text>
-            </TouchableOpacity>
-          )}
-          <Text style={styles.privacyText}>
-            Privacy promise: No child data will ever be collected or stored.
-          </Text>
-        </View>
-
+    <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
+      {/* Top right help + settings buttons */}
+      <View style={{ position: 'absolute', top: insets.top + s(4), right: s(16), zIndex: 10, flexDirection: 'row', alignItems: 'center' }}>
+        <TouchableOpacity
+          style={{ padding: s(8) }}
+          onPress={() => setOnboardingVisible(true)}
+        >
+          <Ionicons name="help-circle-outline" size={s(26)} color={colors.textSecondary} />
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={{ padding: s(8) }}
+          onPress={() => setSettingsVisible(true)}
+        >
+          <Ionicons name="settings-outline" size={s(26)} color={colors.textSecondary} />
+        </TouchableOpacity>
       </View>
+
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={{ flex: 1 }}
+      >
+        <ScrollView 
+          contentContainerStyle={[styles.content, { flex: 0, flexGrow: 1 }]} 
+          keyboardShouldPersistTaps="handled"
+        >
+          {/* Brand Header — centered within the whole region above the card (not just anchored
+              to the top with a spacer below it), so it sits in the middle of that space rather
+              than hugging the status bar. */}
+          <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+            <View style={styles.brandContainer}>
+              <Image
+                source={require('@/assets/images/logo.png')}
+                style={[styles.logo, { width: s(112), height: s(112) }]}
+                resizeMode="contain"
+              />
+              <Text style={[styles.title, { fontSize: s(40), color: colors.text }]}>Crumbo</Text>
+              <Text style={[styles.subtitle, { fontSize: s(16), color: colors.textSecondary }]}>The cookie-jar chat messenger for kids!</Text>
+            </View>
+          </View>
+
+          {/* Dynamic Action Card — exactly one of profile (a kid) or parentActive can be true at
+              a time (see activateKidOnThisDevice/activateParentOnDevice). There is no self-service
+              login or logout here: activating OR deactivating anyone on this device is a Parent
+              Area action only, to prevent an accidental one-tap deactivation from this screen. */}
+          <View style={[styles.card, { backgroundColor: colors.cardBg, borderColor: colors.border, shadowColor: colors.textSecondary }]}>
+            {profile ? (
+              <View style={styles.cardContent}>
+                <TouchableOpacity onPress={() => setAvatarPickerVisible(true)}>
+                  <Text style={[styles.cardEmoji, { fontSize: s(48) }]}>{profile.avatarEmoji || '🍪'}</Text>
+                </TouchableOpacity>
+                <Text style={[styles.cardTitle, { fontSize: s(22), color: colors.text }]}>Hey, {profile.name}!</Text>
+                <Text style={[styles.cardText, { fontSize: s(14), lineHeight: s(20), color: colors.textSecondary }]}>
+                  Your cookie jar is ready. Jump in to chat with your friends!
+                </Text>
+                <TouchableOpacity
+                  style={[styles.primaryButton, { backgroundColor: colors.primaryBtn }]}
+                  onPress={() => router.push('/chat')}
+                >
+                  <Text style={[styles.primaryButtonText, { fontSize: s(18), color: colors.primaryBtnText }]}>Enter Cookie Jar 🍪</Text>
+                </TouchableOpacity>
+              </View>
+            ) : parentActive ? (
+              <View style={styles.cardContent}>
+                <TouchableOpacity style={{ marginBottom: s(12) }} onPress={parentAvatarPicker.openPicker}>
+                  <AdultAvatar uri={parentAvatarUrl || undefined} emoji={parentAvatarEmoji || undefined} size={s(64)} />
+                </TouchableOpacity>
+                <Text style={[styles.cardTitle, { fontSize: s(22), color: colors.text }]}>Welcome back{parentName ? `, ${parentName}` : ''}!</Text>
+                <Text style={[styles.cardText, { fontSize: s(14), lineHeight: s(20), color: colors.textSecondary }]}>
+                  You&apos;re active on this device. Jump in to chat with your kids or paired parents!
+                </Text>
+                <TouchableOpacity
+                  style={[styles.primaryButton, { backgroundColor: colors.primaryBtn }]}
+                  onPress={() => router.push('/parent/chat')}
+                >
+                  <Text style={[styles.primaryButtonText, { fontSize: s(18), color: colors.primaryBtnText }]}>Enter 🍪</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <View style={[styles.cardContent, { width: '100%' }]}>
+                <Text style={[styles.cardEmoji, { fontSize: s(48) }]}>🍪</Text>
+                <Text style={[styles.cardTitle, { fontSize: s(22), color: colors.text }]}>No one&apos;s active here yet</Text>
+                <Text style={[styles.cardText, { fontSize: s(14), lineHeight: s(20), color: colors.textSecondary }]}>
+                  Ask a parent to sign in to the Parents Area and activate a user on this device.
+                </Text>
+              </View>
+            )}
+          </View>
+
+          {/* Footer Area — flex:1 fills the remaining space below the card, with the privacy
+              promise and version centered in that space (where the "Parents Area" button used
+              to sit) rather than pinned to the bottom edge. */}
+          <View style={[styles.footer, { flex: 1, justifyContent: 'center' }]}>
+            <Text style={[styles.privacyText, { fontSize: s(11), color: colors.textSecondary }]}>
+              Privacy promise: No child data will ever be collected or stored.
+            </Text>
+            {APP_VERSION && (
+              <Text style={[styles.versionText, { fontSize: s(10), color: colors.textSecondary }]}>
+                v{APP_VERSION}
+              </Text>
+            )}
+          </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
+      <AppSettingsModal
+        visible={settingsVisible}
+        onClose={() => setSettingsVisible(false)}
+        showParentControlsOption={true}
+        onParentControlsPress={() => router.push('/parent/gate')}
+      />
+      <OnboardingModal
+        visible={onboardingVisible}
+        onDone={handleOnboardingDone}
+      />
+      <AvatarPickerModal
+        visible={avatarPickerVisible}
+        currentEmoji={profile?.avatarEmoji}
+        onClose={() => setAvatarPickerVisible(false)}
+        onSelect={handleKidAvatarSelect}
+      />
+      <CustomAlertModal
+        visible={alertConfig.visible}
+        title={alertConfig.title}
+        message={alertConfig.message}
+        buttons={alertConfig.buttons}
+        onClose={() => setAlertConfig(prev => ({ ...prev, visible: false }))}
+      />
+      <AdultAvatarPickerModal
+        visible={parentAvatarPicker.pickerVisible}
+        currentAvatarUrl={parentAvatarUrl}
+        currentAvatarEmoji={parentAvatarEmoji}
+        onClose={parentAvatarPicker.closePicker}
+        onTakePhoto={parentAvatarPicker.takePhoto}
+        onChooseFromGallery={parentAvatarPicker.chooseFromGallery}
+        onRemovePhoto={parentAvatarPicker.removePhoto}
+        onSelectPreset={parentAvatarPicker.selectPreset}
+      />
     </SafeAreaView>
   );
 }
@@ -140,14 +298,13 @@ const styles = StyleSheet.create({
   },
   content: {
     flex: 1,
-    justifyContent: 'space-between',
+    justifyContent: 'flex-start',
     alignItems: 'center',
     paddingHorizontal: 24,
     paddingVertical: 32,
   },
   brandContainer: {
     alignItems: 'center',
-    marginTop: 40,
   },
   logo: {
     width: 140,
@@ -221,37 +378,91 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: '#4E342E',
   },
-  parentGateButton: {
-    backgroundColor: '#4E342E',
-    borderRadius: 20,
-    paddingVertical: 16,
-    paddingHorizontal: 32,
-    width: '100%',
-    alignItems: 'center',
-  },
-  parentGateButtonText: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: '#FFFFFF',
-  },
   footer: {
     width: '100%',
     alignItems: 'center',
     gap: 12,
-  },
-  linkButton: {
-    padding: 8,
-  },
-  linkButtonText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#8D6E63',
-    textDecorationLine: 'underline',
   },
   privacyText: {
     fontSize: 11,
     color: '#A1887F',
     textAlign: 'center',
     fontWeight: '600',
+  },
+  versionText: {
+    fontSize: 10,
+    color: '#A1887F',
+    textAlign: 'center',
+    fontWeight: '600',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(78, 52, 46, 0.4)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  modalContent: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 28,
+    padding: 24,
+    width: '100%',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.15,
+    shadowRadius: 16,
+    elevation: 5,
+    borderWidth: 2,
+    borderColor: '#FFF5D1',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  modalTitle: {
+    fontSize: 22,
+    fontWeight: '900',
+    color: '#4E342E',
+  },
+  modalSubtitle: {
+    fontSize: 14,
+    color: '#795548',
+    lineHeight: 20,
+    marginBottom: 20,
+    fontWeight: '600',
+  },
+  label: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#8D6E63',
+    textTransform: 'uppercase',
+    marginBottom: 8,
+  },
+  input: {
+    backgroundColor: '#FFFDF5',
+    borderWidth: 2,
+    borderColor: '#FFEFC0',
+    borderRadius: 16,
+    height: 50,
+    paddingHorizontal: 16,
+    fontSize: 16,
+    color: '#4E342E',
+    fontWeight: '600',
+    marginBottom: 16,
+  },
+  modalSubmit: {
+    backgroundColor: '#FFC93C',
+    borderRadius: 16,
+    height: 52,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  modalSubmitText: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#4E342E',
   },
 });

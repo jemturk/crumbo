@@ -2,7 +2,7 @@
   "expo": {
     "name": "Crumbo",
     "slug": "Crumbo",
-    "version": "1.0.0",
+    "version": "1.0.5",
     "orientation": "portrait",
     "icon": "./assets/images/logo.png",
     "scheme": "crumbo",
@@ -19,7 +19,18 @@
       },
       "predictiveBackGestureEnabled": false,
       "package": "com.jemturk.crumbo",
-      "googleServicesFile": "./google-services.json"
+      "googleServicesFile": "./google-services.json",
+      "permissions": [
+        "android.permission.BIND_TELECOM_CONNECTION_SERVICE",
+        "android.permission.MANAGE_OWN_CALLS",
+        "android.permission.READ_CALL_LOG",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_PHONE_CALL",
+        "android.permission.USE_FULL_SCREEN_INTENT",
+        "android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.WAKE_LOCK"
+      ]
     },
     "web": {
       "output": "static",
@@ -30,12 +41,57 @@
       [
         "expo-splash-screen",
         {
-          "backgroundColor": "#FFC93C",
+          "backgroundColor": "#FFFDF3",
           "image": "./assets/images/logo.png",
           "imageWidth": 150
         }
       ],
-      "expo-notifications"
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/notification-icon.png",
+          "color": "#FFC93C"
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow Crumbo to access your camera for video calls.",
+          "microphonePermission": "Allow Crumbo to access your microphone for voice calls and voice messages."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow Crumbo to access your photos so you can send them to a friend.",
+          "cameraPermission": "Allow Crumbo to access your camera to take a photo to send to a friend."
+        }
+      ],
+      "@config-plugins/react-native-callkeep",
+      "./plugins/withCallkeepSelfManagedPermissions.js",
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Allow Crumbo to use Face ID to sign in to the Parent Area."
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "buildArchs": [
+              "arm64-v8a"
+            ]
+          }
+        }
+      ],
+      "@react-native-google-signin/google-signin",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Allow Crumbo to access your microphone for voice calls and voice messages."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

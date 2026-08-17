@@ -1,0 +1,21 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'com.jemturk.crumbo.incomingcall'
+version = '1.0.0'
+
+android {
+  namespace "expo.modules.incomingcall"
+  defaultConfig {
+    versionCode 1
+    versionName '1.0.0'
+  }
+}
+
+dependencies {
+  // For VoiceConnectionService.getConnection(uuid) — resolving the Telecom connection directly
+  // from IncomingCallActionReceiver, see that class's doc comment for why.
+  implementation project(':react-native-callkeep')
+}
