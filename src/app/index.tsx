@@ -19,12 +19,12 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 // actual shipped version.
 const APP_VERSION = Constants.expoConfig?.version;
 
-// Supabase Edge Functions can't actually serve HTML to a real browser (confirmed: the platform
-// rewrites the response to text/plain the moment a client sends its normal Accept-Encoding: gzip
-// header, regardless of what the function itself sets — a documented restriction, not a bug here;
-// HTML from Edge Functions requires a paid plan + custom domain) — hosted as a Claude Artifact
-// instead, which renders correctly.
-const PRIVACY_POLICY_URL = 'https://claude.ai/code/artifact/239fa1e5-a9fe-40b9-a5d7-cd7970c29468';
+// Hosted as a static page on GitHub Pages (docs/privacy-policy.html), alongside
+// reset-password.html/verify-email.html — not as a Supabase Edge Function. Supabase's edge
+// gateway rewrites any text/html response to text/plain the moment a client sends its normal
+// Accept-Encoding: gzip header, regardless of what the function itself sets — a documented
+// platform restriction (HTML from Edge Functions needs a Pro plan + custom domain), not a bug.
+const PRIVACY_POLICY_URL = 'https://jemturk.github.io/crumbo/privacy-policy.html';
 
 export default function WelcomeScreen() {
   const router = useRouter();

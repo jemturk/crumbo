@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Crumbo Privacy Policy</title>
+<style>
+  :root {
+    color-scheme: light;
+    --bg: #FFFDF3;
+    --card: #FFFFFF;
+    --text: #4E342E;
+    --text-secondary: #8D6E63;
+    --text-faint: #A1887F;
+    --border: #FFF5D1;
+    --border-strong: #FFEFC0;
+    --accent: #FFC93C;
+    --accent-text: #4E342E;
+    --link: #8D5A00;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    margin: 0;
+    padding: 0;
+    line-height: 1.6;
+  }
+
+  .wrap {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: clamp(24px, 5vw, 56px) clamp(20px, 5vw, 32px) 80px;
+  }
+
+  header.hero {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 8px;
+  }
+
+  .cookie-mark {
+    font-size: 40px;
+    line-height: 1;
+    flex-shrink: 0;
+  }
+
+  .titles h1 {
+    font-family: ui-rounded, "SF Pro Rounded", system-ui, sans-serif;
+    font-size: clamp(24px, 4vw, 30px);
+    font-weight: 900;
+    margin: 0;
+    letter-spacing: 0.2px;
+  }
+
+  .titles .app-name {
+    color: var(--accent);
+    -webkit-text-stroke: 0.4px var(--text);
+  }
+
+  .meta {
+    color: var(--text-secondary);
+    font-size: 14px;
+    font-weight: 600;
+    margin: 4px 0 0 54px;
+  }
+
+  .intro {
+    margin-top: 28px;
+    padding: 18px 20px;
+    background: var(--card);
+    border: 1.5px solid var(--border);
+    border-radius: 16px;
+    color: var(--text-secondary);
+    font-size: 15px;
+  }
+
+  .intro strong { color: var(--text); }
+
+  nav.toc {
+    margin-top: 28px;
+    padding: 16px 20px;
+    border: 1.5px dashed var(--border-strong);
+    border-radius: 16px;
+  }
+
+  nav.toc h2 {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-faint);
+    margin: 0 0 10px;
+    font-weight: 800;
+  }
+
+  nav.toc ol {
+    margin: 0;
+    padding-left: 20px;
+    columns: 2;
+    column-gap: 24px;
+  }
+
+  nav.toc li { margin-bottom: 6px; break-inside: avoid; }
+
+  nav.toc a {
+    color: var(--text);
+    text-decoration: none;
+    font-size: 14.5px;
+    font-weight: 600;
+  }
+  nav.toc a:hover { text-decoration: underline; }
+
+  main section {
+    margin-top: 40px;
+    scroll-margin-top: 20px;
+  }
+
+  main h2 {
+    font-family: ui-rounded, "SF Pro Rounded", system-ui, sans-serif;
+    font-size: 20px;
+    font-weight: 800;
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    margin: 0 0 14px;
+    padding-bottom: 10px;
+    border-bottom: 2px solid var(--border);
+  }
+
+  h2 .num {
+    color: var(--accent);
+    font-size: 15px;
+    font-weight: 900;
+    font-variant-numeric: tabular-nums;
+  }
+
+  main p, main li {
+    font-size: 15.5px;
+    color: var(--text);
+  }
+
+  main p { margin: 0 0 14px; }
+
+  main ul {
+    margin: 0 0 14px;
+    padding-left: 22px;
+  }
+
+  main li { margin-bottom: 8px; }
+
+  main li strong, main p strong { color: var(--text); }
+
+  .subtle { color: var(--text-secondary); }
+
+  table.providers {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 4px 0 18px;
+    font-size: 14.5px;
+  }
+  table.providers th {
+    text-align: left;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-faint);
+    padding: 0 10px 8px 0;
+    border-bottom: 1.5px solid var(--border-strong);
+  }
+  table.providers td {
+    padding: 10px 10px 10px 0;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+    color: var(--text);
+  }
+  table.providers tr:last-child td { border-bottom: none; }
+  table.providers td.role { color: var(--text-secondary); }
+
+  a { color: var(--link); }
+
+  .contact-card {
+    margin-top: 40px;
+    padding: 22px 24px;
+    background: var(--card);
+    border: 2px solid var(--border-strong);
+    border-radius: 20px;
+    text-align: center;
+  }
+  .contact-card h2 {
+    border: none;
+    justify-content: center;
+    padding-bottom: 0;
+  }
+  .contact-card a.email {
+    display: inline-block;
+    margin-top: 10px;
+    font-weight: 800;
+    font-size: 16px;
+    color: var(--accent-text);
+    background: var(--accent);
+    padding: 10px 22px;
+    border-radius: 14px;
+    text-decoration: none;
+  }
+
+  footer {
+    margin-top: 48px;
+    text-align: center;
+    color: var(--text-faint);
+    font-size: 12.5px;
+  }
+
+  @media (max-width: 480px) {
+    nav.toc ol { columns: 1; }
+    .meta { margin-left: 0; }
+    header.hero { flex-wrap: wrap; }
+  }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header class="hero">
+    <div class="cookie-mark">🍪</div>
+    <div class="titles">
+      <h1><span class="app-name">Crumbo</span> Privacy Policy</h1>
+    </div>
+  </header>
+  <p class="meta">Last updated: August 17, 2026</p>
+
+  <div class="intro">
+    <strong>Crumbo</strong> is a cookie-jar themed chat app that a parent sets up so their child can message and call friends in a private, supervised space. This policy explains what information Crumbo collects, how it's used, and the choices parents have. A child does not create their own account — every profile is created and managed by a parent from the Parents Area.
+  </div>
+
+  <nav class="toc" aria-label="Table of contents">
+    <h2>On this page</h2>
+    <ol>
+      <li><a href="#collect">Information we collect</a></li>
+      <li><a href="#use">How we use information</a></li>
+      <li><a href="#controls">Parental controls</a></li>
+      <li><a href="#sharing">Storage &amp; sharing</a></li>
+      <li><a href="#retention">Retention &amp; deletion</a></li>
+      <li><a href="#children">Children's privacy</a></li>
+      <li><a href="#security">Security</a></li>
+      <li><a href="#changes">Changes to this policy</a></li>
+      <li><a href="#contact">Contact us</a></li>
+    </ol>
+  </nav>
+
+  <main>
+    <section id="collect">
+      <h2><span class="num">01</span> Information We Collect</h2>
+      <p><strong>From a parent, when they register:</strong></p>
+      <ul>
+        <li>Email address</li>
+        <li>Password — stored securely; Crumbo does not store or have access to a parent's password in plain text</li>
+      </ul>
+      <p><strong>For each child profile a parent creates:</strong></p>
+      <ul>
+        <li>A display name chosen by the parent</li>
+        <li>An automatically generated "Cookie Code" (e.g. <em>CRUM-123-456</em>), used to pair a child's profile with buddies from other families. A child never logs in with it — a parent activates a child's profile on a specific device from the Parents Area, and only a parent can do that.</li>
+        <li>An avatar — chosen from a set of emoji, not a photo</li>
+        <li>Which features a parent has enabled or paused for that child (chat, voice calls, video calls, sending photos, sending drawings)</li>
+      </ul>
+      <p><strong>Content created while using Crumbo:</strong></p>
+      <ul>
+        <li>Text messages sent between paired children</li>
+        <li>Photos and drawings sent between paired children</li>
+        <li>Records of calls placed — who called whom, when, and how long, not a recording of the call itself</li>
+        <li>Which other child profiles a child is paired with ("buddies")</li>
+      </ul>
+      <p><strong>Automatically collected technical information:</strong></p>
+      <ul>
+        <li>A push notification token, used only to alert a device about a new message or incoming call</li>
+        <li>Whether the app is running on a physical device, used only to decide whether push notifications can be registered</li>
+      </ul>
+      <p class="subtle">We do not collect a child's real name (only whatever display name the parent enters), address, phone number, precise location, or a photo of the child (an avatar is a chosen emoji).</p>
+    </section>
+
+    <section id="use">
+      <h2><span class="num">02</span> How We Use Information</h2>
+      <p>We use the information above only to operate Crumbo's core functionality:</p>
+      <ul>
+        <li>Creating and pairing child profiles</li>
+        <li>Delivering messages, photos, drawings, and calls between paired children</li>
+        <li>Enforcing whatever restrictions a parent has set for a specific child</li>
+        <li>Letting a parent review chat and call history for their own children from the Parents Area</li>
+        <li>Sending push notifications for new messages or incoming calls</li>
+        <li>Verifying a parent's email address and enabling password resets for their own account</li>
+      </ul>
+      <p>We do not use any information collected through Crumbo for advertising. Crumbo does not sell or rent information to third parties, and does not use any third-party analytics or advertising SDKs.</p>
+    </section>
+
+    <section id="controls">
+      <h2><span class="num">03</span> Parental Controls</h2>
+      <p>Every child profile is created and owned by a parent through the Parents Area. From there, a parent can at any time:</p>
+      <ul>
+        <li>Pause or re-enable chat, voice calls, video calls, sending photos, and sending drawings — independently, for each child</li>
+        <li>Review a child's message history and call log with each of their paired buddies</li>
+        <li>Remove a buddy pairing</li>
+        <li>Deactivate a child's profile on a device (for example, if the device is lost) — access is revoked immediately, and reactivating the profile anywhere always requires signing back into the Parents Area, never just presenting the Cookie Code</li>
+        <li>Delete a child's profile entirely</li>
+      </ul>
+    </section>
+
+    <section id="sharing">
+      <h2><span class="num">04</span> How Information Is Stored and Shared</h2>
+      <p>Crumbo uses the following service providers to operate. Each processes information only as necessary to provide their specific service, and each has their own privacy policy:</p>
+      <table class="providers">
+        <thead>
+          <tr><th>Provider</th><th>Role</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Supabase, Inc.</strong></td>
+            <td class="role">Database, authentication, and file storage for messages, photos, drawings, and account information. <a href="https://supabase.com/privacy" target="_blank" rel="noopener">Privacy policy</a></td>
+          </tr>
+          <tr>
+            <td><strong>Agora, Inc.</strong></td>
+            <td class="role">Real-time infrastructure carrying audio/video for voice and video calls. Call audio/video is transmitted live and is not recorded or stored by Crumbo. <a href="https://www.agora.io/en/privacy-policy/" target="_blank" rel="noopener">Privacy policy</a></td>
+          </tr>
+          <tr>
+            <td><strong>Resend</strong></td>
+            <td class="role">Delivers transactional emails to parents (verifying an email address, resetting a password). Never receives information about a child. <a href="https://resend.com/legal/privacy-policy" target="_blank" rel="noopener">Privacy policy</a></td>
+          </tr>
+          <tr>
+            <td><strong>Expo / Google</strong></td>
+            <td class="role">Delivers push notifications to a device.</td>
+          </tr>
+        </tbody>
+      </table>
+      <p>We do not share information with any other third party, and we do not sell information to anyone.</p>
+    </section>
+
+    <section id="retention">
+      <h2><span class="num">05</span> Retention and Deletion</h2>
+      <p>Information is retained for as long as a parent's account and a child's profile remain active. A parent can delete a child's profile at any time from the Parents Area, which removes it from the parent's account and from the device. To request complete deletion of a child's historical messages or media from our servers, a parent can contact us using the address below.</p>
+      <p>A parent can also request deletion of their own account and all associated data at any time by contacting us.</p>
+    </section>
+
+    <section id="children">
+      <h2><span class="num">06</span> Children's Privacy</h2>
+      <p>Crumbo is intended to be used by children only under the direct setup and ongoing supervision of a parent or guardian. A child cannot create a Crumbo profile on their own — every profile is created by a parent, who controls what it can do and can review its activity or delete it at any time. We do not knowingly allow a child to interact with Crumbo except through a profile a parent has created for them.</p>
+      <p>If you are a parent and believe your child has provided us with information outside of this parent-managed process, please contact us below so we can address it.</p>
+    </section>
+
+    <section id="security">
+      <h2><span class="num">07</span> Security</h2>
+      <p>We take reasonable measures to protect the information Crumbo stores. No method of electronic storage or transmission is 100% secure, and we cannot guarantee absolute security.</p>
+    </section>
+
+    <section id="changes">
+      <h2><span class="num">08</span> Changes to This Policy</h2>
+      <p>We may update this Privacy Policy from time to time. If we make material changes, we will update the "Last updated" date at the top of this page.</p>
+    </section>
+  </main>
+
+  <div class="contact-card" id="contact">
+    <h2><span class="num">09</span> Contact Us</h2>
+    <p class="subtle">Questions about this policy, or a request to delete information tied to your account or a child's profile:</p>
+    <a class="email" href="mailto:unturkk@gmail.com">unturkk@gmail.com</a>
+  </div>
+
+  <footer>Crumbo — the cookie-jar chat messenger for kids.</footer>
+</div>
+
+</body>
+</html>
