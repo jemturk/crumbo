@@ -51,13 +51,18 @@ export default function ParentGate() {
   const { s } = useDisplayScale();
   const { theme, colors, isDark } = useAppTheme();
   
-  // Mode: 'signin' | 'register'
-  const [mode, setMode] = useState<'signin' | 'register'>('signin');
-  
+  // Mode: 'signin' | 'register' | 'reset' — 'reset' is the "enter the code we emailed you" step
+  // of the forgot-password flow (see handleForgotPassword/handleCompletePasswordReset).
+  const [mode, setMode] = useState<'signin' | 'register' | 'reset'>('signin');
+
   const [emailInput, setEmailInput] = useState('');
   const [passwordInput, setPasswordInput] = useState('');
   const [nameInput, setNameInput] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+
+  const [resetCodeInput, setResetCodeInput] = useState('');
+  const [resetPasswordInput, setResetPasswordInput] = useState('');
+  const [showResetPassword, setShowResetPassword] = useState(false);
 
   const [error, setError] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -299,13 +304,18 @@ export default function ParentGate() {
     }
 
     setLoading(true);
+    // redirectTo is now unused (the recovery email template shows a code, not a link — see
+    // supabase/templates/recovery.html's own comment for why) but harmless to leave set.
     const { error: resetError } = await supabase.auth.resetPasswordForEmail(email, {
       redirectTo: RESET_PASSWORD_REDIRECT_URL,
     });
     setLoading(false);
 
     // Supabase intentionally reports success here even for an email with no account, to avoid
-    // leaking which emails are registered — so this message is shown either way.
+    // leaking which emails are registered — so this message is shown either way, and the code
+    // step is shown regardless (entering a wrong/unregistered email's code just fails at verify
+    // time with the same generic error as an expired code, which is the same non-leaking
+    // property, just one step later).
     if (resetError) {
       if (resetError.code === 'over_email_send_rate_limit') {
         showAlert("Too Many Requests", "Supabase's shared email sender is rate-limited — please wait a bit before requesting another reset email.");
@@ -313,9 +323,61 @@ export default function ParentGate() {
         console.error('Reset password error:', resetError.code, resetError.status, resetError.message);
         showAlert("Error", `${resetError.message} (${resetError.code || 'unknown'})`);
       }
-    } else {
-      showAlert("Check Your Email 📬", `If an account exists for ${email}, a password reset link has been sent.`);
+      return;
     }
+
+    setResetCodeInput('');
+    setResetPasswordInput('');
+    setMode('reset');
+  };
+
+  /**
+   * Completes the forgot-password flow with the 6-digit code from the recovery email (see
+   * supabase/templates/recovery.html) instead of a magic link. Supabase's PKCE code-exchange
+   * flow requires the exchange to happen in the SAME client that called resetPasswordForEmail
+   * (confirmed: "both auth code and code verifier should be non-empty" when attempted from a
+   * different browser/device) — since a reset is always requested from this app, a link opened
+   * anywhere else (a PC, or even this same phone's browser) can never complete it. An emailed
+   * code verified via verifyOtp has no such restriction: it's a server-side shared secret, not a
+   * client-local code/verifier pairing, so it works from wherever the parent reads their email.
+   */
+  const handleCompletePasswordReset = async () => {
+    const email = emailInput.trim().toLowerCase();
+    const code = resetCodeInput.trim();
+    const pwd = resetPasswordInput.trim();
+
+    if (!code) {
+      showAlert("Code Required", "Enter the 6-digit code from your email.");
+      return;
+    }
+    if (!PASSWORD_COMPLEXITY_REGEX.test(pwd)) {
+      showAlert("Weak Password", PASSWORD_REQUIREMENTS_TEXT);
+      return;
+    }
+
+    setLoading(true);
+    const { error: verifyError } = await supabase.auth.verifyOtp({ email, token: code, type: 'recovery' });
+    if (verifyError) {
+      setLoading(false);
+      showAlert("Invalid Code", "That code is incorrect or has expired. Request a new one from \"Forgot password?\".");
+      return;
+    }
+
+    const { error: updateError } = await supabase.auth.updateUser({ password: pwd });
+    setLoading(false);
+
+    if (updateError) {
+      showAlert("Error", `${updateError.message} (${updateError.code || 'unknown'})`);
+      return;
+    }
+
+    // This session only exists to authorize the password change — sign out and send them
+    // through the normal sign-in flow so fetchAndRestoreParentData runs as usual.
+    await supabase.auth.signOut();
+    setResetCodeInput('');
+    setResetPasswordInput('');
+    setMode('signin');
+    showAlert("Password Updated 🔒", "Your password has been changed. Please sign in with your new password.");
   };
 
   const handleRegister = async () => {
@@ -449,24 +511,78 @@ export default function ParentGate() {
             Sign in or register to manage controls, buddy requests, and limits.
           </Text>
 
-          {/* Tab Selection */}
-          <View style={[styles.tabContainer, { backgroundColor: isDark ? colors.inputBg : '#FFFDF0', borderColor: colors.borderStrong, borderRadius: s(25), padding: s(4), marginBottom: s(24) }]}>
-            <TouchableOpacity 
-              style={[styles.tabButton, { borderRadius: s(20) }, mode === 'signin' ? { backgroundColor: colors.primaryBtn } : styles.tabButtonInactive]} 
-              onPress={() => { setMode('signin'); setError(false); }}
-            >
-              <Text style={[styles.tabText, { fontSize: s(15) }, mode === 'signin' ? { color: colors.primaryBtnText } : { color: colors.textSecondary }]}>Sign In</Text>
-            </TouchableOpacity>
-            
-            <TouchableOpacity 
-              style={[styles.tabButton, { borderRadius: s(20) }, mode === 'register' ? { backgroundColor: colors.primaryBtn } : styles.tabButtonInactive]} 
-              onPress={() => { setMode('register'); setError(false); }}
-            >
-              <Text style={[styles.tabText, { fontSize: s(15) }, mode === 'register' ? { color: colors.primaryBtnText } : { color: colors.textSecondary }]}>Register</Text>
-            </TouchableOpacity>
-          </View>
+          {/* Tab Selection — hidden mid-reset, same reasoning as reset-password.tsx's own close
+              button only appearing once past the "exchanging" state: this step isn't a mode you
+              tab into, it's a consequence of "Forgot password?" that should be finished or
+              explicitly backed out of, not casually switched away from. */}
+          {mode !== 'reset' && (
+            <View style={[styles.tabContainer, { backgroundColor: isDark ? colors.inputBg : '#FFFDF0', borderColor: colors.borderStrong, borderRadius: s(25), padding: s(4), marginBottom: s(24) }]}>
+              <TouchableOpacity
+                style={[styles.tabButton, { borderRadius: s(20) }, mode === 'signin' ? { backgroundColor: colors.primaryBtn } : styles.tabButtonInactive]}
+                onPress={() => { setMode('signin'); setError(false); }}
+              >
+                <Text style={[styles.tabText, { fontSize: s(15) }, mode === 'signin' ? { color: colors.primaryBtnText } : { color: colors.textSecondary }]}>Sign In</Text>
+              </TouchableOpacity>
 
-          {mode === 'signin' ? (
+              <TouchableOpacity
+                style={[styles.tabButton, { borderRadius: s(20) }, mode === 'register' ? { backgroundColor: colors.primaryBtn } : styles.tabButtonInactive]}
+                onPress={() => { setMode('register'); setError(false); }}
+              >
+                <Text style={[styles.tabText, { fontSize: s(15) }, mode === 'register' ? { color: colors.primaryBtnText } : { color: colors.textSecondary }]}>Register</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+
+          {mode === 'reset' ? (
+            <View style={styles.formWidth}>
+              <Text style={[styles.subtitle, { color: colors.textSecondary, fontSize: s(14), lineHeight: s(20), marginBottom: s(20) }]}>
+                Enter the 6-digit code we sent to {emailInput.trim()} along with your new password.
+              </Text>
+
+              <TextInput
+                style={[styles.input, { backgroundColor: colors.inputBg, color: colors.inputText, borderColor: colors.borderStrong, height: s(52), borderRadius: s(20), fontSize: s(16), paddingHorizontal: s(20), marginBottom: s(14), textAlign: 'center', letterSpacing: s(4) }]}
+                placeholder="123456"
+                placeholderTextColor={colors.textSecondary}
+                keyboardType="number-pad"
+                maxLength={6}
+                value={resetCodeInput}
+                onChangeText={setResetCodeInput}
+              />
+
+              <View style={styles.passwordFieldWrapper}>
+                <TextInput
+                  style={[styles.input, { backgroundColor: colors.inputBg, color: colors.inputText, borderColor: colors.borderStrong, height: s(52), borderRadius: s(20), fontSize: s(16), paddingLeft: s(20), paddingRight: s(48), marginBottom: s(6) }]}
+                  placeholder="New Password"
+                  placeholderTextColor={colors.textSecondary}
+                  secureTextEntry={!showResetPassword}
+                  value={resetPasswordInput}
+                  onChangeText={setResetPasswordInput}
+                  onSubmitEditing={handleCompletePasswordReset}
+                />
+                <TouchableOpacity
+                  style={[styles.passwordVisibilityBtn, { right: s(14), bottom: s(6) }]}
+                  onPress={() => setShowResetPassword(!showResetPassword)}
+                >
+                  <Ionicons name={showResetPassword ? 'eye-off' : 'eye'} size={s(20)} color={colors.textSecondary} />
+                </TouchableOpacity>
+              </View>
+              <Text style={[styles.passwordHintText, { color: colors.textSecondary, fontSize: s(12), marginBottom: s(14) }]}>
+                {PASSWORD_REQUIREMENTS_TEXT}
+              </Text>
+
+              <TouchableOpacity style={[styles.verifyButton, { backgroundColor: colors.primaryBtn, borderRadius: s(20), paddingVertical: s(16), marginTop: s(8) }]} onPress={handleCompletePasswordReset} disabled={loading}>
+                {loading ? (
+                  <ActivityIndicator color={colors.primaryBtnText} />
+                ) : (
+                  <Text style={[styles.verifyButtonText, { fontSize: s(16), color: colors.primaryBtnText }]}>Update Password</Text>
+                )}
+              </TouchableOpacity>
+
+              <TouchableOpacity onPress={() => setMode('signin')} style={styles.forgotPasswordBtn} disabled={loading}>
+                <Text style={[styles.forgotPasswordText, { color: colors.textSecondary, fontSize: s(13) }]}>Back to Sign In</Text>
+              </TouchableOpacity>
+            </View>
+          ) : mode === 'signin' ? (
             <View style={styles.formWidth}>
               {/* Email Input */}
               <TextInput
