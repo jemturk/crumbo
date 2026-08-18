@@ -242,8 +242,10 @@ async function compressAndUploadImage(localUri: string, kind: 'photo' | 'drawing
     throw new Error(error.message || 'Failed to upload image');
   }
 
-  const { data } = supabase.storage.from('kid_media').getPublicUrl(path);
-  return data.publicUrl;
+  // kid_media is a private bucket (see supabase/migrations/20260817000010) — the message just
+  // embeds this storage path, and a signed URL is resolved on demand at render time (see
+  // resolveMediaUrl / ChatMediaBubble), not a permanent public link.
+  return path;
 }
 
 /**
@@ -266,8 +268,58 @@ async function uploadAudioMessage(localUri: string, senderCookieCode: string): P
     throw new Error(error.message || 'Failed to upload voice message');
   }
 
-  const { data } = supabase.storage.from('kid_media').getPublicUrl(path);
-  return data.publicUrl;
+  // Same as compressAndUploadImage — a storage path, not a public URL (private bucket).
+  return path;
+}
+
+// A signed URL is only good for SIGNED_URL_TTL_SECONDS (see get-media-url Edge Function) — cache
+// briefly so re-rendering the same message (scrolling, re-mounts) doesn't re-request one every
+// time, but still refresh well before it'd actually expire.
+const mediaUrlCache = new Map<string, { url: string; expiresAt: number }>();
+const MEDIA_URL_CACHE_MARGIN_MS = 60_000;
+
+// Old messages embed a full public URL from when kid_media was a public bucket; new ones embed a
+// bare storage path. Normalizes either into the path get-media-url expects.
+function extractKidMediaPath(pathOrUrl: string): string | null {
+  const marker = '/storage/v1/object/public/kid_media/';
+  const markerIndex = pathOrUrl.indexOf(marker);
+  if (markerIndex !== -1) {
+    return decodeURIComponent(pathOrUrl.slice(markerIndex + marker.length).split('?')[0]);
+  }
+  if (pathOrUrl.startsWith('http://') || pathOrUrl.startsWith('https://')) {
+    return null; // an unrecognized absolute URL — not something we can resolve
+  }
+  return pathOrUrl;
+}
+
+/**
+ * Resolves a kid_media message's embedded value (a storage path, or a legacy public URL from
+ * before the bucket was made private) into a short-lived, authorized signed URL for actually
+ * displaying it. Returns null if the caller isn't authorized (not the uploader, no shared
+ * conversation with them) or the resolve failed.
+ */
+async function resolveMediaUrl(pathOrUrl: string): Promise<string | null> {
+  const path = extractKidMediaPath(pathOrUrl);
+  if (!path) return null;
+
+  const cached = mediaUrlCache.get(path);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.url;
+  }
+
+  try {
+    const { data, error } = await supabase.functions.invoke('get-media-url', { body: { path } });
+    if (error || !data?.url) {
+      console.error('Error resolving media URL:', error || data);
+      return null;
+    }
+    const ttlMs = (typeof data.expiresIn === 'number' ? data.expiresIn : 600) * 1000;
+    mediaUrlCache.set(path, { url: data.url, expiresAt: Date.now() + ttlMs - MEDIA_URL_CACHE_MARGIN_MS });
+    return data.url;
+  } catch (e) {
+    console.error('Error resolving media URL:', e);
+    return null;
+  }
 }
 
 /**
@@ -317,17 +369,16 @@ async function generateUniqueCookieCode(): Promise<string> {
   for (let attempt = 0; attempt < 5; attempt++) {
     const candidate = randomCookieCode();
     try {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('cookie_code')
-        .like('cookie_code', 'PARENT:%')
-        .like('push_token', `%"cookieCode":"${candidate}"%`)
-        .limit(1);
+      // Kid codes are now their own indexed profiles row (see rpc_create_kid_row) rather than
+      // nested JSON scanned via LIKE — this is a plain O(1) existence check.
+      const { data: available, error } = await supabase.rpc('rpc_check_cookie_code_available', {
+        p_candidate: candidate,
+      });
       if (error) {
         console.error("Error checking cookie code uniqueness:", error);
         return candidate; // Can't verify — don't block profile creation on it.
       }
-      if (!data || data.length === 0) return candidate;
+      if (available) return candidate;
       // Collision — loop and try another candidate.
     } catch (e) {
       console.error("Error checking cookie code uniqueness:", e);
@@ -352,7 +403,22 @@ async function getDeviceId(): Promise<string> {
   return generated;
 }
 
+// The caller's own auth.users id — required on every direct own-row profiles insert/upsert so
+// it satisfies the `user_id = auth.uid()` RLS check (see supabase/migrations/20260817000000_
+// rls_lockdown.sql). Null if there's no live session (shouldn't happen at any call site below,
+// which only ever run once a parent is signed in or a kid has completed the anonymous-auth bind).
+async function getAuthUserId(): Promise<string | null> {
+  const { data } = await supabase.auth.getUser();
+  return data?.user?.id ?? null;
+}
+
 export const StorageService = {
+  // Resolves a kid_media message's embedded path (or legacy public URL) to a short-lived signed
+  // URL actually usable to display it — see ChatMediaBubble/VoiceMessageBubble.
+  async getMediaUrl(pathOrUrl: string): Promise<string | null> {
+    return resolveMediaUrl(pathOrUrl);
+  },
+
   // Parent Subscription
   async getParentEmail(): Promise<string | null> {
     return await AsyncStorage.getItem(KEYS.PARENT_EMAIL);
@@ -566,6 +632,18 @@ export const StorageService = {
   async createKidProfile(name: string): Promise<KidProfile> {
     // e.g. CRUM-123-456 — checked against the server for an existing collision first (bug #2).
     const cookieCode = await generateUniqueCookieCode();
+
+    // Claims the row server-side (owner_user_id = this parent's auth.uid()) — this is what lets
+    // rpc_activate_kid/rpc_read_owned_parent_row/etc. later recognize this parent as the owner.
+    // Without this, the kid would exist only in local/JSON caches with no row RLS could ever
+    // authorize anyone against.
+    const { error: createRowError } = await supabase.rpc('rpc_create_kid_row', {
+      p_cookie_code: cookieCode,
+      p_name: name,
+    });
+    if (createRowError) {
+      console.error("Error creating kid row on server:", createRowError);
+    }
 
     // A kid's own parent is a chat contact from the moment they exist — no pairing needed, same
     // as the parent's own side already auto-including every kid they manage (getParentContacts).
@@ -821,16 +899,14 @@ export const StorageService = {
         let avatarEmoji = f.avatarEmoji;
         let avatarUrl = f.avatarUrl;
         try {
-          const { data: friendData } = await supabase
-            .from('profiles')
-            .select('push_token')
-            .eq('cookie_code', f.cookieCode)
-            .single();
-          if (friendData?.push_token) {
-            const friendPayload = JSON.parse(friendData.push_token);
-            name = friendPayload.parentName || name;
-            avatarEmoji = friendPayload.parentAvatarEmoji || avatarEmoji;
-            avatarUrl = friendPayload.parentAvatarUrl || avatarUrl;
+          const { data: contact } = await supabase.rpc('rpc_get_parent_contact_public', {
+            p_cookie_code: f.cookieCode,
+          });
+          const row = Array.isArray(contact) ? contact[0] : contact;
+          if (row) {
+            name = row.name || name;
+            avatarEmoji = row.avatar_emoji || avatarEmoji;
+            avatarUrl = row.avatar_url || avatarUrl;
           }
         } catch {
           // Offline/lookup failure — fall back to the cached snapshot values above.
@@ -1029,13 +1105,15 @@ export const StorageService = {
   async registerPushToken(token: string | null): Promise<void> {
     try {
       const profile = await this.getKidProfile();
-      if (profile) {
+      const userId = await getAuthUserId();
+      if (profile && userId) {
         await supabase
           .from('profiles')
           .upsert({
             cookie_code: profile.cookieCode,
             push_token: token || null,
-            name: profile.name
+            name: profile.name,
+            user_id: userId
           });
       }
     } catch (e) {
@@ -1224,13 +1302,16 @@ export const StorageService = {
       if (!email) return;
 
       const pushTokenPayload = await this.buildParentPushTokenPayload();
+      const userId = await getAuthUserId();
+      if (!userId) return; // no live session — nothing we're allowed to write yet
 
       const { error: upsertError } = await supabase
         .from('profiles')
         .upsert({
           cookie_code: `PARENT:${email}`,
           push_token: pushTokenPayload,
-          name: PARENT_ROW_NAME_MARKER
+          name: PARENT_ROW_NAME_MARKER,
+          user_id: userId
         });
 
       if (upsertError) {
@@ -1253,13 +1334,16 @@ export const StorageService = {
    */
   async createParentAccount(email: string): Promise<'created' | 'exists'> {
     const pushTokenPayload = await this.buildParentPushTokenPayload();
+    const userId = await getAuthUserId();
+    if (!userId) throw new Error("Failed to create parent account: no active session");
 
     const { error } = await supabase
       .from('profiles')
       .insert({
         cookie_code: `PARENT:${email}`,
         push_token: pushTokenPayload,
-        name: PARENT_ROW_NAME_MARKER
+        name: PARENT_ROW_NAME_MARKER,
+        user_id: userId
       });
 
     if (error) {
@@ -1514,10 +1598,17 @@ export const StorageService = {
         if (data?.push_token) {
           const payload = JSON.parse(data.push_token);
           payload.kids = (payload.kids || []).filter((k: any) => k.cookieCode !== cookieCode);
-          await supabase
-            .from('profiles')
-            .upsert({ cookie_code: data.cookie_code, push_token: JSON.stringify(payload), name: data.name });
+          const userId = await getAuthUserId();
+          if (userId) {
+            await supabase
+              .from('profiles')
+              .upsert({ cookie_code: data.cookie_code, push_token: JSON.stringify(payload), name: data.name, user_id: userId });
+          }
         }
+        // Also revoke the kid's own row (owner_user_id/user_id/bound_device_id) — otherwise a
+        // "deleted" kid would keep full messaging access under RLS, since that's granted via
+        // their own row, not the parent's kids[] JSON list this just edited.
+        await supabase.rpc('rpc_delete_kid_row', { p_cookie_code: cookieCode });
       } catch (e) {
         console.error("Error removing kid from server:", e);
       }
@@ -1537,34 +1628,42 @@ export const StorageService = {
    */
   async deactivateKidOnThisDevice(cookieCode: string): Promise<{ success: boolean }> {
     try {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('*')
-        .like('cookie_code', 'PARENT:%')
-        .like('push_token', `%"cookieCode":"${cookieCode}"%`);
+      // Real server-side revocation: nulls bound_device_id AND user_id on the kid's own row, so
+      // even a device whose cached anon-auth JWT is still technically valid immediately loses
+      // access (RLS re-checks profiles.user_id = auth.uid() live on every query).
+      const { data: revoked, error: revokeError } = await supabase.rpc('rpc_deactivate_kid', {
+        p_cookie_code: cookieCode,
+      });
+      if (revokeError || !revoked) return { success: false };
 
-      if (error || !data) return { success: false };
-
-      for (const parentRow of data) {
-        try {
-          const payload = JSON.parse(parentRow.push_token);
-          if (!payload?.kids) continue;
-          const kidIndex = payload.kids.findIndex((k: any) => k.cookieCode === cookieCode);
-          if (kidIndex === -1) continue;
-
-          payload.kids[kidIndex] = { ...payload.kids[kidIndex], boundDeviceId: null };
-          await supabase
-            .from('profiles')
-            .upsert({ cookie_code: parentRow.cookie_code, push_token: JSON.stringify(payload), name: parentRow.name });
-
-          const active = await this.getKidProfile();
-          if (active && active.cookieCode === cookieCode) {
-            await this.logoutKid();
+      // Keep the parent row's JSON mirror in sync for anything still reading boundDeviceId from
+      // it (e.g. Managed Users' Active/Inactive badge).
+      try {
+        const { data: owningRow } = await supabase.rpc('rpc_read_owned_parent_row', {
+          p_kid_cookie_code: cookieCode,
+        });
+        const row = Array.isArray(owningRow) ? owningRow[0] : owningRow;
+        if (row?.push_token) {
+          const payload = JSON.parse(row.push_token);
+          const kidIndex = (payload.kids || []).findIndex((k: any) => k.cookieCode === cookieCode);
+          if (kidIndex !== -1) {
+            payload.kids[kidIndex] = { ...payload.kids[kidIndex], boundDeviceId: null };
+            await supabase.rpc('rpc_write_owned_parent_row', {
+              p_kid_cookie_code: cookieCode,
+              p_push_token: JSON.stringify(payload),
+              p_name: row.name,
+            });
           }
-          return { success: true };
-        } catch {}
+        }
+      } catch (e) {
+        console.error("Error syncing boundDeviceId mirror after deactivation:", e);
       }
-      return { success: false };
+
+      const active = await this.getKidProfile();
+      if (active && active.cookieCode === cookieCode) {
+        await this.logoutKid();
+      }
+      return { success: true };
     } catch (e) {
       console.error("Error deactivating kid on this device:", e);
       return { success: false };
@@ -1583,54 +1682,75 @@ export const StorageService = {
    */
   async activateKidOnThisDevice(cookieCode: string): Promise<{ success: boolean; error?: 'ALREADY_ACTIVE_ELSEWHERE' | 'NOT_FOUND' }> {
     try {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('*')
-        .like('cookie_code', 'PARENT:%')
-        .like('push_token', `%"cookieCode":"${cookieCode}"%`);
-
-      if (error || !data) return { success: false, error: 'NOT_FOUND' };
-
-      let targetKid = null;
-      let owningRow = null;
-      let owningPayload: any = null;
-      for (const parentProfile of data) {
-        try {
-          const payload = JSON.parse(parentProfile.push_token);
-          const found = payload?.kids?.find((k: any) => k.cookieCode === cookieCode);
-          if (found) {
-            targetKid = found;
-            owningRow = parentProfile;
-            owningPayload = payload;
-            break;
-          }
-        } catch {}
-      }
-
-      if (!targetKid) return { success: false, error: 'NOT_FOUND' };
-
       const deviceId = await getDeviceId();
-      if (targetKid.boundDeviceId && targetKid.boundDeviceId !== deviceId) {
-        return { success: false, error: 'ALREADY_ACTIVE_ELSEWHERE' };
+
+      // Atomic, server-side claim while still parent-authenticated — rpc_activate_kid checks
+      // ownership (auth.uid() must be this kid's owner_user_id) and the device lock in one
+      // transaction, closing the old two-round-trip check-then-write race.
+      const { data: claim, error: claimError } = await supabase.rpc('rpc_activate_kid', {
+        p_cookie_code: cookieCode,
+        p_device_id: deviceId,
+      });
+      if (claimError || !claim?.success) {
+        return { success: false, error: claim?.error === 'ALREADY_ACTIVE_ELSEWHERE' ? 'ALREADY_ACTIVE_ELSEWHERE' : 'NOT_FOUND' };
       }
 
+      // Pull the kid's settings/friends JSON while still parent-authenticated (the RPC's
+      // authorization check accepts the owning parent), and patch the boundDeviceId mirror.
+      const { data: owningRow, error: readError } = await supabase.rpc('rpc_read_owned_parent_row', {
+        p_kid_cookie_code: cookieCode,
+      });
+      const row = Array.isArray(owningRow) ? owningRow[0] : owningRow;
+      if (readError || !row?.push_token) {
+        return { success: false, error: 'NOT_FOUND' };
+      }
+      const owningPayload = JSON.parse(row.push_token);
       const kidIndex = owningPayload.kids.findIndex((k: any) => k.cookieCode === cookieCode);
+      if (kidIndex === -1) return { success: false, error: 'NOT_FOUND' };
+
       owningPayload.kids[kidIndex] = { ...owningPayload.kids[kidIndex], boundDeviceId: deviceId };
-      await supabase
-        .from('profiles')
-        .upsert({
-          cookie_code: owningRow!.cookie_code,
-          push_token: JSON.stringify(owningPayload),
-          name: owningRow!.name
-        });
+      await supabase.rpc('rpc_write_owned_parent_row', {
+        p_kid_cookie_code: cookieCode,
+        p_push_token: JSON.stringify(owningPayload),
+        p_name: row.name,
+      });
+
+      // Mirror this into the LOCAL KIDS_LIST cache now, while the up-to-date payload is already
+      // in hand — the auth swap just below moves this device's session to the kid's anonymous
+      // one, and profiles is RLS'd to own-row-only, so any post-activation refresh the caller
+      // does (e.g. dashboard.tsx's refreshKidsFromServer -> fetchAndRestoreParentData) would
+      // silently see nothing afterward and leave the Managed Users "Active" badge stuck on stale
+      // data until the parent signs back in. Writing it here directly avoids depending on a
+      // parent-authenticated read that's no longer possible by the time the caller makes it.
+      await this.saveKidsList(owningPayload.kids);
 
       // Exactly one active user per device: free whichever OTHER kid was locally active here
-      // (their own boundDeviceId lock, server-side), and drop the parent-active flag too.
+      // (their own boundDeviceId lock, server-side), and drop the parent-active flag too. Both
+      // still run under the parent's own session, before it's swapped out below.
       const previouslyActive = await this.getKidProfile();
       if (previouslyActive && previouslyActive.cookieCode !== cookieCode) {
         await this.deactivateKidOnThisDevice(previouslyActive.cookieCode);
       }
       await this.deactivateParentOnDevice();
+
+      // This device is now the kid's device — swap this device's Supabase Auth session from the
+      // parent's real one to a fresh anonymous session bound to the kid's row. Without this,
+      // auth.uid() on every later call from this device would still resolve to the PARENT, and
+      // RLS would reject every kid-side read/write (messages, own profile row, etc.).
+      await supabase.auth.signOut().catch(() => {});
+      const { error: anonError } = await supabase.auth.signInAnonymously();
+      if (anonError) {
+        console.error("Error establishing kid anonymous session:", anonError);
+        return { success: false };
+      }
+      const { data: bound } = await supabase.rpc('rpc_bind_kid_device_auth', {
+        p_cookie_code: cookieCode,
+        p_device_id: deviceId,
+      });
+      if (!bound) {
+        console.error("Failed to bind kid device auth after activation");
+        return { success: false };
+      }
 
       // Writes KID_PROFILE/FRIENDS straight from the payload just fetched and patched above,
       // rather than going through activateKidProfile (which re-reads this device's own
@@ -1786,36 +1906,27 @@ export const StorageService = {
     if (!active) return null;
 
     try {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('*')
-        .like('cookie_code', 'PARENT:%')
-        .like('push_token', `%"cookieCode":"${active.cookieCode}"%`);
+      const { data: row, error } = await supabase.rpc('rpc_read_owned_parent_row', {
+        p_kid_cookie_code: active.cookieCode,
+      });
 
       if (error) {
         console.error("Failed to sync kid profile from Supabase:", error);
         return null; // query itself failed (network etc.) — caller falls back to stale cache
       }
 
-      // Find the parent profile that actually OWNS this kid
+      // Find this kid's entry inside the owning parent's payload.
       let targetKid = null;
-      let owningRow: any = null;
+      let owningRow: any = Array.isArray(row) ? row[0] : row;
       let owningPayload: any = null;
-      if (data) {
-        for (const parentProfile of data) {
-          try {
-            const payload = JSON.parse(parentProfile.push_token);
-            if (payload && payload.kids) {
-              const found = payload.kids.find((k: any) => k.cookieCode === active.cookieCode);
-              if (found) {
-                targetKid = found;
-                owningRow = parentProfile;
-                owningPayload = payload;
-                break;
-              }
-            }
-          } catch {}
-        }
+      if (owningRow?.push_token) {
+        try {
+          const payload = JSON.parse(owningRow.push_token);
+          if (payload && payload.kids) {
+            targetKid = payload.kids.find((k: any) => k.cookieCode === active.cookieCode) || null;
+            owningPayload = payload;
+          }
+        } catch {}
       }
 
       if (!targetKid) {
@@ -1858,10 +1969,12 @@ export const StorageService = {
             );
         const kidIndex = owningPayload.kids.findIndex((k: any) => k.cookieCode === active.cookieCode);
         owningPayload.kids[kidIndex] = { ...owningPayload.kids[kidIndex], friends: updatedFriends };
-        const { error: upsertError } = await supabase
-          .from('profiles')
-          .upsert({ cookie_code: owningRow.cookie_code, push_token: JSON.stringify(owningPayload), name: owningRow.name });
-        if (!upsertError) {
+        const { error: writeError } = await supabase.rpc('rpc_write_owned_parent_row', {
+          p_kid_cookie_code: active.cookieCode,
+          p_push_token: JSON.stringify(owningPayload),
+          p_name: owningRow.name,
+        });
+        if (!writeError) {
           targetKid = owningPayload.kids[kidIndex];
         }
       }
@@ -1919,33 +2032,24 @@ export const StorageService = {
     }
 
     try {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('*')
-        .like('cookie_code', 'PARENT:%')
-        .like('push_token', `%"cookieCode":"${active.cookieCode}"%`);
+      const { data: row, error } = await supabase.rpc('rpc_read_owned_parent_row', {
+        p_kid_cookie_code: active.cookieCode,
+      });
+      const parentRow = Array.isArray(row) ? row[0] : row;
+      if (error || !parentRow?.push_token) return false;
 
-      if (error || !data) return false;
+      const payload = JSON.parse(parentRow.push_token);
+      if (!payload?.kids) return false;
+      const kidIndex = payload.kids.findIndex((k: any) => k.cookieCode === active.cookieCode);
+      if (kidIndex === -1) return false;
 
-      for (const parentRow of data) {
-        try {
-          const payload = JSON.parse(parentRow.push_token);
-          if (!payload?.kids) continue;
-          const kidIndex = payload.kids.findIndex((k: any) => k.cookieCode === active.cookieCode);
-          if (kidIndex === -1) continue;
-
-          payload.kids[kidIndex] = { ...payload.kids[kidIndex], avatarEmoji };
-          const { error: upsertError } = await supabase
-            .from('profiles')
-            .upsert({
-              cookie_code: parentRow.cookie_code,
-              push_token: JSON.stringify(payload),
-              name: parentRow.name
-            });
-          return !upsertError;
-        } catch {}
-      }
-      return false;
+      payload.kids[kidIndex] = { ...payload.kids[kidIndex], avatarEmoji };
+      const { error: writeError } = await supabase.rpc('rpc_write_owned_parent_row', {
+        p_kid_cookie_code: active.cookieCode,
+        p_push_token: JSON.stringify(payload),
+        p_name: parentRow.name,
+      });
+      return !writeError;
     } catch (e) {
       console.error("Error syncing avatar to server:", e);
       return false;
@@ -2036,44 +2140,19 @@ export const StorageService = {
       return { status: 'paired' };
     }
 
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('*')
-      .like('cookie_code', 'PARENT:%')
-      .like('push_token', `%"cookieCode":"${friendCookieCode}"%`);
+    const { data, error } = await supabase.rpc('rpc_check_friend_pairing_status', {
+      p_friend_cookie_code: friendCookieCode,
+    });
 
     if (error) {
       throw error;
     }
 
-    if (!data || data.length === 0) {
-      return { status: 'pending' };
-    }
-
-    // Find the parent profile that actually OWNS the friend (not just a parent who has added the friend as a buddy)
-    let friendProfileInDb = null;
-    for (const parentProfile of data) {
-      try {
-        const payload = JSON.parse(parentProfile.push_token);
-        if (payload && payload.kids) {
-          const found = payload.kids.find((k: any) => k.cookieCode === friendCookieCode);
-          if (found) {
-            friendProfileInDb = found;
-            break;
-          }
-        }
-      } catch {}
-    }
-
-    const avatarEmoji: string | undefined = friendProfileInDb?.avatarEmoji;
-
-    if (friendProfileInDb && friendProfileInDb.friends) {
-      const isPaired = friendProfileInDb.friends.some((f: any) => f.cookieCode === kidCookieCode);
-      if (isPaired) {
-        return { status: 'paired', avatarEmoji };
-      }
-    }
-    return { status: 'pending', avatarEmoji };
+    const row = Array.isArray(data) ? data[0] : data;
+    return {
+      status: (row?.status as 'paired' | 'pending') || 'pending',
+      avatarEmoji: row?.avatar_emoji || undefined,
+    };
   },
 
   /** Updates one friend's cached avatarEmoji in both FRIENDS and the active kid's KIDS_LIST entry. */
@@ -2096,68 +2175,21 @@ export const StorageService = {
   async pairKidsViaQRCode(kidCookieCode: string, kidName: string, friendCookieCode: string, friendName: string): Promise<boolean> {
     try {
       // 1. Find Friend's Parent Profile in Supabase
-      const { data: parents, error } = await supabase
-        .from('profiles')
-        .select('*')
-        .like('cookie_code', 'PARENT:%')
-        .like('push_token', `%"cookieCode":"${friendCookieCode}"%`);
-
-      if (error || !parents || parents.length === 0) {
-        console.error("Could not find buddy's parent profile in Supabase");
-        return false;
-      }
-
-      // Find the specific parent profile that contains this kid
-      let targetParentRow = null;
-      let targetPayload: any = null;
-      for (const parent of parents) {
-        try {
-          const payload = JSON.parse(parent.push_token);
-          if (payload && payload.kids && payload.kids.some((k: any) => k.cookieCode === friendCookieCode)) {
-            targetParentRow = parent;
-            targetPayload = payload;
-            break;
-          }
-        } catch {}
-      }
-
-      if (!targetParentRow || !targetPayload) {
-        console.error("Buddy's kid profile not found inside the parent payloads");
-        return false;
-      }
-
-      // 2. Add Kid A (the scanner) to Kid B's (the scannee) friends list in their parent's profile
+      // Adds kid A (the scanner) to kid B's (the scannee) friends list, server-side — the RPC
+      // derives kidCookieCode's ownership from auth.uid() itself rather than trusting the
+      // argument, closing the forgery hole the old client-only version had (anyone with the anon
+      // key could previously write an arbitrary pairing by calling this with any codes at all).
       const kidAEmoji = randomAvatarEmoji();
-      const newFriendForB = {
-        id: Crypto.randomUUID(),
-        name: kidName,
-        cookieCode: kidCookieCode,
-        avatarEmoji: kidAEmoji
-      };
-
-      const updatedFriendKids = targetPayload.kids.map((k: any) => {
-        if (k.cookieCode === friendCookieCode) {
-          const friends = k.friends || [];
-          if (!friends.some((f: any) => f.cookieCode === kidCookieCode)) {
-            return { ...k, friends: [...friends, newFriendForB] };
-          }
-        }
-        return k;
+      const { data: result, error } = await supabase.rpc('rpc_pair_kids', {
+        p_kid_cookie_code: kidCookieCode,
+        p_kid_name: kidName,
+        p_kid_avatar_emoji: kidAEmoji,
+        p_friend_cookie_code: friendCookieCode,
+        p_friend_name: friendName,
       });
 
-      targetPayload.kids = updatedFriendKids;
-
-      // Upsert Friend's Parent Profile back to Supabase
-      const { error: upsertError } = await supabase
-        .from('profiles')
-        .upsert({
-          cookie_code: targetParentRow.cookie_code,
-          push_token: JSON.stringify(targetPayload),
-          name: targetParentRow.name
-        });
-
-      if (upsertError) {
-        console.error("Failed to update buddy's parent profile:", upsertError);
+      if (error || !result?.success) {
+        console.error("Failed to pair with buddy:", error || result?.error);
         return false;
       }
 
@@ -2186,60 +2218,18 @@ export const StorageService = {
       const myCode = `PARENT:${myEmail}`;
       if (friendParentCode === myCode) return false;
 
-      const { data: myRow, error: myError } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('cookie_code', myCode)
-        .single();
-      const { data: friendRow, error: friendError } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('cookie_code', friendParentCode)
-        .single();
+      // Caller's own identity is derived server-side from auth.uid(), not trusted from myEmail —
+      // closes the same forgery hole rpc_pair_kids does for the kid-to-kid path.
+      const { data: result, error } = await supabase.rpc('rpc_pair_parents', {
+        p_my_name: myName,
+        p_friend_parent_code: friendParentCode,
+        p_friend_name: friendName,
+      });
 
-      if (myError || !myRow || friendError || !friendRow) {
-        console.error("Could not find one or both parent profiles for pairing");
+      if (error || !result?.success) {
+        console.error("Failed to pair parent profiles:", error || result?.error);
         return false;
       }
-
-      const myPayload = JSON.parse(myRow.push_token);
-      const friendPayload = JSON.parse(friendRow.push_token);
-
-      if (!(myPayload.friends || []).some((f: any) => f.cookieCode === friendParentCode)) {
-        myPayload.friends = [...(myPayload.friends || []), {
-          id: Crypto.randomUUID(),
-          name: friendName,
-          cookieCode: friendParentCode,
-          avatarEmoji: friendPayload.parentAvatarEmoji || '👤',
-          avatarUrl: friendPayload.parentAvatarUrl || undefined
-        }];
-      }
-      if (!(friendPayload.friends || []).some((f: any) => f.cookieCode === myCode)) {
-        friendPayload.friends = [...(friendPayload.friends || []), {
-          id: Crypto.randomUUID(),
-          name: myName,
-          cookieCode: myCode,
-          avatarEmoji: myPayload.parentAvatarEmoji || '👤',
-          avatarUrl: myPayload.parentAvatarUrl || undefined
-        }];
-      }
-
-      const { error: myUpsertError } = await supabase
-        .from('profiles')
-        .upsert({ cookie_code: myRow.cookie_code, push_token: JSON.stringify(myPayload), name: myRow.name });
-      if (myUpsertError) {
-        console.error("Failed to update my own parent profile:", myUpsertError);
-        return false;
-      }
-
-      const { error: friendUpsertError } = await supabase
-        .from('profiles')
-        .upsert({ cookie_code: friendRow.cookie_code, push_token: JSON.stringify(friendPayload), name: friendRow.name });
-      if (friendUpsertError) {
-        console.error("Failed to update the other parent's profile:", friendUpsertError);
-        return false;
-      }
-
       return true;
     } catch (e) {
       console.error("Error in parent QR pairing:", e);
@@ -2272,30 +2262,20 @@ export const StorageService = {
     try {
       const relativeCode = `PARENT:${relativeEmail}`;
 
-      const { data: relativeRow } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('cookie_code', relativeCode)
-        .single();
+      // Caller must own kidCookieCode — verified server-side via owner_user_id/user_id, not
+      // trusted from the argument (today's version trusted it outright).
+      const { data: result, error } = await supabase.rpc('rpc_add_relative_to_kid', {
+        p_kid_cookie_code: kidCookieCode,
+        p_kid_name: kidName,
+        p_kid_avatar_emoji: kidAvatarEmoji ?? null,
+        p_relative_email: relativeEmail,
+      });
+      if (error) {
+        console.error("Failed to add relative:", error);
+        return 'error';
+      }
 
-      if (relativeRow && relativeRow.push_token) {
-        const relativePayload = JSON.parse(relativeRow.push_token);
-        if (!(relativePayload.friends || []).some((f: any) => f.cookieCode === kidCookieCode)) {
-          relativePayload.friends = [...(relativePayload.friends || []), {
-            id: Crypto.randomUUID(),
-            name: kidName,
-            cookieCode: kidCookieCode,
-            avatarEmoji: kidAvatarEmoji
-          }];
-          const { error: upsertError } = await supabase
-            .from('profiles')
-            .upsert({ cookie_code: relativeRow.cookie_code, push_token: JSON.stringify(relativePayload), name: relativeRow.name });
-          if (upsertError) {
-            console.error("Failed to update relative's profile:", upsertError);
-            return 'error';
-          }
-        }
-
+      if (result?.linked) {
         await this.addFriendToKidProfile(kidCookieCode, relativeDisplayName, relativeCode);
         await this.syncParentData();
         return 'linked';
@@ -2348,9 +2328,12 @@ export const StorageService = {
       }
       if (changed) {
         payload.friends = existingFriends;
-        await supabase
-          .from('profiles')
-          .upsert({ cookie_code: myRow.cookie_code, push_token: JSON.stringify(payload), name: myRow.name });
+        const userId = await getAuthUserId();
+        if (userId) {
+          await supabase
+            .from('profiles')
+            .upsert({ cookie_code: myRow.cookie_code, push_token: JSON.stringify(payload), name: myRow.name, user_id: userId });
+        }
       }
     } catch (e) {
       console.error("Error completing pending relative links:", e);

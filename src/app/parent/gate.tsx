@@ -6,7 +6,7 @@ import * as LocalAuthentication from 'expo-local-authentication';
 import Svg, { Path } from 'react-native-svg';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StorageService } from '@/services/storage';
-import { supabase, supabaseUrl } from '@/services/supabase';
+import { supabase } from '@/services/supabase';
 import { signInWithGoogle } from '@/services/googleAuth';
 import CustomAlertModal, { AlertButton } from '@/components/CustomAlertModal';
 import { useDisplayScale } from '@/hooks/use-display-scale';
@@ -16,13 +16,19 @@ import { useAppTheme } from '@/hooks/use-app-theme';
 const PASSWORD_COMPLEXITY_REGEX = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[^A-Za-z0-9]).{8,}$/;
 const PASSWORD_REQUIREMENTS_TEXT = 'Password must be at least 8 characters and include an uppercase letter, a lowercase letter, a number, and a special character.';
 
-// Web fallbacks (see supabase/functions/verify-email and reset-password-web) for whoever opens
-// the confirmation/reset email on a device without the app installed — these pages verify/reset
+// Web fallbacks (see docs/verify-email.html and docs/reset-password.html) for whoever opens the
+// confirmation/reset email on a device without the app installed — these pages verify/reset
 // there in the browser, then best-effort redirect into the app if it turns out to be installed
 // after all. Replaces pointing straight at the crumbo:// scheme, which just silently failed with
 // no fallback on a device (or a PC) that doesn't have the app.
-const VERIFY_EMAIL_REDIRECT_URL = `${supabaseUrl}/functions/v1/verify-email`;
-const RESET_PASSWORD_REDIRECT_URL = `${supabaseUrl}/functions/v1/reset-password-web`;
+//
+// Hosted on GitHub Pages, not as Supabase Edge Functions — Supabase's edge gateway rewrites any
+// text/html response to text/plain + nosniff the moment a real browser's default
+// Accept-Encoding: gzip header is present, so these pages showed raw HTML source instead of
+// rendering for every real user. Confirmed as a documented platform restriction (HTML from Edge
+// Functions needs a Pro plan + custom domain), not fixable in the function code itself.
+const VERIFY_EMAIL_REDIRECT_URL = 'https://jemturk.github.io/crumbo/verify-email.html';
+const RESET_PASSWORD_REDIRECT_URL = 'https://jemturk.github.io/crumbo/reset-password.html';
 
 // Google's official multi-color "G" mark — everything else on this button follows Crumbo's own
 // theme, but the mark itself is required to stay full-color per Google's sign-in button branding
@@ -104,18 +110,25 @@ export default function ParentGate() {
         // Auto-attempt on arrival — the whole point of opting in is not having to also tap a
         // button every time — but the manual "Use Biometrics" button (rendered whenever
         // biometricAvailable is true) covers a dismissed/cancelled prompt without a full remount.
-        handleBiometricSignIn();
+        handleBiometricSignIn(false);
       }
     } catch (e) {
       console.error("Error checking biometric availability", e);
     }
   };
 
-  const handleBiometricSignIn = async () => {
+  const handleBiometricSignIn = async (manual: boolean = true) => {
     const { data: { session } } = await supabase.auth.getSession();
-    if (!session?.user?.email) {
-      // Nothing to resume — the parent must have signed out, or the session genuinely expired.
-      // Not an error worth interrupting them with; the password form below still works.
+    // No session at all, or an anonymous one — a kid activated on this device (see
+    // activateKidOnThisDevice) replaces whatever parent session was persisted here with a fresh
+    // anonymous one, which has no email. Either way there's no parent session left to resume.
+    if (!session?.user?.email || session.user.is_anonymous) {
+      // The silent auto-attempt on arrival shouldn't interrupt anyone — the password form below
+      // still works either way. A manual tap producing literally nothing looks broken, though,
+      // so that one gets an explicit explanation instead.
+      if (manual) {
+        showAlert("Sign In Required", "There's no signed-in session on this device to resume with biometrics — please sign in with your email and password below.");
+      }
       return;
     }
 
@@ -512,7 +525,7 @@ export default function ParentGate() {
               {biometricAvailable && (
                 <TouchableOpacity
                   style={[styles.biometricButton, { borderColor: colors.borderStrong, borderRadius: s(20), paddingVertical: s(14), marginTop: s(12) }]}
-                  onPress={handleBiometricSignIn}
+                  onPress={() => handleBiometricSignIn(true)}
                   disabled={loading}
                 >
                   <Ionicons name="finger-print" size={s(20)} color={colors.text} style={{ marginRight: s(8) }} />

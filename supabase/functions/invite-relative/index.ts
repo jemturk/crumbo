@@ -75,10 +75,12 @@ Deno.serve(async (req) => {
     // invited previously by a different family, still pending. In that case, merge this link
     // into their existing pendingRelativeLinks instead of erroring out.
     const { data: inviteData, error: inviteError } = await admin.auth.admin.inviteUserByEmail(email, {
-      // Points at the reset-password-web page, not the bare crumbo:// scheme — see that
-      // function's own comment. It redirects into the app on a device that has it, and falls
-      // back to an in-browser "set your password" form everywhere else (PC, no app installed).
-      redirectTo: `${supabaseUrl}/functions/v1/reset-password-web`,
+      // Points at the reset-password page, not the bare crumbo:// scheme — see that page's own
+      // comment. It redirects into the app on a device that has it, and falls back to an
+      // in-browser "set your password" form everywhere else (PC, no app installed). Hosted on
+      // GitHub Pages, not as a Supabase Edge Function — see docs/reset-password.html's comment
+      // for why (Supabase's edge gateway can't actually serve HTML to a real browser).
+      redirectTo: 'https://jemturk.github.io/crumbo/reset-password.html',
       data: { pendingRelativeLinks: [newLink], invitedAs: relativeDisplayName || kidName },
     });
 

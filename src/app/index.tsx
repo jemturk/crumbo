@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from 'react';
-import { View, Text, StyleSheet, Image, TouchableOpacity, SafeAreaView, ActivityIndicator, Platform, KeyboardAvoidingView, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, Image, TouchableOpacity, SafeAreaView, ActivityIndicator, Platform, KeyboardAvoidingView, ScrollView, Linking } from 'react-native';
 import { useRouter, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import Constants from 'expo-constants';
 import { StorageService, KidProfile } from '@/services/storage';
@@ -18,6 +18,13 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 // Read from app.json (via app config, not hardcoded) so this can't drift out of sync with the
 // actual shipped version.
 const APP_VERSION = Constants.expoConfig?.version;
+
+// Supabase Edge Functions can't actually serve HTML to a real browser (confirmed: the platform
+// rewrites the response to text/plain the moment a client sends its normal Accept-Encoding: gzip
+// header, regardless of what the function itself sets — a documented restriction, not a bug here;
+// HTML from Edge Functions requires a paid plan + custom domain) — hosted as a Claude Artifact
+// instead, which renders correctly.
+const PRIVACY_POLICY_URL = 'https://claude.ai/code/artifact/239fa1e5-a9fe-40b9-a5d7-cd7970c29468';
 
 export default function WelcomeScreen() {
   const router = useRouter();
@@ -238,8 +245,13 @@ export default function WelcomeScreen() {
               to sit) rather than pinned to the bottom edge. */}
           <View style={[styles.footer, { flex: 1, justifyContent: 'center' }]}>
             <Text style={[styles.privacyText, { fontSize: s(11), color: colors.textSecondary }]}>
-              Privacy promise: No child data will ever be collected or stored.
+              Privacy promise: Your family&apos;s messages stay private to your account, encrypted, and are never sold or shared with third parties.
             </Text>
+            <TouchableOpacity onPress={() => Linking.openURL(PRIVACY_POLICY_URL)}>
+              <Text style={[styles.privacyText, { fontSize: s(11), color: colors.textSecondary, textDecorationLine: 'underline' }]}>
+                Read our Privacy Policy
+              </Text>
+            </TouchableOpacity>
             {APP_VERSION && (
               <Text style={[styles.versionText, { fontSize: s(10), color: colors.textSecondary }]}>
                 v{APP_VERSION}

@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Email Verified — Crumbo</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #FFFDF3;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    color: #4E342E;
+    padding: 24px;
+  }
+  .card {
+    max-width: 420px;
+    width: 100%;
+    background: #FFFFFF;
+    border: 2px solid #FFF5D1;
+    border-radius: 28px;
+    padding: 40px 32px;
+    text-align: center;
+    box-shadow: 0 6px 24px rgba(141, 110, 99, 0.15);
+  }
+  .emoji { font-size: 56px; margin-bottom: 8px; }
+  h1 { font-size: 24px; margin: 0 0 12px; }
+  p { font-size: 15px; line-height: 1.5; color: #8D6E63; margin: 0 0 28px; }
+  a.button {
+    display: inline-block;
+    background: #FFC93C;
+    color: #4E342E;
+    font-weight: 800;
+    text-decoration: none;
+    padding: 14px 28px;
+    border-radius: 20px;
+    font-size: 16px;
+  }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+  <!--
+    This page was originally served from a Supabase Edge Function (supabase/functions/
+    verify-email). Moved to GitHub Pages for the same reason as reset-password.html — Supabase's
+    edge gateway rewrites text/html responses to text/plain + nosniff whenever a real browser's
+    Accept-Encoding: gzip header is present, which is always; a documented platform restriction,
+    not something fixable in the function's own code.
+
+    Verification itself already happened before this page ever loads: Supabase's own
+    /auth/v1/verify endpoint validates the token and marks the account confirmed, THEN redirects
+    the browser here (see emailRedirectTo in gate.tsx's handleRegister) — this page's only job is
+    to show a real confirmation screen instead of a broken "can't open app" error, regardless of
+    which device opened the link. No token/code is read here, and no network calls are made.
+  -->
+  <div class="card">
+    <div class="emoji">🍪✅</div>
+    <h1>Email Verified!</h1>
+    <p>Your Crumbo account is confirmed. You can sign in and start setting up your family now.</p>
+    <a id="open-app-btn" class="button hidden" href="crumbo://parent/gate">Open Crumbo App</a>
+  </div>
+  <script>
+    const APP_DEEP_LINK = "crumbo://parent/gate";
+    const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+    if (isMobile) {
+      document.getElementById('open-app-btn').classList.remove('hidden');
+      // Best-effort jump straight into the app on a device that has it installed — the button
+      // above is the fallback for anywhere this silently does nothing (no app installed).
+      window.location.href = APP_DEEP_LINK;
+    }
+  </script>
+</body>
+</html>

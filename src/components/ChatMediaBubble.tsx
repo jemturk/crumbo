@@ -1,6 +1,7 @@
-import type { Message } from '@/services/storage';
+import { StorageService, type Message } from '@/services/storage';
 import { Image } from 'expo-image';
-import { StyleSheet } from 'react-native';
+import { useEffect, useState } from 'react';
+import { ActivityIndicator, StyleSheet, View } from 'react-native';
 
 export type ParsedMediaMessage =
   | { kind: 'photo' | 'drawing'; url: string }
@@ -10,7 +11,10 @@ export type ParsedMediaMessage =
 // encode a sent photo/drawing as `[IMAGE:<url>]`/`[DRAWING:<url>]`, and a voice message as
 // `[VOICE:<durationSeconds>|<url>]` (see StorageService.sendMediaMessage/sendVoiceMessage) —
 // this is the one place that knows those conventions, so a screen doesn't have to duplicate the
-// prefix-stripping to render one.
+// prefix-stripping to render one. Despite the field name, `url` is a kid_media storage PATH for
+// anything sent after the bucket went private (see StorageService.getMediaUrl) — a legacy full
+// public URL only for messages sent before that. Both are resolved to an actual displayable URI
+// by ChatMediaBubble/VoiceMessageBubble, not used directly.
 export function parseMediaMessage(text: string): ParsedMediaMessage | null {
   if (text.startsWith('[IMAGE:')) {
     return { kind: 'photo', url: text.replace('[IMAGE:', '').replace(/\]$/, '') };
@@ -61,10 +65,38 @@ export function formatMessagePreview(message: Message | null | undefined): strin
   return `${prefix}${message.text}`;
 }
 
+// `uri` here is what parseMediaMessage returned — a kid_media storage path (or legacy public
+// URL) — not yet a fetchable link, since the bucket is private. Resolved to a short-lived signed
+// URL on mount/change via StorageService.getMediaUrl before anything is rendered.
 export default function ChatMediaBubble({ uri, size, borderRadius }: { uri: string; size: number; borderRadius: number }) {
+  // Keyed by the uri it was resolved for, so a stale in-flight resolve from a previous `uri`
+  // can't ever be mistaken for the current one — avoids resetting state synchronously inside the
+  // effect (which itself causes an extra render pass) just to represent "not resolved yet".
+  const [resolved, setResolved] = useState<{ forUri: string; url: string | null } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    StorageService.getMediaUrl(uri).then(url => {
+      if (!cancelled) setResolved({ forUri: uri, url });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [uri]);
+
+  const resolvedUri = resolved?.forUri === uri ? resolved.url : null;
+
+  if (!resolvedUri) {
+    return (
+      <View style={[styles.bubble, styles.loading, { width: size, height: size, borderRadius }]}>
+        <ActivityIndicator />
+      </View>
+    );
+  }
+
   return (
     <Image
-      source={{ uri }}
+      source={{ uri: resolvedUri }}
       style={[styles.bubble, { width: size, height: size, borderRadius }]}
       contentFit="cover"
       transition={150}
@@ -75,5 +107,10 @@ export default function ChatMediaBubble({ uri, size, borderRadius }: { uri: stri
 const styles = StyleSheet.create({
   bubble: {
     overflow: 'hidden',
+  },
+  loading: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(128,128,128,0.15)',
   },
 });

@@ -8,8 +8,15 @@
  * Realtime (the call_signals table) already delivers signals to a foregrounded receiver;
  * this function exists purely to wake a receiver that is NOT currently connected.
  *
+ * Previously had NO caller verification at all — any request, from anyone, could claim any
+ * senderCode and push a fake "incoming call" to any receiverCode, or use the delivered/reason
+ * response to probe whether a given cookie code has an active push token registered. Fixed by
+ * requiring a real session and verifying the caller actually owns the senderCode they're
+ * claiming — the same ownership check call_signals' own RLS insert policy already enforces, kept
+ * consistent here since this function does on the caller's behalf what that insert does.
+ *
  * Deploy: supabase functions deploy notify-call
- * Env (auto-available in Edge runtime): SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+ * Env (auto-available in Edge runtime): SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY
  */
 
 // Supabase Edge Functions run on Deno – declare globals for the Node TS server.
@@ -45,6 +52,11 @@ Deno.serve(async (req) => {
   }
 
   try {
+    const authHeader = req.headers.get("Authorization");
+    if (!authHeader) {
+      return json({ error: "Missing Authorization header" }, 401);
+    }
+
     const {
       receiverCode,
       senderCode,
@@ -68,14 +80,34 @@ Deno.serve(async (req) => {
     }
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL");
+    const anonKey = Deno.env.get("SUPABASE_ANON_KEY");
     const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-    if (!supabaseUrl || !serviceKey) {
+    if (!supabaseUrl || !anonKey || !serviceKey) {
       return json({ error: "Supabase environment not configured" }, 500);
     }
 
-    const supabase = createClient(supabaseUrl, serviceKey, {
+    // Verify who's actually calling, and that they own the senderCode they're claiming — never
+    // trust a client-supplied senderCode as proof of identity.
+    const callerClient = createClient(supabaseUrl, anonKey, {
       auth: { persistSession: false },
+      global: { headers: { Authorization: authHeader } },
     });
+    const { data: userData, error: userError } = await callerClient.auth.getUser();
+    if (userError || !userData?.user?.id) {
+      return json({ error: "Could not verify caller identity" }, 401);
+    }
+
+    const admin = createClient(supabaseUrl, serviceKey, { auth: { persistSession: false } });
+
+    const { data: callerProfile } = await admin
+      .from("profiles")
+      .select("cookie_code")
+      .eq("user_id", userData.user.id)
+      .maybeSingle();
+
+    if (!callerProfile?.cookie_code || callerProfile.cookie_code !== senderCode) {
+      return json({ error: "Not authorized to send as this senderCode" }, 403);
+    }
 
     // The receiver's raw Expo push token is stored on their own profile row — for a kid row
     // that's StorageService.registerPushToken's plain upsert (push_token IS the token). A
@@ -83,7 +115,7 @@ Deno.serve(async (req) => {
     // payload (see buildParentPushTokenPayload), with the token nested at payload.pushToken
     // (StorageService.registerParentPushToken) — so a row can't be identified by shape alone
     // without trying both.
-    const { data: profile, error } = await supabase
+    const { data: profile, error } = await admin
       .from("profiles")
       .select("push_token")
       .eq("cookie_code", receiverCode)
