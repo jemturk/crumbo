@@ -10,7 +10,8 @@ import {
   Platform,
   Modal,
   ActivityIndicator,
-  KeyboardAvoidingView
+  KeyboardAvoidingView,
+  Linking
 } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { useRouter, useFocusEffect } from 'expo-router';
@@ -45,6 +46,11 @@ const formatCallDuration = (totalSeconds: number) => {
   const secs = totalSeconds % 60;
   return `${mins}:${secs.toString().padStart(2, '0')}`;
 };
+
+// Same page linked at the bottom of the welcome screen (see index.tsx) — hosted as a static
+// page on GitHub Pages, not a Supabase Edge Function (which can't actually serve HTML to a real
+// browser, see docs/privacy-policy.html's own comment for why).
+const PRIVACY_POLICY_URL = 'https://jemturk.github.io/crumbo/privacy-policy.html';
 
 export default function ParentDashboard() {
   const router = useRouter();
@@ -1176,6 +1182,12 @@ export default function ParentDashboard() {
             </View>
           )}
         </View>
+
+        <TouchableOpacity onPress={() => Linking.openURL(PRIVACY_POLICY_URL)} style={{ alignItems: 'center', paddingVertical: s(4) }}>
+          <Text style={{ fontSize: s(11), color: colors.textSecondary, textDecorationLine: 'underline', fontWeight: '600' }}>
+            Read our Privacy Policy
+          </Text>
+        </TouchableOpacity>
       </ScrollView>
 
       {/* Friends & Logs Modal */}
