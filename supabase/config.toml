@@ -429,15 +429,16 @@ deno_version = 2
 # Authorization header at all) — the platform's default JWT check would reject the request
 # before the function code ever runs, so both need it disabled explicitly.
 #
-# NOTE: both of these actually have a real, confirmed-live bug independent of verify_jwt — when a
-# real browser's default `Accept-Encoding: gzip` is sent, Supabase's edge gateway rewrites the
-# response to Content-Type: text/plain + X-Content-Type-Options: nosniff regardless of what the
-# function itself sets, so the page renders as raw source instead of HTML. Confirmed via curl with
-# and without Accept-Encoding, and confirmed this is a documented Supabase platform restriction
-# (HTML from Edge Functions requires a Pro plan + custom domain), not something fixable in code —
-# see the privacy-policy page's own history (moved back to a Claude Artifact for this reason).
-# These two need the same treatment (moved off Edge Functions, or the Pro+custom-domain upgrade)
-# before they'll actually render for a real user clicking the email link on their phone.
+# NOTE: both of these functions have a real bug independent of verify_jwt — when a real browser's
+# default `Accept-Encoding: gzip` is sent, Supabase's edge gateway rewrites the response to
+# Content-Type: text/plain + X-Content-Type-Options: nosniff regardless of what the function
+# itself sets, so the page renders as raw source instead of HTML. Confirmed via curl with and
+# without Accept-Encoding, and confirmed this is a documented Supabase platform restriction (HTML
+# from Edge Functions requires a Pro plan + custom domain), not something fixable in code. Fixed
+# by moving the actual pages to GitHub Pages instead (docs/verify-email.html,
+# docs/reset-password.html, docs/privacy-policy.html) — gate.tsx and invite-relative now point
+# there. These two functions are dead code at this point (nothing references them), kept
+# deployed only until that's fully confirmed working end-to-end.
 [functions.verify-email]
 verify_jwt = false
 
