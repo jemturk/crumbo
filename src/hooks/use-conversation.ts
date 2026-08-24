@@ -344,7 +344,11 @@ export function useConversation(params: UseConversationParams) {
     : (myCode ? { cookieCode: myCode, name: myName || myCode.replace('PARENT:', '') } : null);
   const callFriendParty: CallParty | null = mode === 'kid'
     ? friend
-    : (otherCode ? { cookieCode: otherCode, name: otherName || otherCode } : null);
+    // Reuse otherParty's resolution chain (resolvedContact -> route-param hints -> cookie code)
+    // instead of only otherName, so an incoming-call redirect — which only ever has friendName,
+    // never name (see _layout.tsx/callkeep.ts's notification handlers) — doesn't fall straight
+    // through to the raw cookie code while resolvedContact is still loading.
+    : (otherCode ? { cookieCode: otherCode, name: otherParty?.name || friendName || otherName || otherCode } : null);
 
   const call = useCall({
     friendId: mode === 'kid' ? (friendId || '') : (otherCode || ''),

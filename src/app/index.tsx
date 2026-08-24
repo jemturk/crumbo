@@ -98,6 +98,10 @@ export default function WelcomeScreen() {
       // — that's a deliberate hop back to this screen specifically to show the "Welcome back"
       // card below, not something to immediately redirect away from again.
       if (kidProf && !fromLogout) {
+        // Repairs a lost Supabase Auth session (app killed and relaunched, token expiry, ...)
+        // before this device ever reaches a screen that depends on it — see ensureKidSession's
+        // own doc for why a lost session otherwise fails silently forever.
+        await StorageService.ensureKidSession();
         router.replace('/chat');
         return;
       }
@@ -236,6 +240,13 @@ export default function WelcomeScreen() {
                 <Text style={[styles.cardText, { fontSize: s(14), lineHeight: s(20), color: colors.textSecondary }]}>
                   Ask a parent to sign in to the Parents Area and activate a user on this device.
                 </Text>
+                <TouchableOpacity
+                  style={[styles.primaryButton, { flexDirection: 'row', justifyContent: 'center', backgroundColor: colors.primaryBtn }]}
+                  onPress={() => router.push('/parent/gate')}
+                >
+                  <Ionicons name="lock-closed" size={s(16)} color={colors.primaryBtnText} style={{ marginRight: s(6) }} />
+                  <Text style={[styles.primaryButtonText, { fontSize: s(18), color: colors.primaryBtnText }]}>Parent Controls</Text>
+                </TouchableOpacity>
               </View>
             )}
           </View>

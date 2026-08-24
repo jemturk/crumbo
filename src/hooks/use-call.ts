@@ -133,6 +133,13 @@ export function useCall({
   // processes every duplicate: re-showing "Call Busy" each time (needing repeated dismissal, and
   // reappearing if a delayed duplicate lands right as the chat screen reopens).
   const handledTerminalUuids = useRef<Set<string>>(new Set());
+  // teardown() is itself reachable from this device's own button presses (declineCall/endCall),
+  // not just remote signals — and CallModal's controls stayed live for a while after the first
+  // press (the async signal-send + call-log write teardown does before the modal actually closes
+  // gave a user time to tap again, each tap fully re-running teardown: another signal sent,
+  // another duplicate [CALL_LOG:...] line written). Reset to false whenever a fresh callUUID is
+  // assigned (see the activeCallUuid effect below) so a new call can be torn down again.
+  const tearingDownRef = useRef(false);
   const handleEndCallRef = useRef<(() => Promise<void>) | null>(null);
   const handleDeclineCallRef = useRef<(() => Promise<void>) | null>(null);
   const handleMissCallRef = useRef<(() => Promise<void>) | null>(null);
@@ -152,6 +159,7 @@ export function useCall({
   }, [callRoom]);
   useEffect(() => {
     activeCallUuidRef.current = activeCallUuid;
+    if (activeCallUuid) tearingDownRef.current = false;
   }, [activeCallUuid]);
 
   useEffect(() => {
@@ -301,6 +309,8 @@ export function useCall({
   // --- Teardown (shared by decline / end / miss) ------------------------------
   const teardown = useCallback(
     async (signalType: 'DECLINE_CALL' | 'END_CALL' | 'CANCEL_CALL', logText: string) => {
+      if (tearingDownRef.current) return; // already tearing down this call — see tearingDownRef's own comment
+      tearingDownRef.current = true;
       Vibration.cancel();
       const uuid = activeCallUuidRef.current;
       if (isMounted.current) setCallStatus('ended');
@@ -445,6 +455,20 @@ export function useCall({
       }
 
       if (payload.type === 'DECLINE_CALL' || payload.type === 'CANCEL_CALL' || payload.type === 'END_CALL') {
+        // A kid declining a call can trigger several independent send sites in a row (native
+        // notification button, in-app decline, the deep-link "quick decline" effect, a
+        // background auto-decline for a locked call...) — see handledTerminalUuids' own comment.
+        // That dedup only works when every one of those sends the SAME callUUID, which isn't
+        // guaranteed: several of them fall back to a freshly-generated random UUID when the real
+        // one isn't available in that code path (see callkeep.ts's declineUUID fallback), so two
+        // duplicate signals for the very same decline can carry different UUIDs and both sail
+        // past the check below. The actually-reliable signal is this device's own call state: if
+        // there's no active call left to resolve, ANY terminal signal at this point is a
+        // duplicate of one already handled, regardless of what UUID it claims — bail out before
+        // ever touching the alert/teardown logic.
+        if (callStatusRef.current !== 'ringing' && callStatusRef.current !== 'connected') {
+          return;
+        }
         if (payload.callUUID) {
           if (handledTerminalUuids.current.has(payload.callUUID)) return; // duplicate delivery
           handledTerminalUuids.current.add(payload.callUUID);

@@ -159,8 +159,11 @@ export default function CallModal({
         {/* Empty spacer to push controls to bottom when active video is showing */}
         {videoConnected && <View style={{ flex: 1 }} />}
 
-        {/* Controls */}
-        {callStatus === 'ringing' && callDirection === 'incoming' ? (
+        {/* Controls — hidden once the call has ended so the modal's closing animation isn't
+            covering a still-live "end call" button (see teardown's re-entry guard in
+            use-call.ts for why a stray extra tap here used to resend a signal and rewrite the
+            call log every time). */}
+        {callStatus !== 'ended' && (callStatus === 'ringing' && callDirection === 'incoming' ? (
           <View style={[
             styles.controlsContainer,
             callTypeVideo ? styles.controlsContainerVideo : styles.controlsContainerAudio,
@@ -227,7 +230,7 @@ export default function CallModal({
               )}
             </View>
           </View>
-        )}
+        ))}
       </View>
     </Modal>
   );

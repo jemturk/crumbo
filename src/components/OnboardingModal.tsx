@@ -78,7 +78,7 @@ function ParentSetupVisual({ s, colors }: VisualProps) {
         <Text style={[styles.mockHeaderText, { color: colors.text, fontSize: s(13) }]}>Managed Users</Text>
       </View>
       <View style={[styles.mockDashedBtn, { borderColor: colors.primaryBtn, borderRadius: s(14), paddingVertical: s(10), gap: s(8) }]}>
-        <Ionicons name="add-circle" size={s(18)} color={colors.text} />
+        <Ionicons name="add" size={s(18)} color={colors.text} />
         <Text style={[styles.mockDashedBtnText, { color: colors.text, fontSize: s(13) }]}>Add Child Profile</Text>
       </View>
     </MockFrame>
@@ -91,7 +91,7 @@ function CookieCodeVisual({ s, colors }: VisualProps) {
       <MockCodePill s={s} colors={colors} code="CRUM-482-917" />
       <View style={[styles.mockQrRow, { gap: s(10) }]}>
         <View style={[styles.mockQrBox, { borderColor: colors.border, borderRadius: s(12), padding: s(8) }]}>
-          <Ionicons name="qr-code" size={s(36)} color={colors.text} />
+          <Ionicons name="qr-code-outline" size={s(36)} color={colors.text} />
         </View>
         <Text style={[styles.mockCaption, { color: colors.textSecondary, fontSize: s(12) }]}>Copy it, or{'\n'}share the QR</Text>
       </View>
@@ -104,11 +104,10 @@ function ActivateKidVisual({ s, colors }: VisualProps) {
     <MockFrame s={s} colors={colors}>
       <View style={[styles.mockHeaderRow, { gap: s(8), width: '100%', justifyContent: 'space-between' }]}>
         <Text style={[styles.mockHeaderText, { color: colors.text, fontSize: s(14) }]}>🍪 Alex</Text>
-        <View style={[styles.mockToggle, { width: s(30), height: s(30), borderRadius: s(15), backgroundColor: colors.successText }]}>
-          <Ionicons name="checkmark" size={s(16)} color="#FFFFFF" />
+        <View style={[styles.mockStatusPill, { backgroundColor: colors.successBg, borderColor: colors.successText, borderRadius: s(12), paddingVertical: s(6), paddingHorizontal: s(10) }]}>
+          <Text style={[styles.mockStatusPillText, { color: colors.successText, fontSize: s(12) }]}>Active</Text>
         </View>
       </View>
-      <MockBadge s={s} colors={colors} tone="good" icon="checkmark-circle" label="Active on this device" />
     </MockFrame>
   );
 }
@@ -118,7 +117,7 @@ function ParentChatVisual({ s, colors }: VisualProps) {
     <MockFrame s={s} colors={colors}>
       <View style={[styles.mockHeaderRow, { gap: s(6) }]}>
         <Ionicons name="chatbubbles-outline" size={s(16)} color={colors.textSecondary} />
-        <Text style={[styles.mockHeaderText, { color: colors.text, fontSize: s(13) }]}>Parent Chats</Text>
+        <Text style={[styles.mockHeaderText, { color: colors.text, fontSize: s(13) }]}>Chats</Text>
       </View>
       <View style={[styles.mockBubbleThem, { backgroundColor: colors.inputBg, borderRadius: s(14), paddingVertical: s(8), paddingHorizontal: s(12) }]}>
         <Text style={{ color: colors.text, fontSize: s(13) }}>Can Adam come over? 🍪</Text>
@@ -144,6 +143,8 @@ function RelativeInviteVisual({ s, colors }: VisualProps) {
 }
 
 function BuddyCodeVisual({ s, colors }: VisualProps) {
+  // Matches the real Friends & Logs list exactly: a Pending badge shows only while waiting on
+  // the other side to add back — a completed pairing shows no badge at all, just the contact.
   return (
     <View style={[styles.pairRow, { gap: s(10) }]}>
       <MockDevice s={s} colors={colors} label="ALEX'S BUDDIES">
@@ -153,7 +154,6 @@ function BuddyCodeVisual({ s, colors }: VisualProps) {
       <Ionicons name="swap-horizontal" size={s(20)} color={colors.textSecondary} />
       <MockDevice s={s} colors={colors} label="SAM'S BUDDIES">
         <Text style={[styles.mockMiniText, { color: colors.text, fontSize: s(12) }]}>Alex{'\n'}CRUM-482-917</Text>
-        <MockBadge s={s} colors={colors} tone="good" icon="checkmark-circle" label="Paired" />
       </MockDevice>
     </View>
   );
@@ -164,12 +164,12 @@ function QRPairVisual({ s, colors }: VisualProps) {
     <View style={{ alignItems: 'center', gap: s(12) }}>
       <View style={[styles.pairRow, { gap: s(10) }]}>
         <MockDevice s={s} colors={colors} label="ALEX'S PHONE">
-          <Ionicons name="qr-code" size={s(32)} color={colors.text} />
+          <Ionicons name="qr-code-outline" size={s(32)} color={colors.text} />
           <Text style={[styles.mockMiniText, { color: colors.textSecondary, fontSize: s(11) }]}>Show QR</Text>
         </MockDevice>
-        <Ionicons name="scan-outline" size={s(22)} color={colors.textSecondary} />
+        <Ionicons name="arrow-forward" size={s(22)} color={colors.textSecondary} />
         <MockDevice s={s} colors={colors} label="SAM'S PHONE">
-          <Ionicons name="camera" size={s(32)} color={colors.text} />
+          <Ionicons name="scan-outline" size={s(32)} color={colors.text} />
           <Text style={[styles.mockMiniText, { color: colors.textSecondary, fontSize: s(11) }]}>Scan QR</Text>
         </MockDevice>
       </View>
@@ -445,6 +445,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     alignSelf: 'flex-start',
   },
+  mockStatusPill: {
+    borderWidth: 1.5,
+  },
+  mockStatusPillText: {
+    fontWeight: '800',
+  },
   mockHeaderText: {
     fontWeight: '800',
   },
@@ -518,9 +524,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 4,
     borderWidth: 1.5,
+    flexShrink: 0,
   },
   mockBadgeText: {
     fontWeight: '800',
+    flexShrink: 0,
   },
   mockBubbleThem: {
     alignSelf: 'flex-start',

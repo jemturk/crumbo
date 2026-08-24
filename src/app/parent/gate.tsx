@@ -319,11 +319,17 @@ export default function ParentGate() {
     if (resetError) {
       if (resetError.code === 'over_email_send_rate_limit') {
         showAlert("Too Many Requests", "Supabase's shared email sender is rate-limited — please wait a bit before requesting another reset email.");
+        return;
+      } else if (resetError.code === 'unexpected_failure' && /confirmation email|sending.*email/i.test(resetError.message || '')) {
+        // Same false-negative as handleRegister's identical check — the email usually still
+        // arrives despite this error, so still move to the code-entry step rather than stopping
+        // here on what's normally not a real failure.
+        console.error('Reset-password reported a send-email failure (likely a false negative):', resetError.code, resetError.status, resetError.message);
       } else {
         console.error('Reset password error:', resetError.code, resetError.status, resetError.message);
         showAlert("Error", `${resetError.message} (${resetError.code || 'unknown'})`);
+        return;
       }
-      return;
     }
 
     setResetCodeInput('');
@@ -422,6 +428,19 @@ export default function ParentGate() {
           showAlert("Weak Password", PASSWORD_REQUIREMENTS_TEXT);
         } else if (signUpError.code === 'over_email_send_rate_limit') {
           showAlert("Too Many Requests", "Supabase's shared email sender is rate-limited — please wait a bit before trying to register again.");
+        } else if (signUpError.code === 'unexpected_failure' && /confirmation email/i.test(signUpError.message || '')) {
+          // Confirmed (see this error's own investigation): the account row and the confirmation
+          // email itself both actually go through — this specific error just means Supabase's
+          // signUp() call timed out waiting on the send (a GoTrue<->email-provider timing quirk,
+          // not a real failure) and reports it as an error anyway. Telling the user "Registration
+          // Failed" here is simply wrong; the honest state is "probably worked, go check your
+          // email" rather than a hard failure requiring a retry.
+          console.error('Sign-up reported a send-confirmation-email failure (likely a false negative — account/email usually still go through):', signUpError.code, signUpError.status, signUpError.message);
+          showAlert(
+            "Check Your Email 📬",
+            "Your account was likely created, but we couldn't confirm the confirmation email sent in time. Check your inbox for a link from Crumbo — if nothing arrives in a few minutes, try registering again.",
+            [{ text: "OK", onPress: () => setMode('signin') }]
+          );
         } else {
           console.error('Sign-up error:', signUpError.code, signUpError.status, signUpError.message);
           showAlert("Registration Failed", `${signUpError.message} (${signUpError.code || 'unknown'})`);

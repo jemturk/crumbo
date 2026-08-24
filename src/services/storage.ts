@@ -193,8 +193,14 @@ async function insertOutboxEntry(entry: OutboxEntry): Promise<boolean> {
         receiver_code: entry.receiverCode,
         text: entry.text,
         created_at: entry.createdAt,
+        call_uuid: extractCallLogUUID(entry.text),
       });
     if (error) {
+      if (error.code === '23505') {
+        // The call's other participant already wrote this exact call's log row first — that's
+        // the messages_call_uuid_unique constraint doing its job, not a failure to retry.
+        return true;
+      }
       console.error("Error writing message to Supabase:", error);
       return false;
     }
@@ -942,6 +948,7 @@ export const StorageService = {
       timestamp: new Date().toISOString(),
       sender: 'me',
     };
+    const callUuid = extractCallLogUUID(text);
 
     const { error } = await supabase
       .from('messages')
@@ -951,10 +958,35 @@ export const StorageService = {
         receiver_code: receiverCode,
         text,
         created_at: newMsg.timestamp,
+        call_uuid: callUuid,
       });
 
     if (error) {
-      throw new Error(error.message || "Failed to send message");
+      if (error.code === '23505' && callUuid) {
+        // The call's other participant already wrote this exact call's log row first — not a
+        // failure, the row already exists. Callers (use-call.ts's writeCallLog) unconditionally
+        // append whatever this function returns to local UI state, and that same row is also
+        // about to arrive independently via this device's realtime subscription — if we returned
+        // our own fabricated newMsg (its own random id) here, both would get appended as two
+        // separate bubbles for what's really one row, since appendMessage's dedup only catches
+        // an exact id match. Fetching and returning the real row instead means both paths hand
+        // appendMessage the SAME id, so the second one is a no-op like it should be.
+        const { data: existing } = await supabase
+          .from('messages')
+          .select('*')
+          .eq('call_uuid', callUuid)
+          .maybeSingle();
+        if (existing) {
+          return {
+            id: existing.id,
+            text: existing.text,
+            timestamp: existing.created_at,
+            sender: existing.sender_code === myCode ? 'me' : 'them',
+          };
+        }
+      } else {
+        throw new Error(error.message || "Failed to send message");
+      }
     }
     return newMsg;
   },
@@ -1154,25 +1186,34 @@ export const StorageService = {
             sender: isSentByMe ? 'me' : 'them',
           };
 
-          // Read AsyncStorage directly to de-dupe and avoid redundant API requests. Serialized
-          // per-friend (see withMessagesLock) so this can't race a local sendMessage/
-          // sendCallLogMessage/receiveMockMessage/getMessages sync writing the same key at the
-          // same time and silently dropping whichever wrote first.
-          const wasNew = await withMessagesLock(correspondingFriend.id, async () => {
+          // Read AsyncStorage directly to de-dupe the CACHE WRITE and avoid redundant API
+          // requests. Serialized per-friend (see withMessagesLock) so this can't race a local
+          // sendMessage/sendCallLogMessage/receiveMockMessage/getMessages sync writing the same
+          // key at the same time and silently dropping whichever wrote first.
+          //
+          // subscribeToMessages is called independently by more than one screen at once (the
+          // chat-list screen's own live-refresh subscription stays mounted underneath an open
+          // chat screen's separate subscription) — each is its own Realtime channel and each
+          // gets its own delivery of this same INSERT event, so onNewMessage must fire here
+          // unconditionally for every caller. It used to fire only when THIS callback's cache
+          // write won the race against the other subscriber's, which silently starved whichever
+          // subscriber lost — the open chat screen would never learn about a new message even
+          // though the list screen's own subscription (or the push notification, a separate
+          // path entirely) had already reacted to it, only resolving once the screen was
+          // reopened and did a fresh getMessages() fetch.
+          await withMessagesLock(correspondingFriend.id, async () => {
             const data = await AsyncStorage.getItem(`${KEYS.MESSAGES_PREFIX}${correspondingFriend.id}`);
             const cachedMessages: Message[] = data ? JSON.parse(data) : [];
-            if (cachedMessages.find(m => m.id === localMsg.id)) return false;
+            if (cachedMessages.find(m => m.id === localMsg.id)) return; // already cached
 
             // dedupeCallLogs collapses this against any existing call-log row for the same
-            // callUUID (see bug #5 — both sides of a missed call can independently write their
-            // own row for it). `wasNew` reflects whether localMsg actually survived that, so a
-            // duplicate that lost the tiebreak is written to cache (a no-op) but never surfaced
-            // to the UI via onNewMessage.
+            // callUUID — now mostly a defensive no-op given messages_call_uuid_unique makes a
+            // second such row impossible at the database level, but still relevant for any
+            // pre-constraint historical row still sitting in a device's local cache.
             const updated = dedupeCallLogs([...cachedMessages, localMsg]);
             await AsyncStorage.setItem(`${KEYS.MESSAGES_PREFIX}${correspondingFriend.id}`, JSON.stringify(updated));
-            return updated.some(m => m.id === localMsg.id);
           });
-          if (wasNew) onNewMessage(localMsg, correspondingFriend.id);
+          onNewMessage(localMsg, correspondingFriend.id);
         }
       )
       .subscribe();
@@ -1182,7 +1223,7 @@ export const StorageService = {
     };
   },
 
-  async buildParentPushTokenPayload(): Promise<string> {
+  async buildParentPushTokenPayload(): Promise<{ payload: string; serverReadSucceeded: boolean }> {
     const subscribed = await this.isSubscribed();
     const kids = await this.getKidsList();
     const activeProfile = await this.getKidProfile();
@@ -1197,7 +1238,15 @@ export const StorageService = {
 
     // Fetched once up front so both the `friends` preservation below AND the kids merge just
     // after it can use the same server snapshot, rather than two separate round-trips.
+    //
+    // serverReadSucceeded only ever means "we actually got real data back" — a query that
+    // completes with zero rows is indistinguishable from one RLS silently blocked (that's the
+    // whole point of RLS: it filters rows, it doesn't tell you why one's missing), so an empty
+    // result here is NOT proof this is genuinely a brand-new account. syncParentData uses this
+    // flag to refuse to write when it can't tell the two apart and the local cache is also
+    // empty — see its own comment for why that specific combination is dangerous.
     let serverPayload: any = null;
+    let serverReadSucceeded = false;
     if (email) {
       try {
         const { data } = await supabase
@@ -1207,9 +1256,11 @@ export const StorageService = {
           .single();
         if (data?.push_token) {
           serverPayload = JSON.parse(data.push_token);
+          serverReadSucceeded = true;
         }
       } catch {
-        // Offline/new account — nothing to preserve yet.
+        // Offline, genuinely new account, or an RLS/auth-timing hiccup — can't tell which from
+        // here, so serverReadSucceeded stays false and callers decide how cautious to be.
       }
     }
 
@@ -1283,7 +1334,7 @@ export const StorageService = {
       k => !localCookieCodes.has(k.cookieCode)
     );
 
-    return JSON.stringify({
+    const payload = JSON.stringify({
       subscribed,
       kids: [...kidsPayload, ...preservedServerKids],
       displaySize,
@@ -1294,6 +1345,8 @@ export const StorageService = {
       pushToken,
       friends: parentFriends
     });
+
+    return { payload, serverReadSucceeded };
   },
 
   async syncParentData(): Promise<void> {
@@ -1301,7 +1354,21 @@ export const StorageService = {
       const email = await this.getParentEmail();
       if (!email) return;
 
-      const pushTokenPayload = await this.buildParentPushTokenPayload();
+      const kids = await this.getKidsList();
+      const { payload: pushTokenPayload, serverReadSucceeded } = await this.buildParentPushTokenPayload();
+
+      // Refuse to write when we can't confirm what's actually already on the server AND the
+      // local cache has nothing either — that specific combination is exactly how "sync my
+      // theme setting" once turned into "silently delete every kid" (see
+      // buildParentPushTokenPayload's own comment). A confirmed server read with a genuinely
+      // empty kids[] is fine to reflect; a failed/blocked read with nothing local to fall back
+      // on is not — better to skip this sync and let a later, successful one catch up than risk
+      // writing back fewer kids than the parent actually has.
+      if (!serverReadSucceeded && kids.length === 0) {
+        console.error("Skipping syncParentData: couldn't confirm server state and local kids cache is empty — refusing to risk overwriting kids with an empty list.");
+        return;
+      }
+
       const userId = await getAuthUserId();
       if (!userId) return; // no live session — nothing we're allowed to write yet
 
@@ -1333,7 +1400,9 @@ export const StorageService = {
    * winner's row.
    */
   async createParentAccount(email: string): Promise<'created' | 'exists'> {
-    const pushTokenPayload = await this.buildParentPushTokenPayload();
+    // Unlike syncParentData, a brand-new account genuinely has no server row yet — an
+    // unsuccessful serverReadSucceeded here is expected, not a signal to bail out.
+    const { payload: pushTokenPayload } = await this.buildParentPushTokenPayload();
     const userId = await getAuthUserId();
     if (!userId) throw new Error("Failed to create parent account: no active session");
 
@@ -1830,6 +1899,64 @@ export const StorageService = {
   // apart from "active on some other device" for each kid's boundDeviceId.
   async getDeviceId(): Promise<string> {
     return getDeviceId();
+  },
+
+  /**
+   * Boot-time recovery for a kid device whose Supabase Auth session was lost (app process
+   * killed and relaunched, token expiry, low-memory eviction, etc.) while KID_PROFILE/FRIENDS
+   * survive fine in AsyncStorage regardless — those are separate, session-independent cache
+   * keys. Without this, a lost session is permanent and silent: every authenticated call
+   * (messages insert/select, rpc_read_owned_parent_row, ...) fails with a plain 42501 permission
+   * denied (this device is running as the anonymous `anon` role, not `authenticated`), the local
+   * cache keeps the UI looking normal (a sent message still echoes into the kid's own chat
+   * bubble immediately, since that write happens before the server round trip), and nothing ever
+   * tells the kid or parent that the device silently stopped syncing. Call before ever routing a
+   * device into kid-mode screens (see index.tsx's boot check).
+   */
+  async ensureKidSession(): Promise<void> {
+    const profile = await this.getKidProfile();
+    if (!profile) return;
+
+    // getSession() reads the persisted session locally — no network round trip, so it's a safe
+    // fast path for the common case (a session is present). But presence alone isn't enough: a
+    // session can exist and still be the WRONG one for this kid (e.g. orphaned by some earlier
+    // failed rebind) — that has to be checked functionally.
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session) {
+      // Verify this session can actually resolve as THIS kid, rather than trusting a network
+      // check's success/failure alone to decide whether to discard it — a generic network error
+      // here (timeout, offline) is inconclusive and must NOT trigger a re-auth, since discarding
+      // a session that's actually fine just to replace it with a brand-new, not-yet-bound
+      // anonymous identity is itself how this got broken once already (see below). Only an
+      // explicit 42501 (this role has no access at all) or a resolved code that doesn't match
+      // this profile counts as "confirmed broken."
+      try {
+        const { data: resolvedCode, error } = await supabase.rpc('my_cookie_code');
+        if (!error && resolvedCode === profile.cookieCode) return; // confirmed working, done
+        if (error && error.code !== '42501') return; // inconclusive (network/etc) — leave it alone
+      } catch {
+        return; // network-level failure — inconclusive, leave it alone
+      }
+    }
+
+    const deviceId = await getDeviceId();
+    await supabase.auth.signOut().catch(() => {});
+    const { error: anonError } = await supabase.auth.signInAnonymously();
+    if (anonError) {
+      console.error('[ensureKidSession] Failed to re-establish anonymous session:', anonError);
+      return;
+    }
+    // rpc_bind_kid_device_auth only sets user_id when bound_device_id already equals THIS
+    // device's own id (see its own definition) — so this can never steal the kid back from
+    // another device that legitimately holds the binding now; it only recovers a session for
+    // the device that's actually still supposed to be active.
+    const { data: bound, error: bindError } = await supabase.rpc('rpc_bind_kid_device_auth', {
+      p_cookie_code: profile.cookieCode,
+      p_device_id: deviceId,
+    });
+    if (bindError || !bound) {
+      console.error('[ensureKidSession] Rebind failed — this device is likely no longer the active device for this kid:', bindError);
+    }
   },
 
   async isBiometricEnabled(): Promise<boolean> {

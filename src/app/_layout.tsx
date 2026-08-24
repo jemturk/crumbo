@@ -8,6 +8,7 @@ import { useEffect, useRef } from 'react';
 
 import { Platform, StatusBar as RNStatusBar } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { KeyboardProvider } from 'react-native-keyboard-controller';
 
 function NavigationLayout() {
   const { theme, colors } = useSettings();
@@ -152,9 +153,11 @@ export default function RootLayout() {
     // recognize touches rather than throwing. DrawingCanvasModal adds its own nested one too,
     // since RN's Modal renders into a separate native root that this one doesn't reach into.
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <SettingsProvider>
-        <NavigationLayout />
-      </SettingsProvider>
+      <KeyboardProvider>
+        <SettingsProvider>
+          <NavigationLayout />
+        </SettingsProvider>
+      </KeyboardProvider>
     </GestureHandlerRootView>
   );
 }

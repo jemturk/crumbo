@@ -19,7 +19,6 @@ import React, { useMemo, useRef, useState } from 'react';
 import {
     ActivityIndicator,
     FlatList,
-    KeyboardAvoidingView,
     Platform,
     SafeAreaView,
     StyleSheet,
@@ -28,6 +27,7 @@ import {
     TouchableOpacity,
     View
 } from 'react-native';
+import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 // Per-type color so a missed voice call, a missed video call, a finished voice call and a
@@ -67,7 +67,7 @@ export default function ConversationView({ conversation, onBack }: ConversationV
   const { s } = useDisplayScale();
   const { colors, isDark } = useAppTheme();
   const insets = useSafeAreaInsets();
-  const { keyboardVisible, keyboardHeight } = useKeyboardVisibility();
+  const { keyboardVisible } = useKeyboardVisibility();
 
   const { otherParty, locks, pairingStatus, messages, loading, myCookieCode } = conversation;
 
@@ -444,9 +444,9 @@ export default function ConversationView({ conversation, onBack }: ConversationV
 
       {/* Keyboard Avoiding Container */}
       <KeyboardAvoidingView
-        style={[styles.keyboardContainer, Platform.OS === 'android' && { paddingBottom: keyboardHeight > 0 ? keyboardHeight + s(24) : 0 }]}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
+        style={styles.keyboardContainer}
+        behavior="padding"
+        keyboardVerticalOffset={0}
       >
         {/* Messages list */}
         <FlatList
