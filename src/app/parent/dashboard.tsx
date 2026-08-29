@@ -1332,7 +1332,7 @@ export default function ParentDashboard() {
                                 {isMeMedia ? selectedKidForLogs?.name : selectedBuddyForLogs?.name}
                               </Text>
                               <View style={{ marginTop: 2 }}>
-                                <ChatMediaBubble uri={media.url} size={s(160)} borderRadius={s(16)} />
+                                <ChatMediaBubble uri={media.url} size={s(200)} borderRadius={s(16)} />
                               </View>
                               <Text style={styles.logMsgTime}>{formatTime(msg.timestamp)}</Text>
                             </View>

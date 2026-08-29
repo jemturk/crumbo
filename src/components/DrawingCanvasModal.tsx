@@ -3,7 +3,7 @@ import { useAppTheme } from '@/hooks/use-app-theme';
 import { useDisplayScale } from '@/hooks/use-display-scale';
 import { Ionicons } from '@expo/vector-icons';
 import React, { useEffect, useRef, useState } from 'react';
-import { Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Dimensions, Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Svg, { Path } from 'react-native-svg';
@@ -23,7 +23,9 @@ interface StrokePath {
 
 const SWATCH_COLORS = ['#4E342E', '#D32F2F', '#1976D2', '#2E7D32', '#F7931E', '#7B1FA2'];
 const BRUSH_SIZES = [4, 8, 14];
-const CANVAS_SIZE = 300;
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
+// Fill most of the screen width (up to a cap so it doesn't balloon on tablets).
+const CANVAS_SIZE = Math.min(SCREEN_WIDTH - 32, 440);
 
 export default function DrawingCanvasModal({ visible, onClose, onSend }: DrawingCanvasModalProps) {
   const { s } = useDisplayScale();

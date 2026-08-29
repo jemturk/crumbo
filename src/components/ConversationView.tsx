@@ -310,14 +310,14 @@ export default function ConversationView({ conversation, onBack }: ConversationV
       return (
         <View style={[styles.messageRow, isMeMedia ? styles.myRow : styles.theirRow]}>
           {isBlocked ? (
-            <View style={[styles.mediaBubble, styles.mediaBlockedBubble, { backgroundColor: isDark ? '#3D1B1B' : '#FFF5F5', borderColor: isDark ? '#5C2525' : '#FFD1D1' }, { width: s(200), height: s(200), borderRadius: s(16) }]}>
+            <View style={[styles.mediaBubble, styles.mediaBlockedBubble, { backgroundColor: isDark ? '#3D1B1B' : '#FFF5F5', borderColor: isDark ? '#5C2525' : '#FFD1D1' }, { width: s(260), height: s(260), borderRadius: s(16) }]}>
               <Ionicons name="lock-closed" size={s(28)} color={colors.dangerText} />
               <Text style={[styles.mediaBlockedText, { color: colors.dangerText, fontSize: s(13) }]}>
                 {media.kind === 'photo' ? 'Photo hidden' : 'Drawing hidden'}
               </Text>
             </View>
           ) : (
-            <ChatMediaBubble uri={media.url} size={s(200)} borderRadius={s(16)} />
+            <ChatMediaBubble uri={media.url} size={s(260)} borderRadius={s(16)} />
           )}
           <Text style={[styles.timestamp, isMeMedia ? styles.myTimestamp : styles.theirTimestamp, { color: colors.textSecondary }, { fontSize: s(10) }]}>
             {formatTime(item.timestamp)}
