@@ -4,6 +4,7 @@ import CallModal from '@/components/CallModal';
 import ChatMediaBubble, { parseMediaMessage } from '@/components/ChatMediaBubble';
 import CustomAlertModal from '@/components/CustomAlertModal';
 import DrawingCanvasModal from '@/components/DrawingCanvasModal';
+import MediaViewerModal from '@/components/MediaViewerModal';
 import PhotoConfirmModal from '@/components/PhotoConfirmModal';
 import VoiceMessageBubble from '@/components/VoiceMessageBubble';
 import VoiceRecorderModal from '@/components/VoiceRecorderModal';
@@ -77,6 +78,7 @@ export default function ConversationView({ conversation, onBack }: ConversationV
   const [drawingModalVisible, setDrawingModalVisible] = useState(false);
   const [voiceRecorderVisible, setVoiceRecorderVisible] = useState(false);
   const [pendingPhotoUri, setPendingPhotoUri] = useState<string | null>(null);
+  const [viewerUri, setViewerUri] = useState<string | null>(null);
 
   const flatListRef = useRef<FlatList>(null);
   const invertedMessages = useMemo(() => [...messages].reverse(), [messages]);
@@ -317,7 +319,9 @@ export default function ConversationView({ conversation, onBack }: ConversationV
               </Text>
             </View>
           ) : (
-            <ChatMediaBubble uri={media.url} size={s(260)} borderRadius={s(16)} />
+            <TouchableOpacity activeOpacity={0.85} onPress={() => setViewerUri(media.url)}>
+              <ChatMediaBubble uri={media.url} size={s(260)} borderRadius={s(16)} />
+            </TouchableOpacity>
           )}
           <Text style={[styles.timestamp, isMeMedia ? styles.myTimestamp : styles.theirTimestamp, { color: colors.textSecondary }, { fontSize: s(10) }]}>
             {formatTime(item.timestamp)}
@@ -574,6 +578,7 @@ export default function ConversationView({ conversation, onBack }: ConversationV
         onClose={() => setDrawingModalVisible(false)}
         onSend={handleSendDrawing}
       />
+      <MediaViewerModal visible={!!viewerUri} onClose={() => setViewerUri(null)} uri={viewerUri} />
       <VoiceRecorderModal
         visible={voiceRecorderVisible}
         onClose={() => setVoiceRecorderVisible(false)}
