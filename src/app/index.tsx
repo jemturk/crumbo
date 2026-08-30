@@ -208,7 +208,7 @@ export default function WelcomeScreen() {
               a time (see activateKidOnThisDevice/activateParentOnDevice). There is no self-service
               login or logout here: activating OR deactivating anyone on this device is a Parent
               Area action only, to prevent an accidental one-tap deactivation from this screen. */}
-          <View style={[styles.card, { backgroundColor: colors.cardBg, borderColor: colors.border, shadowColor: colors.textSecondary }]}>
+          <View style={[styles.card, { backgroundColor: colors.cardBg, shadowColor: colors.textSecondary }]}>
             {profile ? (
               <View style={styles.cardContent}>
                 <TouchableOpacity onPress={() => setAvatarPickerVisible(true)}>
@@ -361,13 +361,13 @@ const styles = StyleSheet.create({
     borderRadius: 28,
     padding: 24,
     width: '100%',
+    // No border — same move as ContactListView's friend cards: elevation alone reads as a
+    // raised surface, an outline on top of it just looks like a flat drawn-on rectangle.
     shadowColor: '#8D6E63',
     shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.12,
     shadowRadius: 12,
     elevation: 4,
-    borderWidth: 2,
-    borderColor: '#FFF5D1',
   },
   cardContent: {
     alignItems: 'center',

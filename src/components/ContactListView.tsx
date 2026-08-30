@@ -57,7 +57,6 @@ export default function ContactListView({
         styles.friendCard,
         {
           backgroundColor: item.isAdultAvatar ? colors.cardBgAdult : colors.cardBgKid,
-          borderColor: colors.border,
           padding: s(16),
           shadowColor: colors.textSecondary,
         },
@@ -208,13 +207,14 @@ const styles = StyleSheet.create({
     padding: 16,
     flexDirection: 'row',
     alignItems: 'center',
-    borderWidth: 2,
-    borderColor: '#FFF5D1',
+    // No border — definition comes from real elevation instead, same move as the Parent Area
+    // cards: an outline reads as a flat, drawn-on rectangle, while a proper shadow reads as an
+    // actual raised surface.
     shadowColor: '#8D6E63',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.05,
-    shadowRadius: 6,
-    elevation: 2,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.12,
+    shadowRadius: 12,
+    elevation: 4,
   },
   avatarContainer: {
     backgroundColor: '#FFFDF0',

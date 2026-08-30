@@ -344,8 +344,8 @@ export default function ConversationView({ conversation, onBack }: ConversationV
           ) : (
             <View style={[
               styles.bubble,
-              isMeMedia ? [styles.myBubble, { backgroundColor: colors.primaryBtn, borderBottomRightRadius: 4 }]
-                : [styles.theirBubble, { backgroundColor: isDark ? '#3D2A1D' : '#FFFEC6', borderColor: isDark ? '#4E342E' : '#FFF9C4', borderBottomLeftRadius: 4 }],
+              isMeMedia ? [styles.myBubble, { backgroundColor: isDark ? colors.primaryBtn : '#FFF0B8', borderBottomRightRadius: 4 }]
+                : [styles.theirBubble, { backgroundColor: isDark ? '#3D2A1D' : '#D9F0FF', borderBottomLeftRadius: 4 }],
               { paddingHorizontal: s(12), paddingVertical: s(8), borderRadius: s(20) }
             ]}>
               <VoiceMessageBubble uri={media.url} durationSeconds={media.durationSeconds} isMe={isMeMedia} />
@@ -385,8 +385,8 @@ export default function ConversationView({ conversation, onBack }: ConversationV
       <View style={[styles.messageRow, isMe ? styles.myRow : styles.theirRow]}>
         <View style={[
           styles.bubble,
-          isMe ? [styles.myBubble, { backgroundColor: colors.primaryBtn, borderBottomRightRadius: 4 }]
-               : [styles.theirBubble, { backgroundColor: isDark ? '#3D2A1D' : '#FFFEC6', borderColor: isDark ? '#4E342E' : '#FFF9C4', borderBottomLeftRadius: 4 }],
+          isMe ? [styles.myBubble, { backgroundColor: isDark ? colors.primaryBtn : '#FFF0B8', borderBottomRightRadius: 4 }]
+               : [styles.theirBubble, { backgroundColor: isDark ? '#3D2A1D' : '#D9F0FF', borderBottomLeftRadius: 4 }],
           { paddingHorizontal: s(16), paddingVertical: s(10), borderRadius: s(20) }
         ]}>
           <Text style={[styles.messageText, { color: textColor }, { fontSize: s(16), lineHeight: s(22) }]}>{messageContent}</Text>
@@ -667,18 +667,16 @@ const styles = StyleSheet.create({
     elevation: 1,
   },
   myBubble: {
-    backgroundColor: '#FBC02D',
+    backgroundColor: '#FFF0B8',
     borderBottomRightRadius: 4,
   },
   theirBubble: {
-    backgroundColor: '#FFFEC6',
+    backgroundColor: '#D9F0FF',
     borderBottomLeftRadius: 4,
-    borderWidth: 1,
-    borderColor: '#FFF9C4',
   },
   messageText: {
     fontSize: 16,
-    fontWeight: '600',
+    fontWeight: '400',
     color: '#4E342E',
     lineHeight: 22,
   },
