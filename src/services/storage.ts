@@ -82,6 +82,13 @@ const KEYS = {
   // session on gate.tsx, instead of typing the password again. Never gates a FRESH sign-in —
   // there's no session to resume if the parent has actually signed out, or never signed in here.
   BIOMETRIC_ENABLED: 'crumbo_biometric_enabled',
+  // A standing copy of the parent's own (non-anonymous) session tokens, kept fresh by the
+  // onAuthStateChange listener in _layout.tsx independently of whatever the Supabase client's
+  // OWN "current" session is at any moment. activateKidOnThisDevice replaces the client's
+  // current session with a fresh anonymous one bound to the kid — this copy is what lets
+  // restoreParentSessionIfNeeded() get back to being the parent afterward without a full
+  // password re-entry, since the parent never actually logged out, just stopped being "current".
+  PARENT_SESSION_TOKENS: 'crumbo_parent_session_tokens',
 };
 
 // Default setup — also the pool the avatar picker UI offers (see AvatarPickerModal).
@@ -423,6 +430,51 @@ export const StorageService = {
   // URL actually usable to display it — see ChatMediaBubble/VoiceMessageBubble.
   async getMediaUrl(pathOrUrl: string): Promise<string | null> {
     return resolveMediaUrl(pathOrUrl);
+  },
+
+  // Called by _layout.tsx's onAuthStateChange listener on every real (non-anonymous) session
+  // event — sign-in, token refresh, whatever — so the standing copy restoreParentSessionIfNeeded
+  // reads from never goes stale. A naive "stash once at sign-in" copy would eventually fail:
+  // Supabase rotates refresh tokens on each use, invalidating the previous one, and the client
+  // auto-refreshes in the background the whole time the parent is actually using the app.
+  async stashParentSessionTokens(session: { access_token: string; refresh_token: string; user: { is_anonymous?: boolean } } | null): Promise<void> {
+    if (!session || session.user.is_anonymous) return;
+    await AsyncStorage.setItem(KEYS.PARENT_SESSION_TOKENS, JSON.stringify({
+      access_token: session.access_token,
+      refresh_token: session.refresh_token,
+    }));
+  },
+
+  /**
+   * Whenever a kid gets activated on this device, activateKidOnThisDevice signs the Supabase
+   * client out of the parent's real session and into a fresh anonymous one bound to the kid —
+   * necessary so the kid's own message sends/reads resolve to their identity under RLS, not the
+   * parent's. That leaves nothing for the Parent Area to run on: dashboard.tsx's own reads
+   * (getParentContacts, refreshing kidsList, etc.) would otherwise silently return empty under
+   * the kid's identity, looking like a stale/broken UI rather than what it actually is — the
+   * parent, while never truly logged out, no longer has a live session on this device.
+   *
+   * Called by dashboard.tsx after any action that might have swapped the live session — restores
+   * the parent's session from the standing copy stashParentSessionTokens keeps fresh, a no-op if
+   * the current session is already a real (non-anonymous) one.
+   */
+  async restoreParentSessionIfNeeded(): Promise<void> {
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session && !session.user.is_anonymous) return;
+
+      const stored = await AsyncStorage.getItem(KEYS.PARENT_SESSION_TOKENS);
+      if (!stored) return;
+      const { access_token, refresh_token } = JSON.parse(stored);
+      if (!access_token || !refresh_token) return;
+
+      const { error } = await supabase.auth.setSession({ access_token, refresh_token });
+      if (error) {
+        console.error('Error restoring parent session:', error);
+      }
+    } catch (e) {
+      console.error('Error restoring parent session:', e);
+    }
   },
 
   // Parent Subscription
@@ -1955,7 +2007,14 @@ export const StorageService = {
       p_device_id: deviceId,
     });
     if (bindError || !bound) {
-      console.error('[ensureKidSession] Rebind failed — this device is likely no longer the active device for this kid:', bindError);
+      // Confirmed, not inconclusive: bound_device_id no longer matches this device — someone
+      // (most likely a parent activating this kid on a different device) has taken over the
+      // binding. Leaving KID_PROFILE in place here is what used to make an orphaned device look
+      // like the kid was still active (index.tsx routes straight to /chat off its presence) while
+      // every live read silently failed under RLS — clearing it here lets that same routing check
+      // correctly fall through to the "no one active" screen instead.
+      console.error('[ensureKidSession] Rebind failed — this device is no longer the active device for this kid:', bindError);
+      await this.logoutKid();
     }
   },
 

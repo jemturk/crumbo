@@ -740,6 +740,11 @@ export default function ParentDashboard() {
   // whatever was cached back then, drifting further from reality with each activate/deactivate.
   // Pulling a fresh copy down first is what actually keeps the list honest.
   const refreshKidsFromServer = async () => {
+    // activateKidOnThisDevice (just-completed by whichever caller reaches this point) swaps the
+    // live Supabase session to the kid's own anonymous one — restore the parent's before reading
+    // anything parent-scoped below, or fetchAndRestoreParentData silently returns nothing under
+    // RLS and every badge on this screen goes stale until the parent re-authenticates by hand.
+    await StorageService.restoreParentSessionIfNeeded();
     if (parentEmail) {
       await StorageService.fetchAndRestoreParentData(parentEmail);
     }
@@ -788,6 +793,35 @@ export default function ParentDashboard() {
             setSyncing(false);
             if (!result.success) {
               showAlert("Error", "Could not deactivate this profile. Please check your connection and try again.");
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  // A kid active on another device used to require deactivating there, then a separate visit
+  // back here to activate — two taps, and the first one's confirmation copy just said
+  // "deactivate", never mentioning the reactivation step that had to follow. Collapses both
+  // server calls (deactivateKidOnThisDevice's name is misleading — it actually clears the lock
+  // globally, authorized via the owning parent, not tied to which device calls it) behind one
+  // button and one confirmation that says what's actually about to happen.
+  const handleMoveKidToThisDevice = (kid: KidProfile) => {
+    showAlert(
+      `Move ${kid.name} to This Device?`,
+      `${kid.name} is currently active on another device. Continuing will deactivate them there and activate them here instead.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Activate Here",
+          onPress: async () => {
+            setSyncing(true);
+            await StorageService.deactivateKidOnThisDevice(kid.cookieCode);
+            const result = await StorageService.activateKidOnThisDevice(kid.cookieCode);
+            await refreshKidsFromServer();
+            setSyncing(false);
+            if (!result.success) {
+              showAlert("Error", "Could not move this profile to this device. Please check your connection and try again.");
             }
           }
         }
@@ -906,16 +940,16 @@ export default function ParentDashboard() {
                     </View>
                   </View>
                   <TouchableOpacity
-                    style={[styles.actionBtnSecondary, { alignSelf: 'center', backgroundColor: parentActiveOnDevice ? colors.successBg : colors.dangerBg, borderColor: parentActiveOnDevice ? colors.successText : colors.dangerText, height: s(36), borderRadius: s(12), width: s(92), paddingHorizontal: s(6) }]}
+                    style={[styles.actionBtnSecondary, { alignSelf: 'center', backgroundColor: parentActiveOnDevice ? colors.successBg : colors.inputBg, borderColor: parentActiveOnDevice ? colors.successText : colors.borderStrong, height: s(36), borderRadius: s(12), width: s(92), paddingHorizontal: s(6) }]}
                     onPress={parentActiveOnDevice ? handleDeactivateParent : handleActivateParent}
                   >
                     <Text
-                      style={[styles.actionBtnSecondaryText, { color: parentActiveOnDevice ? colors.successText : colors.dangerText, fontSize: s(13) }]}
+                      style={[styles.actionBtnSecondaryText, { color: parentActiveOnDevice ? colors.successText : colors.textSecondary, fontSize: s(13) }]}
                       numberOfLines={1}
                       adjustsFontSizeToFit
                       minimumFontScale={0.7}
                     >
-                      {parentActiveOnDevice ? 'Active' : 'Inactive'}
+                      {parentActiveOnDevice ? 'Active' : 'Activate'}
                     </Text>
                   </TouchableOpacity>
                 </View>
@@ -932,10 +966,16 @@ export default function ParentDashboard() {
                   const voiceMessagesEffectivelyDisabled = kid.chatDisabled || kid.voiceMessagesDisabled;
                   const activeHere = !!kid.boundDeviceId && kid.boundDeviceId === thisDeviceId;
                   const activeElsewhere = !!kid.boundDeviceId && kid.boundDeviceId !== thisDeviceId;
-                  const statusButtonLabel = activeHere ? 'Active' : activeElsewhere ? 'Active (another device)' : 'Inactive';
-                  const statusButtonBg = activeHere ? colors.successBg : activeElsewhere ? colors.successBgFaint : colors.dangerBg;
-                  const statusButtonBorder = activeHere || activeElsewhere ? colors.successText : colors.dangerText;
-                  const statusButtonText = activeHere || activeElsewhere ? colors.successText : colors.dangerText;
+                  // Label is always the thing tapping the button DOES, not a repeated status word
+                  // — "Inactive" used to be both the status AND the button, styled alarming red,
+                  // even though tapping it is a normal, expected setup action. "Active elsewhere"
+                  // is now called out separately, right under the kid's name (see the caption
+                  // below), so this button no longer needs its own distinct color to carry that —
+                  // it's styled the same neutral way as "Activate" and differs only in label.
+                  const statusButtonLabel = activeHere ? 'Active' : activeElsewhere ? 'Activate Here' : 'Activate';
+                  const statusButtonBg = activeHere ? colors.successBg : colors.inputBg;
+                  const statusButtonBorder = activeHere ? colors.successText : colors.borderStrong;
+                  const statusButtonText = activeHere ? colors.successText : colors.textSecondary;
                   return (
                     <View key={kid.cookieCode} style={[styles.childContainer, { borderColor: colors.border, padding: s(16), borderRadius: s(20), backgroundColor: isDark ? '#2A1D11' : '#FFF8EC' }]}>
                       {/* Name and Delete Row */}
@@ -944,7 +984,15 @@ export default function ParentDashboard() {
                           <View style={{ width: s(40), height: s(40), borderRadius: s(20), backgroundColor: isDark ? colors.inputBg : '#FFFDF0', borderWidth: 2, borderColor: colors.borderStrong, justifyContent: 'center', alignItems: 'center' }}>
                             <Text style={{ fontSize: s(20) }}>{kid.avatarEmoji || '🍪'}</Text>
                           </View>
-                          <Text style={[styles.childName, { color: colors.text, fontSize: s(18) }]}>{kid.name}</Text>
+                          <View>
+                            <Text style={[styles.childName, { color: colors.text, fontSize: s(18) }]}>{kid.name}</Text>
+                            {activeElsewhere && (
+                              <View style={{ flexDirection: 'row', alignItems: 'center', gap: s(5), marginTop: s(2) }}>
+                                <View style={{ width: s(6), height: s(6), borderRadius: s(3), backgroundColor: colors.successText }} />
+                                <Text style={{ fontSize: s(11), fontWeight: '700', color: colors.successText }}>Active on another device</Text>
+                              </View>
+                            )}
+                          </View>
                         </View>
                         <TouchableOpacity style={styles.deleteChildBtn} onPress={() => handleDeleteChild(kid.cookieCode, kid.name)}>
                           <Ionicons name="trash" size={s(18)} color="#D32F2F" />
@@ -966,7 +1014,11 @@ export default function ParentDashboard() {
 
                         <TouchableOpacity
                           style={[styles.actionBtnSecondary, { backgroundColor: statusButtonBg, borderColor: statusButtonBorder, height: s(36), borderRadius: s(12), width: s(92), paddingHorizontal: s(6) }]}
-                          onPress={() => (activeHere || activeElsewhere ? handleDeactivateKid(kid) : handleActivateKid(kid))}
+                          onPress={() => {
+                            if (activeHere) return handleDeactivateKid(kid);
+                            if (activeElsewhere) return handleMoveKidToThisDevice(kid);
+                            return handleActivateKid(kid);
+                          }}
                         >
                           <Text
                             style={[styles.actionBtnSecondaryText, { color: statusButtonText, fontSize: s(13) }]}
@@ -981,7 +1033,7 @@ export default function ParentDashboard() {
 
                       {/* Locks & Controls Row */}
                       <View style={styles.controlsRow}>
-                        <View style={styles.togglesGroup}>
+                        <View style={[styles.togglesGroup, { alignSelf: 'flex-start', backgroundColor: colors.inputBg, borderWidth: 1, borderColor: colors.borderStrong, borderRadius: s(16), padding: s(5) }]}>
                           {/* Chat Toggle */}
                           <TouchableOpacity
                             style={[styles.toggleCircle, { width: s(32), height: s(32), borderRadius: s(16) }, kid.chatDisabled ? styles.toggleRedBg : styles.toggleGreenBg]}

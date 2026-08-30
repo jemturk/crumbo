@@ -2,6 +2,7 @@ import { SettingsProvider, useSettings } from '@/context/settings-context';
 import { isStartSignal, subscribeToCallSignals, subscribeToParentCallSignals } from '@/services/callSignaling';
 import { callKeepManager } from '@/services/callkeep';
 import { StorageService } from '@/services/storage';
+import { supabase } from '@/services/supabase';
 import { Stack, useGlobalSearchParams, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useRef } from 'react';
@@ -31,6 +32,21 @@ function NavigationLayout() {
       RNStatusBar.setTranslucent(true);
     }
   }, [theme]);
+
+  // Keeps a standing, always-fresh copy of the parent's own session tokens — separate from
+  // whatever the Supabase client's OWN "current" session is at any given moment. Needed because
+  // activateKidOnThisDevice (Managed Users' Activate button) replaces the client's current
+  // session with a fresh anonymous one bound to the kid, so the kid's message sends/reads
+  // resolve to their own identity under RLS rather than the parent's — with nothing else, that
+  // leaves the Parent Area with no live session to run its own reads on afterward, even though
+  // the parent never actually logged out. See StorageService.restoreParentSessionIfNeeded, which
+  // reads this copy back.
+  useEffect(() => {
+    const { data: subscription } = supabase.auth.onAuthStateChange((_event, session) => {
+      StorageService.stashParentSessionTokens(session);
+    });
+    return () => subscription.subscription.unsubscribe();
+  }, []);
 
   // Global incoming-call listener. call_signals is filtered per-receiver, so we (re)subscribe
   // with whichever identity is active on this device — exactly one of a kid or a parent, per the

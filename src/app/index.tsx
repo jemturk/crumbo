@@ -87,7 +87,7 @@ export default function WelcomeScreen() {
     try {
       setLoading(true);
       const isSub = await StorageService.isSubscribed();
-      const kidProf = await StorageService.getKidProfile();
+      let kidProf = await StorageService.getKidProfile();
       const isParentActive = await StorageService.isParentActiveOnDevice();
 
       // An active kid or parent on this device skips straight to their chat list — there's
@@ -100,10 +100,18 @@ export default function WelcomeScreen() {
       if (kidProf && !fromLogout) {
         // Repairs a lost Supabase Auth session (app killed and relaunched, token expiry, ...)
         // before this device ever reaches a screen that depends on it — see ensureKidSession's
-        // own doc for why a lost session otherwise fails silently forever.
+        // own doc for why a lost session otherwise fails silently forever. It can also determine
+        // this device is no longer the active one for this kid at all (e.g. a parent activated
+        // them elsewhere) and clear the local profile itself — re-read rather than trusting the
+        // `kidProf` captured above for everything below, or this would keep treating the kid as
+        // active on a profile that no longer exists, looking active with no way to actually load
+        // anything.
         await StorageService.ensureKidSession();
-        router.replace('/chat');
-        return;
+        kidProf = await StorageService.getKidProfile();
+        if (kidProf) {
+          router.replace('/chat');
+          return;
+        }
       }
       if (isParentActive && !fromLogout) {
         router.replace('/parent/chat');
