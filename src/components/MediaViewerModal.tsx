@@ -16,16 +16,27 @@ interface MediaViewerModalProps {
   // The raw storage path/url from parseMediaMessage — same value ChatMediaBubble already takes
   // in the chat list, resolved to a signed URL internally.
   uri: string | null;
+  // Drawings get a subtle border to define the edge of the (often near-white) canvas against
+  // the frame — photos don't need it, they already have enough contrast of their own.
+  isDrawing?: boolean;
 }
 
 // Tapping a photo or drawing message bubble in ConversationView opens this — a full-size,
 // tap-anywhere-to-dismiss look at the image, mirroring AvatarPreviewModal's overlay styling.
-export default function MediaViewerModal({ visible, onClose, uri }: MediaViewerModalProps) {
+export default function MediaViewerModal({ visible, onClose, uri, isDrawing }: MediaViewerModalProps) {
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
       <TouchableOpacity style={styles.overlay} activeOpacity={1} onPress={onClose}>
         <TouchableOpacity activeOpacity={1} onPress={() => {}} style={styles.imageWrap}>
-          {uri && <ChatMediaBubble uri={uri} size={VIEWER_SIZE} borderRadius={INNER_RADIUS} />}
+          {uri && (
+            <ChatMediaBubble
+              uri={uri}
+              size={VIEWER_SIZE}
+              borderRadius={INNER_RADIUS}
+              borderWidth={isDrawing ? 1 : undefined}
+              borderColor={isDrawing ? '#FFF5D1' : undefined}
+            />
+          )}
         </TouchableOpacity>
       </TouchableOpacity>
     </Modal>

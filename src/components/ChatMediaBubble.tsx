@@ -68,7 +68,7 @@ export function formatMessagePreview(message: Message | null | undefined): strin
 // `uri` here is what parseMediaMessage returned — a kid_media storage path (or legacy public
 // URL) — not yet a fetchable link, since the bucket is private. Resolved to a short-lived signed
 // URL on mount/change via StorageService.getMediaUrl before anything is rendered.
-export default function ChatMediaBubble({ uri, size, borderRadius }: { uri: string; size: number; borderRadius: number }) {
+export default function ChatMediaBubble({ uri, size, borderRadius, borderWidth, borderColor }: { uri: string; size: number; borderRadius: number; borderWidth?: number; borderColor?: string }) {
   // Keyed by the uri it was resolved for, so a stale in-flight resolve from a previous `uri`
   // can't ever be mistaken for the current one — avoids resetting state synchronously inside the
   // effect (which itself causes an extra render pass) just to represent "not resolved yet".
@@ -86,9 +86,11 @@ export default function ChatMediaBubble({ uri, size, borderRadius }: { uri: stri
 
   const resolvedUri = resolved?.forUri === uri ? resolved.url : null;
 
+  const borderStyle = borderWidth ? { borderWidth, borderColor } : undefined;
+
   if (!resolvedUri) {
     return (
-      <View style={[styles.bubble, styles.loading, { width: size, height: size, borderRadius }]}>
+      <View style={[styles.bubble, styles.loading, { width: size, height: size, borderRadius }, borderStyle]}>
         <ActivityIndicator />
       </View>
     );
@@ -97,7 +99,7 @@ export default function ChatMediaBubble({ uri, size, borderRadius }: { uri: stri
   return (
     <Image
       source={{ uri: resolvedUri }}
-      style={[styles.bubble, { width: size, height: size, borderRadius }]}
+      style={[styles.bubble, { width: size, height: size, borderRadius }, borderStyle]}
       contentFit="cover"
       transition={150}
     />

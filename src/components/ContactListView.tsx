@@ -51,12 +51,20 @@ export default function ContactListView({
   const { s } = useDisplayScale();
   const { colors, isDark } = useAppTheme();
 
+  // Matches the chat screen's own background (ConversationView's chatBg) rather than the app's
+  // usual cream (colors.bg) — scoped here rather than changing colors.bg itself so every other
+  // screen keeps its normal cream.
+  const listBg = isDark ? colors.bg : '#FFFEF9';
+  // Kid rows are a tad darker than listBg — close enough to read as "part of the page", not a
+  // separate colored box, but still just perceptibly its own surface.
+  const kidCardBg = isDark ? colors.bg : '#FFFAEE';
+
   const renderRow = ({ item }: { item: ContactListRow }) => (
     <TouchableOpacity
       style={[
         styles.friendCard,
         {
-          backgroundColor: item.isAdultAvatar ? colors.cardBgAdult : colors.cardBgKid,
+          backgroundColor: item.isAdultAvatar ? colors.cardBgAdult : kidCardBg,
           padding: s(16),
           shadowColor: colors.textSecondary,
         },
@@ -112,8 +120,8 @@ export default function ContactListView({
   );
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
-      <View style={[styles.header, { backgroundColor: colors.cardBg, borderColor: colors.border, paddingTop: Platform.OS === 'android' ? (insets.top > 0 ? insets.top + s(8) : s(44)) : s(14), paddingHorizontal: s(20), paddingVertical: s(14), borderBottomWidth: 2 }]}>
+    <SafeAreaView style={[styles.container, { backgroundColor: listBg }]}>
+      <View style={[styles.header, { backgroundColor: colors.cardBg, paddingTop: Platform.OS === 'android' ? (insets.top > 0 ? insets.top + s(8) : s(44)) : s(14), paddingHorizontal: s(20), paddingVertical: s(14) }]}>
         <View style={styles.headerLeft}>
           <TouchableOpacity onPress={onHeaderAvatarPress} disabled={!onHeaderAvatarPress}>
             {headerAvatar}
@@ -172,8 +180,13 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingHorizontal: 20,
     paddingVertical: 14,
-    borderBottomWidth: 2,
-    borderColor: '#FFF5D1',
+    // No border — a soft downward shadow separates the header from the list instead, same move
+    // as the friend cards and the gate screen's card.
+    shadowColor: '#8D6E63',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.1,
+    shadowRadius: 6,
+    elevation: 3,
     backgroundColor: '#FFFFFF',
     paddingTop: Platform.OS === 'android' ? 44 : 14,
   },

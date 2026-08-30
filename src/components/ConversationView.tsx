@@ -78,7 +78,7 @@ export default function ConversationView({ conversation, onBack }: ConversationV
   const [drawingModalVisible, setDrawingModalVisible] = useState(false);
   const [voiceRecorderVisible, setVoiceRecorderVisible] = useState(false);
   const [pendingPhotoUri, setPendingPhotoUri] = useState<string | null>(null);
-  const [viewerUri, setViewerUri] = useState<string | null>(null);
+  const [viewerMedia, setViewerMedia] = useState<{ uri: string; kind: 'photo' | 'drawing' } | null>(null);
 
   const flatListRef = useRef<FlatList>(null);
   const invertedMessages = useMemo(() => [...messages].reverse(), [messages]);
@@ -319,8 +319,14 @@ export default function ConversationView({ conversation, onBack }: ConversationV
               </Text>
             </View>
           ) : (
-            <TouchableOpacity activeOpacity={0.85} onPress={() => setViewerUri(media.url)}>
-              <ChatMediaBubble uri={media.url} size={s(260)} borderRadius={s(16)} />
+            <TouchableOpacity activeOpacity={0.85} onPress={() => setViewerMedia({ uri: media.url, kind: media.kind === 'drawing' ? 'drawing' : 'photo' })}>
+              <ChatMediaBubble
+                uri={media.url}
+                size={s(260)}
+                borderRadius={s(16)}
+                borderWidth={media.kind === 'drawing' ? 1 : undefined}
+                borderColor={media.kind === 'drawing' ? colors.border : undefined}
+              />
             </TouchableOpacity>
           )}
           <Text style={[styles.timestamp, isMeMedia ? styles.myTimestamp : styles.theirTimestamp, { color: colors.textSecondary }, { fontSize: s(10) }]}>
@@ -359,7 +365,9 @@ export default function ConversationView({ conversation, onBack }: ConversationV
     }
 
     const isMe = item.sender === 'me';
-    const textColor = isMe ? colors.primaryBtnText : colors.text;
+    // A softer dark gray instead of the app's near-black brown — semi-bold + full-strength
+    // brown together read as too heavy/flashy against the pastel bubbles.
+    const textColor = isDark ? (isMe ? colors.primaryBtnText : colors.text) : '#645A53';
 
     const codeMatches = item.text.match(COOKIE_CODE_REGEX);
     const messageContent: React.ReactNode = codeMatches
@@ -398,18 +406,23 @@ export default function ConversationView({ conversation, onBack }: ConversationV
     );
   };
 
+  // Chat-screen-specific background — halfway between the app's usual cream (colors.bg,
+  // #FFFDF3) and pure white, scoped here rather than changing colors.bg itself so every other
+  // screen keeps its normal cream.
+  const chatBg = isDark ? colors.bg : '#FFFEF9';
+
   if (loading) {
     return (
-      <View style={[styles.loadingContainer, { backgroundColor: colors.bg }]}>
+      <View style={[styles.loadingContainer, { backgroundColor: chatBg }]}>
         <ActivityIndicator size="large" color={colors.primaryBtn} />
       </View>
     );
   }
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: colors.bg }]}>
+    <SafeAreaView style={[styles.container, { backgroundColor: chatBg }]}>
       {/* Header */}
-      <View style={[styles.header, { backgroundColor: colors.cardBg, borderColor: colors.border, paddingTop: Platform.OS === 'android' ? (insets.top > 0 ? insets.top + s(8) : s(44)) : s(14), paddingHorizontal: s(20), paddingVertical: s(14) }]}>
+      <View style={[styles.header, { backgroundColor: colors.cardBg, paddingTop: Platform.OS === 'android' ? (insets.top > 0 ? insets.top + s(8) : s(44)) : s(14), paddingHorizontal: s(20), paddingVertical: s(14) }]}>
         <TouchableOpacity style={styles.backButton} onPress={onBack}>
           <Ionicons name="arrow-back" size={s(26)} color={colors.text} />
         </TouchableOpacity>
@@ -524,7 +537,7 @@ export default function ConversationView({ conversation, onBack }: ConversationV
                 </TouchableOpacity>
               </View>
             )}
-            <View style={[styles.inputContainer, { backgroundColor: colors.inputBg, borderColor: colors.borderStrong }, { paddingHorizontal: s(16), borderRadius: s(24), height: s(48) }]}>
+            <View style={[styles.inputContainer, { backgroundColor: colors.inputBg, borderColor: colors.border }, { paddingHorizontal: s(16), borderRadius: s(24), height: s(48) }]}>
               <TextInput
                 style={[styles.textInput, { color: colors.inputText }, { fontSize: s(16) }]}
                 placeholder="Write something..."
@@ -578,7 +591,12 @@ export default function ConversationView({ conversation, onBack }: ConversationV
         onClose={() => setDrawingModalVisible(false)}
         onSend={handleSendDrawing}
       />
-      <MediaViewerModal visible={!!viewerUri} onClose={() => setViewerUri(null)} uri={viewerUri} />
+      <MediaViewerModal
+        visible={!!viewerMedia}
+        onClose={() => setViewerMedia(null)}
+        uri={viewerMedia?.uri ?? null}
+        isDrawing={viewerMedia?.kind === 'drawing'}
+      />
       <VoiceRecorderModal
         visible={voiceRecorderVisible}
         onClose={() => setVoiceRecorderVisible(false)}
@@ -618,8 +636,13 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingHorizontal: 16,
     paddingVertical: 14,
-    borderBottomWidth: 1,
-    borderColor: '#FFF5D1',
+    // No border — a soft downward shadow separates the header from the messages instead, same
+    // move as the Jar/Chats list header and the friend cards.
+    shadowColor: '#8D6E63',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.1,
+    shadowRadius: 6,
+    elevation: 3,
     backgroundColor: '#FFFFFF',
     paddingTop: Platform.OS === 'android' ? 44 : 14,
   },
@@ -676,8 +699,8 @@ const styles = StyleSheet.create({
   },
   messageText: {
     fontSize: 16,
-    fontWeight: '400',
-    color: '#4E342E',
+    fontWeight: '600',
+    color: '#645A53',
     lineHeight: 22,
   },
   mediaBubble: {

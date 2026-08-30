@@ -101,20 +101,26 @@ export default function DrawingCanvasModal({ visible, onClose, onSend }: Drawing
           <ModalHeader title="Draw a Picture" onCancel={handleClose} onSend={handleSend} sendDisabled={paths.length === 0} />
 
           <View style={styles.canvasWrapper}>
-            <ViewShot ref={viewShotRef} options={{ format: 'png', result: 'tmpfile' }}>
-              <View style={[styles.canvas, { width: s(CANVAS_SIZE), height: s(CANVAS_SIZE), borderColor: colors.border }]}>
-                <GestureDetector gesture={pan}>
-                  <Svg width={s(CANVAS_SIZE)} height={s(CANVAS_SIZE)} style={StyleSheet.absoluteFill}>
-                    {paths.map((p, i) => (
-                      <Path key={i} d={p.d} stroke={p.color} strokeWidth={p.strokeWidth} fill="none" strokeLinecap="round" strokeLinejoin="round" />
-                    ))}
-                    {currentPath && (
-                      <Path d={currentPath} stroke={color} strokeWidth={strokeWidth} fill="none" strokeLinecap="round" strokeLinejoin="round" />
-                    )}
-                  </Svg>
-                </GestureDetector>
-              </View>
-            </ViewShot>
+            {/* The rounded border is purely a UI frame around the capture, not part of it — a
+                border/radius on the View ViewShot actually captures would get baked into the
+                exported PNG's pixels, which is what caused enlarged drawings (unlike photos) to
+                show a double-rounded-corner mismatch against the viewer's own rounded frame. */}
+            <View style={[styles.canvasFrame, { width: s(CANVAS_SIZE), height: s(CANVAS_SIZE), borderColor: colors.border }]}>
+              <ViewShot ref={viewShotRef} options={{ format: 'png', result: 'tmpfile' }}>
+                <View style={[styles.canvas, { width: s(CANVAS_SIZE), height: s(CANVAS_SIZE) }]}>
+                  <GestureDetector gesture={pan}>
+                    <Svg width={s(CANVAS_SIZE)} height={s(CANVAS_SIZE)} style={StyleSheet.absoluteFill}>
+                      {paths.map((p, i) => (
+                        <Path key={i} d={p.d} stroke={p.color} strokeWidth={p.strokeWidth} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+                      ))}
+                      {currentPath && (
+                        <Path d={currentPath} stroke={color} strokeWidth={strokeWidth} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+                      )}
+                    </Svg>
+                  </GestureDetector>
+                </View>
+              </ViewShot>
+            </View>
           </View>
 
           <View style={[styles.toolbar, { paddingHorizontal: s(20) }]}>
@@ -172,10 +178,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  canvas: {
+  canvasFrame: {
     borderWidth: 2,
     borderRadius: 16,
     overflow: 'hidden',
+  },
+  canvas: {
     backgroundColor: '#FFFFFF',
   },
   toolbar: {

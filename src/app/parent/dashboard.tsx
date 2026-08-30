@@ -1033,7 +1033,7 @@ export default function ParentDashboard() {
 
                       {/* Locks & Controls Row */}
                       <View style={styles.controlsRow}>
-                        <View style={[styles.togglesGroup, { alignSelf: 'flex-start', backgroundColor: colors.inputBg, borderWidth: 1, borderColor: colors.borderStrong, borderRadius: s(16), padding: s(5) }]}>
+                        <View style={[styles.togglesGroup, { alignSelf: 'flex-start', backgroundColor: colors.inputBg, borderWidth: 1, borderColor: colors.borderStrong, borderRadius: s(16), padding: s(9) }]}>
                           {/* Chat Toggle */}
                           <TouchableOpacity
                             style={[styles.toggleCircle, { width: s(32), height: s(32), borderRadius: s(16) }, kid.chatDisabled ? styles.toggleRedBg : styles.toggleGreenBg]}
@@ -1115,9 +1115,9 @@ export default function ParentDashboard() {
               )}
 
               {/* Add Child Profile Button */}
-              <TouchableOpacity style={[styles.addChildBtn, { height: s(50), borderRadius: s(16), borderColor: '#FFD54F', backgroundColor: colors.primaryBtnFaded, marginTop: s(8) }]} onPress={handleAddChildClick}>
-                <Ionicons name="add" size={s(18)} color="#8D6E63" />
-                <Text style={[styles.addChildBtnText, { color: colors.textSecondary, fontSize: s(14) }]}>Add Child Profile</Text>
+              <TouchableOpacity style={[styles.addChildBtn, { height: s(50), borderRadius: s(16), backgroundColor: colors.primaryBtnFaded, marginTop: s(8) }]} onPress={handleAddChildClick}>
+                <Ionicons name="add" size={s(18)} color={colors.text} />
+                <Text style={[styles.addChildBtnText, { color: colors.text, fontSize: s(14) }]}>Add Child Profile</Text>
               </TouchableOpacity>
             </View>
           )}
@@ -1384,7 +1384,13 @@ export default function ParentDashboard() {
                                 {isMeMedia ? selectedKidForLogs?.name : selectedBuddyForLogs?.name}
                               </Text>
                               <View style={{ marginTop: 2 }}>
-                                <ChatMediaBubble uri={media.url} size={s(200)} borderRadius={s(16)} />
+                                <ChatMediaBubble
+                                  uri={media.url}
+                                  size={s(200)}
+                                  borderRadius={s(16)}
+                                  borderWidth={media.kind === 'drawing' ? 1 : undefined}
+                                  borderColor={media.kind === 'drawing' ? colors.border : undefined}
+                                />
                               </View>
                               <Text style={styles.logMsgTime}>{formatTime(msg.timestamp)}</Text>
                             </View>
@@ -2071,9 +2077,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 1,
-    borderStyle: 'dashed',
-    borderColor: '#D4A373',
     borderRadius: 16,
     paddingVertical: 14,
     gap: 6,
