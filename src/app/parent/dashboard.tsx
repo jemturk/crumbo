@@ -56,7 +56,7 @@ export default function ParentDashboard() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { s } = useDisplayScale();
-  const { theme, colors, isDark } = useAppTheme();
+  const { colors, isDark } = useAppTheme();
   const { displaySize, theme: appTheme, changeDisplaySize, changeTheme } = useSettings();
   
   // Custom Alert State
@@ -107,6 +107,13 @@ export default function ParentDashboard() {
   const [newRelativeName, setNewRelativeName] = useState('');
   const [newRelativeEmail, setNewRelativeEmail] = useState('');
   const [pairingStatuses, setPairingStatuses] = useState<Record<string, 'paired' | 'pending'>>({});
+  // Which half of the Friends & Logs modal's buddies view is showing — kid-to-kid buddies
+  // (paired via QR/code) vs. adult relatives (paired by email, always mutual). Manual code entry
+  // is collapsed behind codeEntryOpen since QR pairing is strictly better (instant, mutual, no
+  // pending state) and code entry is only ever needed when the two parents aren't in the same
+  // room — see the Cookie Code being a bearer secret, not a request either side can decline.
+  const [buddiesModalTab, setBuddiesModalTab] = useState<'buddies' | 'relatives'>('buddies');
+  const [codeEntryOpen, setCodeEntryOpen] = useState(false);
 
   // QR Code Pairing State
   const [permission, requestPermission] = useCameraPermissions();
@@ -330,7 +337,7 @@ export default function ParentDashboard() {
       } else {
         showAlert("Subscription Activated!", "Your Crumbo parental control account is active.");
       }
-    } catch (e) {
+    } catch {
       setSyncing(false);
       showAlert("Error", "Could not complete registration.");
     }
@@ -355,7 +362,7 @@ export default function ParentDashboard() {
               await StorageService.syncParentData();
               setSubscribed(false);
               showAlert("Subscription Cancelled", "Your subscription is now inactive.");
-            } catch (e) {
+            } catch {
               // Roll back the local flag — better to show "still subscribed" (safe/consistent
               // with the server) than to silently claim cancellation succeeded when the kid's
               // device was never actually told.
@@ -396,7 +403,7 @@ export default function ParentDashboard() {
       // parent's copy is refreshed lazily at their own next getParentContacts() read, same as
       // their avatar (see the comment there).
       await StorageService.syncParentData();
-    } catch (e) {
+    } catch {
       showAlert("Error", "Could not update your name.");
     } finally {
       setSyncing(false);
@@ -428,7 +435,7 @@ export default function ParentDashboard() {
       }
       setSyncing(false);
       showAlert("Profile Created!", `Child profile for ${name} has been added.`);
-    } catch (e) {
+    } catch {
       setSyncing(false);
       showAlert("Error", "Could not create child profile.");
     }
@@ -495,7 +502,7 @@ export default function ParentDashboard() {
       setNewFriendName('');
       setNewFriendCode('');
       showAlert("Success", `${name} added to buddy list!`);
-    } catch (e) {
+    } catch {
       showAlert("Error", "Could not add buddy.");
     } finally {
       setSyncing(false);
@@ -548,7 +555,7 @@ export default function ParentDashboard() {
       } else {
         showAlert("Invite Sent 📬", `${name} doesn't have a Crumbo account yet — we've sent them an email invite. Once they sign up, they'll be able to chat with ${selectedKidForLogs.name}.`);
       }
-    } catch (e) {
+    } catch {
       showAlert("Error", "Could not add this relative.");
     } finally {
       setSyncing(false);
@@ -579,7 +586,7 @@ export default function ParentDashboard() {
               const updatedKid = freshKids.find(k => k.cookieCode === selectedKidForLogs.cookieCode) || null;
               setSelectedKidForLogs(updatedKid);
               showAlert("Success", "Buddy removed.");
-            } catch (e) {
+            } catch {
               showAlert("Error", "Could not remove buddy.");
             } finally {
               setSyncing(false);
@@ -707,7 +714,7 @@ export default function ParentDashboard() {
   const copyToClipboard = async (code: string) => {
     try {
       await Clipboard.setStringAsync(code);
-    } catch (e) {
+    } catch {
       showAlert("Pairing Code", code);
     }
   };
@@ -976,6 +983,11 @@ export default function ParentDashboard() {
                   const statusButtonBg = activeHere ? colors.successBg : colors.inputBg;
                   const statusButtonBorder = activeHere ? colors.successText : colors.borderStrong;
                   const statusButtonText = activeHere ? colors.successText : colors.textSecondary;
+                  // Kid buddies only (a relative's PARENT:-prefixed entry isn't what an empty
+                  // cookie jar is missing) — 0 means the button below is the ONLY way in, so it
+                  // switches to an inviting "Add Buddies" CTA rather than reading as a generic,
+                  // easy-to-skip "view logs" link.
+                  const buddyCount = (kid.friends || []).filter(f => !f.cookieCode.startsWith('PARENT:')).length;
                   return (
                     <View key={kid.cookieCode} style={[styles.childContainer, { borderColor: colors.border, padding: s(16), borderRadius: s(20), backgroundColor: isDark ? '#2A1D11' : '#FFF8EC' }]}>
                       {/* Name and Delete Row */}
@@ -1095,16 +1107,34 @@ export default function ParentDashboard() {
                           </TouchableOpacity>
                         </View>
 
-                        {/* Friends and Logs Button */}
+                        {/* Friends and Logs Button — an empty buddy list flips this to a
+                            solid-yellow "Add Buddies" invite (this button is the only entry
+                            point to pairing one), and a non-empty one shows the count so the
+                            button visibly doubles as "this is where your buddies live". */}
                         <TouchableOpacity
-                          style={[styles.friendsLogsBtn, { borderRadius: s(12), paddingVertical: s(6), paddingHorizontal: s(12), backgroundColor: isDark ? '#3D2A1D' : '#FFFDF5', borderColor: '#FFD54F' }]}
+                          style={[
+                            styles.friendsLogsBtn,
+                            { borderRadius: s(12), paddingVertical: s(6), paddingHorizontal: s(12) },
+                            buddyCount === 0
+                              ? { backgroundColor: colors.primaryBtn, borderColor: colors.primaryBtn }
+                              : { backgroundColor: isDark ? '#3D2A1D' : '#FFFDF5', borderColor: '#FFD54F' },
+                          ]}
                           onPress={() => {
                             setSelectedKidForLogs(kid);
+                            setBuddiesModalTab('buddies');
+                            setCodeEntryOpen(false);
                             setFriendsModalVisible(true);
                           }}
                         >
-                          <Text style={[styles.friendsLogsBtnText, { color: colors.textSecondary, fontSize: s(13) }]}>Friends & Logs</Text>
-                          <Ionicons name="chevron-forward" size={s(14)} color={colors.textSecondary} />
+                          {buddyCount === 0 ? (
+                            <>
+                              <Ionicons name="add-circle" size={s(15)} color={colors.primaryBtnText} />
+                              <Text style={[styles.friendsLogsBtnText, { color: colors.primaryBtnText, fontSize: s(13), fontWeight: '800' }]}>Add Buddies</Text>
+                            </>
+                          ) : (
+                            <Text style={[styles.friendsLogsBtnText, { color: colors.textSecondary, fontSize: s(13) }]}>{buddyCount} {buddyCount === 1 ? 'Buddy' : 'Buddies'} & Logs</Text>
+                          )}
+                          <Ionicons name="chevron-forward" size={s(14)} color={buddyCount === 0 ? colors.primaryBtnText : colors.textSecondary} />
                         </TouchableOpacity>
                       </View>
                     </View>
@@ -1428,133 +1458,215 @@ export default function ParentDashboard() {
                   </TouchableOpacity>
                 </View>
 
-                <ScrollView contentContainerStyle={styles.modalScroll} style={{ maxHeight: 220 }}>
-                  {(!selectedKidForLogs || !selectedKidForLogs.friends || selectedKidForLogs.friends.length === 0) ? (
-                    <Text style={styles.noFriendsText}>No buddies added yet. Use the form below to connect!</Text>
-                  ) : (
-                    selectedKidForLogs.friends.map((friend: any) => {
-                      const status = pairingStatuses[friend.cookieCode] || 'pending';
-                      return (
-                        <View key={friend.id} style={styles.friendRow}>
-                          <View style={styles.friendAvatar}>
-                            <Text style={styles.friendAvatarEmoji}>{friend.avatarEmoji || '🍪'}</Text>
-                          </View>
-                          <View style={styles.friendInfo}>
-                            <Text style={styles.friendNameText}>{friend.name}</Text>
-                            <Text style={styles.friendCodeText}>{friend.cookieCode}</Text>
-                          </View>
-                          
-                          {status !== 'paired' && (
-                            <View style={[styles.statusBadge, styles.statusPending]}>
-                              <Text style={styles.statusBadgeText}>Pending</Text>
-                            </View>
-                          )}
+                {/* Kid buddies (paired kid-to-kid via QR/code) and adult relatives (paired by
+                    email, always mutual, no pending state) are different relationships — mixing
+                    them in one list previously made a relative row indistinguishable from a
+                    buddy's. */}
+                <View style={styles.buddyTabsRow}>
+                  <TouchableOpacity
+                    style={[styles.buddyTabPill, buddiesModalTab === 'buddies' ? styles.buddyTabPillActive : styles.buddyTabPillInactive]}
+                    onPress={() => setBuddiesModalTab('buddies')}
+                  >
+                    <Text style={[styles.buddyTabPillText, buddiesModalTab === 'buddies' ? styles.buddyTabPillTextActive : styles.buddyTabPillTextInactive]}>Buddies</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.buddyTabPill, buddiesModalTab === 'relatives' ? styles.buddyTabPillActive : styles.buddyTabPillInactive]}
+                    onPress={() => setBuddiesModalTab('relatives')}
+                  >
+                    <Text style={[styles.buddyTabPillText, buddiesModalTab === 'relatives' ? styles.buddyTabPillTextActive : styles.buddyTabPillTextInactive]}>Relatives</Text>
+                  </TouchableOpacity>
+                </View>
 
-                          <TouchableOpacity 
-                            style={styles.friendLogBadge} 
-                            onPress={() => loadChatLogs(friend)}
-                          >
-                            <Text style={styles.friendLogBadgeText}>Logs</Text>
+                {buddiesModalTab === 'buddies' ? (() => {
+                  const buddies = (selectedKidForLogs?.friends || []).filter((f: any) => !f.cookieCode.startsWith('PARENT:'));
+                  return (
+                    <>
+                      <ScrollView contentContainerStyle={styles.modalScroll} style={{ maxHeight: 220 }}>
+                        {buddies.length === 0 ? (
+                          <Text style={styles.noFriendsText}>No buddies added yet. Pair one below!</Text>
+                        ) : (
+                          buddies.map((friend: any) => {
+                            const paired = (pairingStatuses[friend.cookieCode] || 'pending') === 'paired';
+                            return (
+                              <View key={friend.id}>
+                                <View style={styles.friendRow}>
+                                  <View style={styles.friendAvatar}>
+                                    <Text style={styles.friendAvatarEmoji}>{friend.avatarEmoji || '🍪'}</Text>
+                                  </View>
+                                  <View style={styles.friendInfo}>
+                                    <Text style={styles.friendNameText}>{friend.name}</Text>
+                                    <Text style={styles.friendCodeText}>{friend.cookieCode}</Text>
+                                  </View>
+
+                                  <View style={[styles.statusBadge, paired ? styles.statusPaired : styles.statusPending]}>
+                                    {paired && <Ionicons name="checkmark" size={11} color="#2E7D32" style={{ marginRight: 2 }} />}
+                                    <Text style={paired ? styles.statusTextPaired : styles.statusTextPending}>{paired ? 'Paired' : 'Pending'}</Text>
+                                  </View>
+
+                                  <TouchableOpacity
+                                    style={styles.friendLogBadge}
+                                    onPress={() => loadChatLogs(friend)}
+                                  >
+                                    <Text style={styles.friendLogBadgeText}>Logs</Text>
+                                  </TouchableOpacity>
+
+                                  <TouchableOpacity
+                                    style={styles.deleteFriendBtn}
+                                    onPress={() => handleDeleteFriendFromKid(friend.cookieCode, friend.name)}
+                                  >
+                                    <Ionicons name="trash" size={16} color="#D32F2F" />
+                                  </TouchableOpacity>
+                                </View>
+                                {!paired && (
+                                  <Text style={styles.pendingCaption}>
+                                    Waiting for {friend.name}&apos;s parent to add {selectedKidForLogs?.name} back.
+                                  </Text>
+                                )}
+                              </View>
+                            );
+                          })
+                        )}
+                      </ScrollView>
+
+                      {/* Pair Instantly — promoted over manual code entry below since it's
+                          mechanically better (mutual, instant, no pending state); see
+                          pairKidsViaQRCode/rpc_pair_kids in storage.ts. */}
+                      <View style={styles.pairCard}>
+                        <View style={styles.pairCardHeaderRow}>
+                          <Text style={styles.pairCardTitle}>Pair Instantly</Text>
+                          <View style={styles.recommendedChip}>
+                            <Text style={styles.recommendedChipText}>RECOMMENDED</Text>
+                          </View>
+                        </View>
+                        <Text style={styles.pairCardSubtitle}>Hold phones together — pairs both sides at once, no waiting.</Text>
+                        <View style={styles.qrButtonsRow}>
+                          <TouchableOpacity style={styles.qrShowBtn} onPress={() => setQrCodeVisible(true)}>
+                            <Ionicons name="qr-code-outline" size={18} color="#4E342E" style={{ marginRight: 6 }} />
+                            <Text style={styles.qrBtnText}>Show QR</Text>
                           </TouchableOpacity>
 
-                          <TouchableOpacity 
-                            style={styles.deleteFriendBtn} 
-                            onPress={() => handleDeleteFriendFromKid(friend.cookieCode, friend.name)}
-                          >
-                            <Ionicons name="trash" size={16} color="#D32F2F" />
+                          <TouchableOpacity style={styles.qrScanBtn} onPress={handleStartQRScan}>
+                            <Ionicons name="scan-outline" size={18} color="#FFFFFF" style={{ marginRight: 6 }} />
+                            <Text style={styles.qrBtnTextWhite}>Scan QR</Text>
                           </TouchableOpacity>
                         </View>
-                      );
-                    })
-                  )}
-                </ScrollView>
+                      </View>
 
-                {/* Add Buddy Section */}
-                <View style={styles.addBuddySection}>
-                  <Text style={styles.addBuddyTitle}>Add New Buddy</Text>
-                  
-                  <TextInput
-                    style={styles.buddyInput}
-                    placeholder="Buddy Name (e.g. Sam)"
-                    placeholderTextColor="#A1887F"
-                    value={newFriendName}
-                    onChangeText={setNewFriendName}
-                  />
+                      {/* Manual code entry — demoted behind a link since it's only ever needed
+                          when the two parents aren't in the same room to scan a QR code. */}
+                      <TouchableOpacity style={styles.codeToggleRow} onPress={() => setCodeEntryOpen(!codeEntryOpen)}>
+                        <Text style={styles.codeToggleText}>{codeEntryOpen ? 'Hide code entry' : 'Enter a Cookie Code instead'}</Text>
+                        <Ionicons name={codeEntryOpen ? 'chevron-up' : 'chevron-down'} size={14} color="#8D6E63" />
+                      </TouchableOpacity>
 
-                  <TextInput
-                    style={styles.buddyInput}
-                    placeholder="Buddy Cookie Code (e.g. CRUM-123-456)"
-                    placeholderTextColor="#A1887F"
-                    autoCapitalize="characters"
-                    autoCorrect={false}
-                    value={newFriendCode}
-                    onChangeText={setNewFriendCode}
-                  />
+                      {codeEntryOpen && (
+                        <View style={styles.codeFormCard}>
+                          <TextInput
+                            style={[styles.buddyInput, styles.codeFormInput]}
+                            placeholder="Buddy Name (e.g. Sam)"
+                            placeholderTextColor="#A1887F"
+                            value={newFriendName}
+                            onChangeText={setNewFriendName}
+                          />
 
-                  <TouchableOpacity style={styles.addBuddySubmitBtn} onPress={handleAddFriendToKid} disabled={syncing}>
-                    {syncing ? (
-                      <ActivityIndicator color="#4E342E" />
-                    ) : (
-                      <Text style={styles.addBuddySubmitText}>Add Buddy by Code</Text>
-                    )}
-                  </TouchableOpacity>
+                          <TextInput
+                            style={[styles.buddyInput, styles.codeFormInput]}
+                            placeholder="Buddy Cookie Code (e.g. CRUM-123-456)"
+                            placeholderTextColor="#A1887F"
+                            autoCapitalize="characters"
+                            autoCorrect={false}
+                            value={newFriendCode}
+                            onChangeText={setNewFriendCode}
+                          />
 
-                  <View style={styles.qrDividerRow}>
-                    <View style={styles.qrDividerLine} />
-                    <Text style={styles.qrDividerText}>OR PAIR INSTANTLY</Text>
-                    <View style={styles.qrDividerLine} />
-                  </View>
+                          <TouchableOpacity style={styles.codeFormSubmitBtn} onPress={handleAddFriendToKid} disabled={syncing}>
+                            {syncing ? (
+                              <ActivityIndicator color="#8D6E63" />
+                            ) : (
+                              <Text style={styles.codeFormSubmitText}>Add by Code</Text>
+                            )}
+                          </TouchableOpacity>
+                        </View>
+                      )}
+                    </>
+                  );
+                })() : (() => {
+                  const relatives = (selectedKidForLogs?.friends || []).filter((f: any) => f.cookieCode.startsWith('PARENT:'));
+                  return (
+                    <>
+                      <Text style={styles.addRelativeHint}>
+                        Grandparents, aunts/uncles, or a second parent — connects by email, always instant, no code needed.
+                      </Text>
 
-                  <View style={styles.qrButtonsRow}>
-                    <TouchableOpacity style={styles.qrShowBtn} onPress={() => setQrCodeVisible(true)}>
-                      <Ionicons name="qr-code-outline" size={18} color="#4E342E" style={{ marginRight: 6 }} />
-                      <Text style={styles.qrBtnText}>Show QR</Text>
-                    </TouchableOpacity>
+                      <ScrollView contentContainerStyle={styles.modalScroll} style={{ maxHeight: 180 }}>
+                        {relatives.length === 0 ? (
+                          <Text style={styles.noFriendsText}>No relatives added yet. Use the form below to connect one.</Text>
+                        ) : (
+                          relatives.map((friend: any) => (
+                            <View key={friend.id} style={[styles.friendRow, { backgroundColor: colors.cardBgAdult, borderColor: isDark ? colors.borderStrong : '#E4E9FB' }]}>
+                              <View style={[styles.friendAvatar, { borderColor: isDark ? colors.borderStrong : '#E4E9FB' }]}>
+                                <Text style={styles.friendAvatarEmoji}>{friend.avatarEmoji || '👤'}</Text>
+                              </View>
+                              <View style={styles.friendInfo}>
+                                <Text style={styles.friendNameText}>{friend.name}</Text>
+                                <Text style={styles.friendCodeText}>{friend.cookieCode.replace('PARENT:', '')}</Text>
+                              </View>
 
-                    <TouchableOpacity style={styles.qrScanBtn} onPress={handleStartQRScan}>
-                      <Ionicons name="scan-outline" size={18} color="#FFFFFF" style={{ marginRight: 6 }} />
-                      <Text style={styles.qrBtnTextWhite}>Scan QR</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
+                              <View style={[styles.relativeTag, { backgroundColor: isDark ? '#2A2E45' : '#EDF0FC' }]}>
+                                <Text style={[styles.relativeTagText, { color: isDark ? '#8C9BD6' : '#5A6BC4' }]}>Relative</Text>
+                              </View>
 
-                {/* Add Relative Section — a grandparent, aunt/uncle, second parent, etc. who
-                    isn't one of this kid's own registered parents, added by email instead of a
-                    Cookie Code (they likely don't have the kid's code on hand, and may not even
-                    have a Crumbo account yet). */}
-                <View style={styles.addBuddySection}>
-                  <Text style={styles.addBuddyTitle}>Add a Relative</Text>
-                  <Text style={styles.addRelativeHint}>
-                    For grandparents, aunts/uncles, or a second parent — connects by email instead of a Cookie Code.
-                  </Text>
+                              <TouchableOpacity
+                                style={styles.friendLogBadge}
+                                onPress={() => loadChatLogs(friend)}
+                              >
+                                <Text style={styles.friendLogBadgeText}>Logs</Text>
+                              </TouchableOpacity>
 
-                  <TextInput
-                    style={styles.buddyInput}
-                    placeholder="Relative's Name (e.g. Grandma)"
-                    placeholderTextColor="#A1887F"
-                    value={newRelativeName}
-                    onChangeText={setNewRelativeName}
-                  />
+                              <TouchableOpacity
+                                style={styles.deleteFriendBtn}
+                                onPress={() => handleDeleteFriendFromKid(friend.cookieCode, friend.name)}
+                              >
+                                <Ionicons name="trash" size={16} color="#D32F2F" />
+                              </TouchableOpacity>
+                            </View>
+                          ))
+                        )}
+                      </ScrollView>
 
-                  <TextInput
-                    style={styles.buddyInput}
-                    placeholder="Relative's Email Address"
-                    placeholderTextColor="#A1887F"
-                    keyboardType="email-address"
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    value={newRelativeEmail}
-                    onChangeText={setNewRelativeEmail}
-                  />
+                      <View style={styles.addBuddySection}>
+                        <Text style={styles.addBuddyTitle}>Add a Relative</Text>
 
-                  <TouchableOpacity style={styles.addBuddySubmitBtn} onPress={handleAddRelativeToKid} disabled={syncing}>
-                    {syncing ? (
-                      <ActivityIndicator color="#4E342E" />
-                    ) : (
-                      <Text style={styles.addBuddySubmitText}>Add Relative by Email</Text>
-                    )}
-                  </TouchableOpacity>
-                </View>
+                        <TextInput
+                          style={styles.buddyInput}
+                          placeholder="Relative's Name (e.g. Grandma)"
+                          placeholderTextColor="#A1887F"
+                          value={newRelativeName}
+                          onChangeText={setNewRelativeName}
+                        />
+
+                        <TextInput
+                          style={styles.buddyInput}
+                          placeholder="Relative's Email Address"
+                          placeholderTextColor="#A1887F"
+                          keyboardType="email-address"
+                          autoCapitalize="none"
+                          autoCorrect={false}
+                          value={newRelativeEmail}
+                          onChangeText={setNewRelativeEmail}
+                        />
+
+                        <TouchableOpacity style={styles.addBuddySubmitBtn} onPress={handleAddRelativeToKid} disabled={syncing}>
+                          {syncing ? (
+                            <ActivityIndicator color="#4E342E" />
+                          ) : (
+                            <Text style={styles.addBuddySubmitText}>Add Relative by Email</Text>
+                          )}
+                        </TouchableOpacity>
+                      </View>
+                    </>
+                  );
+                })()}
               </>
             )}
           </TouchableOpacity>
@@ -1654,7 +1766,7 @@ export default function ParentDashboard() {
                   } else {
                     showAlert("Invalid QR", "This QR code is not a valid Crumbo buddy code.");
                   }
-                } catch (e) {
+                } catch {
                   showAlert("Invalid QR", "This QR code could not be read.");
                 } finally {
                   setSyncing(false);
@@ -2348,6 +2460,8 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
   statusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
     borderRadius: 12,
     paddingVertical: 4,
     paddingHorizontal: 10,
@@ -2358,14 +2472,144 @@ const styles = StyleSheet.create({
   statusPending: {
     backgroundColor: '#FFF3E0',
   },
-  statusBadgeText: {
+  statusTextPaired: {
     fontSize: 11,
     fontWeight: '800',
-    color: '#37474F',
+    color: '#2E7D32',
+  },
+  statusTextPending: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#B36A00',
+  },
+  pendingCaption: {
+    fontSize: 12,
+    color: '#8D6E63',
+    marginTop: 4,
+    marginLeft: 4,
+    lineHeight: 16,
   },
   deleteFriendBtn: {
     padding: 6,
     marginLeft: 4,
+  },
+  buddyTabsRow: {
+    flexDirection: 'row',
+    backgroundColor: '#FFFDF0',
+    borderWidth: 2,
+    borderColor: '#FFEFC0',
+    borderRadius: 25,
+    padding: 4,
+    marginBottom: 18,
+  },
+  buddyTabPill: {
+    flex: 1,
+    paddingVertical: 10,
+    alignItems: 'center',
+    borderRadius: 20,
+  },
+  buddyTabPillActive: {
+    backgroundColor: '#FFC93C',
+  },
+  buddyTabPillInactive: {
+    backgroundColor: 'transparent',
+  },
+  buddyTabPillText: {
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  buddyTabPillTextActive: {
+    color: '#4E342E',
+  },
+  buddyTabPillTextInactive: {
+    color: '#A1887F',
+  },
+  pairCard: {
+    marginTop: 16,
+    backgroundColor: '#FFFDF0',
+    borderWidth: 1.5,
+    borderColor: '#FFEFC0',
+    borderRadius: 16,
+    padding: 16,
+  },
+  pairCardHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 4,
+  },
+  pairCardTitle: {
+    fontSize: 15,
+    fontWeight: '900',
+    color: '#4E342E',
+  },
+  recommendedChip: {
+    backgroundColor: '#FFC93C',
+    borderRadius: 8,
+    paddingVertical: 2,
+    paddingHorizontal: 7,
+  },
+  recommendedChipText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#4E342E',
+  },
+  pairCardSubtitle: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#8D6E63',
+    lineHeight: 16,
+    marginBottom: 12,
+  },
+  codeToggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    marginTop: 16,
+  },
+  codeToggleText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#8D6E63',
+  },
+  codeFormCard: {
+    marginTop: 10,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#FFEFC0',
+    borderStyle: 'dashed',
+    borderRadius: 12,
+    padding: 12,
+    gap: 8,
+  },
+  codeFormInput: {
+    height: 38,
+    fontSize: 13,
+    marginBottom: 0,
+  },
+  codeFormSubmitBtn: {
+    height: 38,
+    borderWidth: 1.5,
+    borderColor: '#FFEFC0',
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+  },
+  codeFormSubmitText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#8D6E63',
+  },
+  relativeTag: {
+    borderRadius: 12,
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+  },
+  relativeTagText: {
+    fontSize: 11,
+    fontWeight: '800',
   },
   addBuddySection: {
     marginTop: 16,
@@ -2383,7 +2627,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#8D6E63',
     fontWeight: '600',
-    marginTop: -6,
     marginBottom: 12,
     lineHeight: 16,
   },

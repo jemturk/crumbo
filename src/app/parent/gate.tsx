@@ -49,10 +49,14 @@ export default function ParentGate() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { s } = useDisplayScale();
-  const { theme, colors, isDark } = useAppTheme();
+  const { colors, isDark } = useAppTheme();
   
   // Mode: 'signin' | 'register' | 'reset' — 'reset' is the "enter the code we emailed you" step
   // of the forgot-password flow (see handleForgotPassword/handleCompletePasswordReset).
+  //
+  // There is deliberately no invite-acceptance mode: a relative invited via Add a Relative just
+  // registers or signs in normally, and completeSignedInFlow claims the waiting kid link for
+  // them (see StorageService.claimPendingRelativeLinks).
   const [mode, setMode] = useState<'signin' | 'register' | 'reset'>('signin');
 
   const [emailInput, setEmailInput] = useState('');
@@ -63,6 +67,7 @@ export default function ParentGate() {
   const [resetCodeInput, setResetCodeInput] = useState('');
   const [resetPasswordInput, setResetPasswordInput] = useState('');
   const [showResetPassword, setShowResetPassword] = useState(false);
+
 
   const [error, setError] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -154,7 +159,7 @@ export default function ParentGate() {
       }
       setLoading(false);
       router.replace('/parent/dashboard');
-    } catch (e) {
+    } catch {
       setLoading(false);
       showAlert("Connection Error", "Could not restore your account data. Please check your network.");
     }
@@ -207,7 +212,7 @@ export default function ParentGate() {
 
     try {
       await completeSignedInFlow(email);
-    } catch (e) {
+    } catch {
       setLoading(false);
       showAlert("Connection Error", "Could not restore your account data. Please check your network.");
     }
@@ -240,17 +245,13 @@ export default function ParentGate() {
       await StorageService.activateParentOnDevice();
     }
 
-    // A relative invited via addRelativeToKidByEmail carries the pending kid link in their own
-    // auth user_metadata until they actually finish signing up — complete it here, on every
-    // sign-in, since this is the first point after ANY sign-in method where a real session (and
-    // thus this metadata) is available. Idempotent and cheap when there's nothing pending.
-    const { data: userData } = await supabase.auth.getUser();
-    const pendingLinks = userData?.user?.user_metadata?.pendingRelativeLinks as
-      { cookieCode: string; name: string; avatarEmoji?: string }[] | undefined;
-    if (pendingLinks && pendingLinks.length > 0) {
-      await StorageService.completePendingRelativeLinks(email, pendingLinks);
-      await supabase.auth.updateUser({ data: { pendingRelativeLinks: null } });
-    }
+    // A relative invited via addRelativeToKidByEmail has their pending kid link waiting
+    // server-side, keyed by email (see rpc_claim_pending_relative_links) — claimed here, on every
+    // sign-in, since this is the first point after ANY sign-in method where a real session
+    // exists. That's what lets an invited relative just register normally instead of accepting an
+    // invite: no code, no special mode, the kid is simply already in their list. A no-op when
+    // nothing is pending, which is the usual case.
+    await StorageService.claimPendingRelativeLinks();
 
     setLoading(false);
 
@@ -290,7 +291,7 @@ export default function ParentGate() {
 
     try {
       await completeSignedInFlow(result.email, result.name || undefined);
-    } catch (e) {
+    } catch {
       setLoading(false);
       showAlert("Connection Error", "Could not restore your account data. Please check your network.");
     }
@@ -494,7 +495,7 @@ export default function ParentGate() {
           { text: "OK", onPress: () => router.replace('/parent/dashboard') }
         ]);
       }
-    } catch (e) {
+    } catch {
       setLoading(false);
       showAlert("Error", "Could not complete registration. Please check your connection.");
     }

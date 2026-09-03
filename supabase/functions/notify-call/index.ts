@@ -24,6 +24,9 @@ declare const Deno: {
   serve(handler: (req: Request) => Response | Promise<Response>): void;
   env: { get(key: string): string | undefined };
 };
+// Lets a background task (the delayed receipt check below) keep running after the response
+// is already sent back to the caller, instead of blocking the caller on it.
+declare const EdgeRuntime: { waitUntil(promise: Promise<unknown>): void };
 // @ts-ignore: npm: specifier is valid Deno syntax (Supabase Edge Functions runtime)
 import { createClient } from "npm:@supabase/supabase-js@2";
 
@@ -190,7 +193,49 @@ Deno.serve(async (req) => {
     });
 
     const result = await res.json();
-    return json({ delivered: res.ok, expo: result });
+    // A 200 here only means Expo's relay accepted the request — it says nothing about the
+    // actual push. The real per-message outcome is this ticket's own status; `res.ok` alone
+    // previously made `delivered: true` a lie for a rejected ticket (e.g. a malformed token).
+    const ticket = Array.isArray(result?.data) ? result.data[0] : result?.data;
+    const ticketOk = res.ok && ticket?.status === "ok";
+    const logTag = `${type} → ${receiverCode} (callUUID=${callUUID})`;
+
+    if (!ticketOk) {
+      console.error(`[notify-call] Push ticket error for ${logTag}:`, JSON.stringify(ticket ?? result));
+    } else if (ticket?.id) {
+      // A ticket status of "ok" only means Expo accepted the token's shape — it does NOT mean
+      // the push actually reached the device. The real delivery outcome (e.g.
+      // "DeviceNotRegistered" for a stale/invalid token after a reinstall or revoked
+      // notification permission) only shows up later via getReceipts, and until now nothing
+      // ever checked it — a receiver stuck with a dead token silently never rang, forever, with
+      // no error anywhere. Runs after the response is already sent so it doesn't hold up the
+      // caller; Expo recommends waiting before the receipt is ready, 15s is a practical middle
+      // ground for a value that's purely diagnostic here (logged, not acted on).
+      const ticketId = ticket.id;
+      EdgeRuntime.waitUntil(
+        (async () => {
+          await new Promise((resolve) => setTimeout(resolve, 15000));
+          try {
+            const receiptRes = await fetch("https://exp.host/--/api/v2/push/getReceipts", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", Accept: "application/json" },
+              body: JSON.stringify({ ids: [ticketId] }),
+            });
+            const receiptResult = await receiptRes.json();
+            const receipt = receiptResult?.data?.[ticketId];
+            if (receipt?.status === "error") {
+              console.error(`[notify-call] Push receipt error for ${logTag}:`, JSON.stringify(receipt));
+            } else {
+              console.log(`[notify-call] Push receipt ok for ${logTag}`);
+            }
+          } catch (e) {
+            console.error(`[notify-call] Failed to check push receipt for ${logTag}:`, e);
+          }
+        })()
+      );
+    }
+
+    return json({ delivered: ticketOk, expo: result });
   } catch (e) {
     return json({ error: (e as Error).message }, 500);
   }

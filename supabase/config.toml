@@ -271,15 +271,19 @@ pass = "env(RESEND_API_KEY)"
 admin_email = "noreply@revynd.com"
 sender_name = "Crumbo"
 
-# Uncomment to customize email template
-# [auth.email.template.invite]
-# subject = "You have been invited"
-# content_path = "./supabase/templates/invite.html"
+# Branded "Confirm your email" (signup), "Reset your password", and "You've been invited"
+# (relative invite) emails — see parent/gate.tsx's signUp/resetPasswordForEmail/handleAcceptInvite
+# calls. Requires `supabase login` + `supabase config push` to actually apply to the linked
+# project (see README note); the dashboard's Email Templates page works too, and needs no CLI
+# login, if you'd rather paste these in directly.
+# No [auth.email.template.invite] entry: relative invites no longer go through GoTrue at all.
+# admin.inviteUserByEmail pre-created a passwordless account that then had to be claimed with an
+# emailed code; the invite now waits in the pending_relative_links table instead and the invitee
+# just registers normally, so the mail is sent straight from the invite-relative Edge Function
+# (see its header). That also keeps this one email clear of GoTrue's template engine, which cost
+# a full session to two silent traps: an empty double-brace action falling back to the stock
+# default, and a cached template surviving a config push.
 
-# Branded "Confirm your email" (signup) and "Reset your password" emails — see parent/gate.tsx's
-# signUp/resetPasswordForEmail calls. Requires `supabase login` + `supabase config push` to
-# actually apply to the linked project (see README note); the dashboard's Email Templates page
-# works too, and needs no CLI login, if you'd rather paste these in directly.
 [auth.email.template.confirmation]
 subject = "Confirm your Crumbo account 🍪"
 content_path = "./supabase/templates/confirmation.html"

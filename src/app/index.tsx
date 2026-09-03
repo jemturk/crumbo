@@ -34,10 +34,9 @@ export default function WelcomeScreen() {
   // instead of auto-redirecting straight back into their chat list.
   const { fromLogout } = useLocalSearchParams<{ fromLogout?: string }>();
   const { s } = useDisplayScale();
-  const { theme, colors, isDark } = useAppTheme();
+  const { colors } = useAppTheme();
   const insets = useSafeAreaInsets();
   const [loading, setLoading] = useState(true);
-  const [subscribed, setSubscribed] = useState(false);
   const [profile, setProfile] = useState<KidProfile | null>(null);
   const [parentActive, setParentActive] = useState(false);
   const [parentName, setParentName] = useState<string | null>(null);
@@ -86,7 +85,6 @@ export default function WelcomeScreen() {
   const checkAppState = async () => {
     try {
       setLoading(true);
-      const isSub = await StorageService.isSubscribed();
       let kidProf = await StorageService.getKidProfile();
       const isParentActive = await StorageService.isParentActiveOnDevice();
 
@@ -119,7 +117,6 @@ export default function WelcomeScreen() {
       }
 
       const seenOnboarding = await StorageService.hasSeenOnboarding();
-      setSubscribed(isSub);
       setParentActive(isParentActive);
       if (kidProf) {
         setProfile(kidProf);

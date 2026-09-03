@@ -434,6 +434,22 @@ class CallKeepManager {
   }
 
   /**
+   * Logs the two OS permission states that decide whether an incoming call actually takes over
+   * the screen or just silently rings/vibrates in the background: full-screen-intent (gates
+   * IncomingCallModule's setFullScreenIntent — see its own comment) and battery-optimization
+   * exemption (OEM background restrictions can kill this app's process before the push ever
+   * arrives). Called right before displayIncomingCall so a logcat pull on a device that reported
+   * "just vibrated" can be matched against the actual permission state at that moment, instead of
+   * guessing from whatever the settings screens show *now*.
+   */
+  logCallReliabilityDiagnostics(callUUID: string) {
+    if (Platform.OS !== 'android') return;
+    console.log(
+      `[CallKeep] Reliability check for ${callUUID} — fullScreenIntent: ${this.canUseFullScreenIntent()}, batteryOptimizationExempt: ${this.isIgnoringBatteryOptimizations()}`
+    );
+  }
+
+  /**
    * Nudges the user, once per app launch, toward the two OS settings that make incoming calls
    * reliable: the full-screen-intent lock-screen bypass (can be silently revoked on Android
    * 14+) and battery-optimization exemption (OEM background restrictions can otherwise kill
@@ -684,6 +700,7 @@ TaskManager.defineTask(BACKGROUND_NOTIFICATION_TASK, async ({ data, error }) => 
       return;
     }
 
+    callKeepManager.logCallReliabilityDiagnostics(callUUID);
     await callKeepManager.displayIncomingCall(
       callUUID,
       payload.callerName ?? payload.friendName ?? 'Crumbo Friend',

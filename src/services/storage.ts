@@ -490,7 +490,24 @@ export const StorageService = {
     return email ? `PARENT:${email}` : null;
   },
 
+  /**
+   * Signing in as a DIFFERENT parent than this device last held makes every kid-scoped local
+   * cache stale in the most misleading way possible: it describes somebody else's family. Left
+   * in place, the next buildParentPushTokenPayload() would mirror those kids into the incoming
+   * account's own row as if they owned them — which is how a relative, invited purely as a chat
+   * contact for a kid, ended up with that kid under their own Managed Users.
+   *
+   * Cleared here rather than at logout because logout isn't the only way accounts change hands
+   * (accepting a relative invite on a phone that already had a parent signed in never passes
+   * through one), and because this is the single point every sign-in path funnels through.
+   * rpc_unowned_kid_codes still backstops the payload itself — this just stops the bad state
+   * from being created in the first place.
+   */
   async saveParentEmail(email: string): Promise<void> {
+    const previous = await AsyncStorage.getItem(KEYS.PARENT_EMAIL);
+    if (previous && previous.toLowerCase() !== email.toLowerCase()) {
+      await AsyncStorage.multiRemove([KEYS.KIDS_LIST, KEYS.KID_PROFILE, KEYS.FRIENDS]);
+    }
     await AsyncStorage.setItem(KEYS.PARENT_EMAIL, email);
   },
 
@@ -978,7 +995,16 @@ export const StorageService = {
         };
       }));
 
-      return [...ownKids, ...pairedParents];
+      // kids[] and friends[] are independent lists that can legitimately name the same person —
+      // a relative holds their kid contacts in friends[], and a poisoned mirror could put the
+      // same kid in both, rendering them twice in the chat list. Deduped by code, own-kid entry
+      // winning, so a contact can only ever appear once no matter what the payload says.
+      const seen = new Set<string>();
+      return [...ownKids, ...pairedParents].filter((contact) => {
+        if (seen.has(contact.code)) return false;
+        seen.add(contact.code);
+        return true;
+      });
     } catch (e) {
       console.error("Error fetching parent contacts:", e);
       return [];
@@ -1386,9 +1412,37 @@ export const StorageService = {
       k => !localCookieCodes.has(k.cookieCode)
     );
 
+    // Everything above is rebuilt from local caches that aren't scoped per account, so a kid left
+    // in KIDS_LIST by a PREVIOUS session on this device would otherwise be written into whichever
+    // account syncs next — as if they owned that kid. That's how a relative, given only a chat
+    // contact for a kid, ended up mirroring that kid into their own kids[] and seeing them listed
+    // under their own Managed Users. Ask the server which of these genuinely belong to someone
+    // else and drop exactly those; see rpc_unowned_kid_codes for why it answers that narrow
+    // question rather than "which do I own".
+    //
+    // Fail-open by design: any error here keeps the list unfiltered, because writing back fewer
+    // kids than the parent actually has is the far worse failure (the same reasoning as the
+    // serverReadSucceeded guard above).
+    let mergedKids = [...kidsPayload, ...preservedServerKids];
+    if (mergedKids.length > 0) {
+      try {
+        const { data: unowned, error: unownedError } = await supabase.rpc('rpc_unowned_kid_codes', {
+          p_codes: mergedKids.map(k => k.cookieCode),
+        });
+        if (unownedError) {
+          console.error("Unowned-kid check failed; keeping kids list unfiltered:", unownedError);
+        } else if (Array.isArray(unowned) && unowned.length > 0) {
+          const unownedCodes = new Set((unowned as { cookie_code: string }[]).map(r => r.cookie_code));
+          mergedKids = mergedKids.filter(k => !unownedCodes.has(k.cookieCode));
+        }
+      } catch (e) {
+        console.error("Error checking unowned kids; keeping kids list unfiltered:", e);
+      }
+    }
+
     const payload = JSON.stringify({
       subscribed,
-      kids: [...kidsPayload, ...preservedServerKids],
+      kids: mergedKids,
       displaySize,
       theme,
       parentName,
@@ -2433,10 +2487,11 @@ export const StorageService = {
    * there beyond treating a `PARENT:`-prefixed friend as always paired, no request/response step).
    *
    * If the relative already has an account, both sides are linked immediately, mirroring
-   * pairParentsViaQRCode's always-symmetric write. If not, sends them a real invite email (via
-   * the invite-relative Edge Function, which needs the service-role key) and reflects the
-   * relationship on the kid's side right away regardless — the relative's own side completes
-   * later, via completePendingRelativeLinks, once they actually finish signing up.
+   * pairParentsViaQRCode's always-symmetric write. If not, rpc_add_relative_to_kid parks the link
+   * in pending_relative_links (keyed by their email) and the invite-relative Edge Function emails
+   * them about it; the kid's side is reflected right away regardless. Nothing invite-shaped
+   * awaits them — they install Crumbo and register normally, and claimPendingRelativeLinks
+   * attaches the kid on their first sign-in.
    */
   async addRelativeToKidByEmail(
     kidCookieCode: string,
@@ -2464,6 +2519,7 @@ export const StorageService = {
       if (result?.linked) {
         await this.addFriendToKidProfile(kidCookieCode, relativeDisplayName, relativeCode);
         await this.syncParentData();
+        await this.syncKidRelatives(kidCookieCode);
         return 'linked';
       }
 
@@ -2477,6 +2533,10 @@ export const StorageService = {
 
       await this.addFriendToKidProfile(kidCookieCode, relativeDisplayName, relativeCode);
       await this.syncParentData();
+      // The invitee has no row to link yet, but every relative already on this kid still gets
+      // meshed with each other; the new one joins on their first sign-in (see
+      // claimPendingRelativeLinks).
+      await this.syncKidRelatives(kidCookieCode);
       return 'invited';
     } catch (e) {
       console.error("Error adding relative to kid:", e);
@@ -2485,44 +2545,64 @@ export const StorageService = {
   },
 
   /**
-   * Completes the OTHER side of addRelativeToKidByEmail's invited-relative case — called from
-   * gate.tsx right after a successful sign-in, whenever that account's own user_metadata still
-   * carries pendingRelativeLinks (set by the invite-relative Edge Function). Idempotent: only
-   * appends links not already present, so it's safe to call on every sign-in.
+   * Cross-links every adult connected to this kid so they can chat with each other directly —
+   * see rpc_sync_kid_relatives. Must run AFTER syncParentData(), since the RPC reads the kid's
+   * relative list from the parent row on the SERVER, and a relative added moments ago only
+   * reaches that row via the sync.
+   *
+   * Deliberately non-fatal: whatever prompted this (a relative added, an invite completed) has
+   * already succeeded on its own terms by the time this runs, and the mesh is idempotent — the
+   * next add or sign-in re-runs it and fills in whatever this attempt missed.
    */
-  async completePendingRelativeLinks(
-    myEmail: string,
-    pendingLinks: { cookieCode: string; name: string; avatarEmoji?: string }[]
-  ): Promise<void> {
+  async syncKidRelatives(kidCookieCode: string): Promise<void> {
     try {
-      const myCode = `PARENT:${myEmail}`;
-      const { data: myRow } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('cookie_code', myCode)
-        .single();
-      if (!myRow) return;
-
-      const payload = JSON.parse(myRow.push_token || '{}');
-      const existingFriends = payload.friends || [];
-      let changed = false;
-      for (const link of pendingLinks) {
-        if (!existingFriends.some((f: any) => f.cookieCode === link.cookieCode)) {
-          existingFriends.push({ id: Crypto.randomUUID(), name: link.name, cookieCode: link.cookieCode, avatarEmoji: link.avatarEmoji });
-          changed = true;
-        }
-      }
-      if (changed) {
-        payload.friends = existingFriends;
-        const userId = await getAuthUserId();
-        if (userId) {
-          await supabase
-            .from('profiles')
-            .upsert({ cookie_code: myRow.cookie_code, push_token: JSON.stringify(payload), name: myRow.name, user_id: userId });
-        }
+      const { error } = await supabase.rpc('rpc_sync_kid_relatives', {
+        p_kid_cookie_code: kidCookieCode,
+      });
+      if (error) {
+        console.error("Failed to sync kid relatives:", error);
       }
     } catch (e) {
-      console.error("Error completing pending relative links:", e);
+      console.error("Error syncing kid relatives:", e);
+    }
+  },
+
+  /**
+   * Completes the OTHER side of addRelativeToKidByEmail's invited-relative case. Called from
+   * gate.tsx after EVERY successful sign-in, by every route (password, Google, biometric,
+   * first-ever registration) — which is the whole point of the design: a relative never does
+   * anything invite-shaped, they just make an ordinary account with the address they were
+   * invited at, and the kid is already there when they arrive.
+   *
+   * The server applies the contacts and clears the pending rows in one transaction (see
+   * rpc_claim_pending_relative_links), so there's no window where an invite is consumed without
+   * the contact actually landing. Nothing happens for the overwhelmingly common case of a
+   * sign-in with no invite waiting, so this is safe to call unconditionally.
+   *
+   * Returns the kid codes that were claimed, purely so the caller can tell whether to bother
+   * refreshing anything.
+   */
+  async claimPendingRelativeLinks(): Promise<string[]> {
+    try {
+      const { data, error } = await supabase.rpc('rpc_claim_pending_relative_links');
+      if (error) {
+        console.error("Failed to claim pending relative links:", error);
+        return [];
+      }
+
+      const claimed = (data || []) as { kid_cookie_code: string }[];
+      if (claimed.length === 0) return [];
+
+      // Now that this row holds the kid contact, it counts as one of that kid's adults — which is
+      // exactly what rpc_sync_kid_relatives needs to authorize a caller who doesn't own the kid.
+      // So this is the first moment a newly-arrived relative can join the other adults' mesh.
+      for (const link of claimed) {
+        await this.syncKidRelatives(link.kid_cookie_code);
+      }
+      return claimed.map(c => c.kid_cookie_code);
+    } catch (e) {
+      console.error("Error claiming pending relative links:", e);
+      return [];
     }
   },
 

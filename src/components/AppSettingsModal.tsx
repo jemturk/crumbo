@@ -17,7 +17,7 @@ export default function AppSettingsModal({
   showParentControlsOption,
   onParentControlsPress,
 }: AppSettingsModalProps) {
-  const { displaySize, theme, colors, isDark, changeDisplaySize, changeTheme, s } = useSettings();
+  const { displaySize, colors, isDark, changeDisplaySize, changeTheme, s } = useSettings();
 
   const handleParentControls = () => {
     onClose();

@@ -131,9 +131,17 @@ export async function sendCallSignal(signal: OutgoingCallSignal): Promise<void> 
   if (type === 'ACCEPT_CALL') return;
 
   try {
-    await supabase.functions.invoke('notify-call', {
+    const { data, error } = await supabase.functions.invoke('notify-call', {
       body: { receiverCode, senderCode, callUUID, type, senderName, roomName, isVideo: !!isVideo },
     });
+    // A soft "not delivered" (no token registered, rejected ticket, etc.) comes back as a normal
+    // 200 response, not a thrown error — previously discarded entirely, which meant a receiver
+    // whose push silently never arrives looked identical in the caller's own logs to one that
+    // rang fine. Only worth surfacing for START — CANCEL/END/DECLINE reaching a foregrounded
+    // peer via Realtime instead is the normal, non-broken case.
+    if (!error && data && data.delivered === false && (type === 'START_AUDIO_CALL' || type === 'START_VIDEO_CALL')) {
+      console.warn(`[CallSignaling] notify-call did not deliver for ${type} → ${receiverCode} (callUUID=${callUUID}):`, data.reason ?? data.expo);
+    }
   } catch (e) {
     // A failed push is non-fatal — a foregrounded peer still gets the Realtime event.
     console.warn('[CallSignaling] notify-call push failed (non-fatal):', e);
