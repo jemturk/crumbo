@@ -1278,6 +1278,15 @@ export default function ParentDashboard() {
         transparent={true}
         visible={friendsModalVisible}
         onRequestClose={() => setFriendsModalVisible(false)}
+        // Adding/removing a relative raises CustomAlertModal on top of this sheet, so two native
+        // dialog windows are open at once. Both must agree on whether they extend under the
+        // status bar, or the lower one re-lays-out when the upper appears and the sheet's content
+        // visibly flickers behind the alert. Safe for this particular modal because the sheet is
+        // bottom-anchored (justifyContent: flex-end) and pads itself with insets.bottom — nothing
+        // here relies on the window starting below the status bar. Don't copy this onto the
+        // full-screen modals (QR scanner, camera, media viewer) without checking their content is
+        // inset-aware first.
+        statusBarTranslucent={true}
       >
         <KeyboardAvoidingView
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}

@@ -2520,6 +2520,21 @@ export const StorageService = {
         await this.addFriendToKidProfile(kidCookieCode, relativeDisplayName, relativeCode);
         await this.syncParentData();
         await this.syncKidRelatives(kidCookieCode);
+
+        // They have an account, so the kid is ALREADY in their contact list server-side and there
+        // is nothing for them to do — which is exactly why they need telling. Without this the
+        // kid just silently appeared in their list and they'd only notice by chance, leaving the
+        // one person who could act immediately as the only one never informed. Invoked after the
+        // link is written, since the function refuses to announce a link it can't see.
+        //
+        // Non-fatal: the relationship itself is already saved on both sides, so a failed
+        // notification is worth logging but must not turn a successful add into an error.
+        const { error: notifyError } = await supabase.functions.invoke('invite-relative', {
+          body: { email: relativeEmail, kidCookieCode, kidName, linked: true },
+        });
+        if (notifyError) {
+          console.error("Linked the relative but could not notify them:", notifyError);
+        }
         return 'linked';
       }
 

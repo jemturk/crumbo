@@ -530,7 +530,12 @@ class CallKeepManager {
       // tapping the notification just launched the app to whatever screen it last had open,
       // since there was nothing here to route on. senderCode is the OTHER party's cookie code
       // regardless of which side received the push, same duality as chatMode everywhere else.
-      if (isDefaultTap && data?.kind === 'chat_message' && data?.senderCode) {
+      // 'relative_linked' is the one-off "you can now chat with {kid}" push sent when a relative
+      // who ALREADY had an account is added to a kid (see the invite-relative Edge Function). It
+      // carries the same senderCode shape as a chat message — the other party's cookie code — so
+      // it routes identically: straight into the new conversation, which is the only thing anyone
+      // would want from tapping it.
+      if (isDefaultTap && (data?.kind === 'chat_message' || data?.kind === 'relative_linked') && data?.senderCode) {
         const { router } = require('expo-router');
         const identity = await resolveActiveIdentity();
         if (identity.mode === 'adult') {

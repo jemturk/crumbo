@@ -31,6 +31,13 @@ export default function CustomAlertModal({
       transparent={true}
       visible={visible}
       onRequestClose={onClose}
+      // This alert is almost always raised from INSIDE another modal (the Friends & Logs sheet,
+      // the QR dialogs, ...). On Android each RN Modal is its own native dialog window, and
+      // stacking one whose window bounds differ from the one below makes the lower window
+      // re-layout — visible as the content behind the alert flickering. Keeping the two
+      // consistent avoids that relayout; the modal this is raised over needs the same prop for it
+      // to hold (see dashboard.tsx's Friends & Logs modal).
+      statusBarTranslucent={true}
     >
       <TouchableOpacity style={styles.overlay} activeOpacity={1} onPress={onClose}>
         <TouchableOpacity activeOpacity={1} onPress={() => {}} style={styles.alertContainer}>
